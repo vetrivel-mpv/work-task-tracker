@@ -242,7 +242,7 @@ const handleChatCompletions = async (req, res) => {
 app.post('/v1/chat/completions', handleChatCompletions);
 app.post('/chat/completions', handleChatCompletions);
 
-// 6. Azure DevOps connectivity test proxy (optional helper to overcome browser CORS on PAT)
+// 6. Azure DevOps API Integration endpoints
 app.post('/api/ado/test', async (req, res) => {
   try {
     const { org, project, pat } = req.body;
@@ -268,6 +268,434 @@ app.post('/api/ado/test', async (req, res) => {
     res.json({ ok: true, projectsCount: data.count, projects: data.value?.map((p) => p.name) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Helper to flatten ADO classification nodes
+function flattenNodes(node, currentPath = '') {
+  const fullPath = currentPath ? `${currentPath}\\${node.name}` : node.name;
+  let items = [{
+    id: node.id,
+    name: node.name,
+    path: fullPath,
+    startDate: node.attributes?.startDate,
+    finishDate: node.attributes?.finishDate
+  }];
+  if (node.children && Array.isArray(node.children)) {
+    for (const child of node.children) {
+      items = items.concat(flattenNodes(child, fullPath));
+    }
+  }
+  return items;
+}
+
+// 7. Fetch Iterations from Azure DevOps
+app.post('/api/ado/iterations', async (req, res) => {
+  const { org, project, pat } = req.body;
+  if (!org || !project) {
+    return res.status(400).json({ ok: false, error: 'Org and Project are required.' });
+  }
+
+  if (!pat) {
+    return res.json({ ok: true, iterations: [], source: 'empty_no_pat' });
+  }
+
+  try {
+    const auth = Buffer.from(`:${pat}`).toString('base64');
+    
+    // Attempt 1: Classification nodes iterations
+    const url = `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_apis/wit/classificationnodes/iterations?$depth=5&api-version=7.0`;
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const flattened = flattenNodes(data);
+      const iterations = flattened.map(item => ({
+        id: item.id,
+        name: item.name,
+        path: item.path,
+        startDate: item.startDate ? item.startDate.split('T')[0] : undefined,
+        finishDate: item.finishDate ? item.finishDate.split('T')[0] : undefined
+      }));
+      return res.json({ ok: true, iterations, source: 'live_ado' });
+    }
+
+    // Attempt 2: Team settings iterations
+    const teamUrl = `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_apis/work/teamsettings/iterations?api-version=7.0`;
+    const teamResp = await fetch(teamUrl, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (teamResp.ok) {
+      const teamData = await teamResp.json();
+      const iterations = (teamData.value || []).map(t => ({
+        id: t.id,
+        name: t.name,
+        path: t.path,
+        startDate: t.attributes?.startDate?.split('T')[0],
+        finishDate: t.attributes?.finishDate?.split('T')[0]
+      }));
+      return res.json({ ok: true, iterations, source: 'live_ado_team' });
+    }
+
+    res.json({ ok: true, iterations: [], source: 'empty_on_error', error: `ADO API returned status ${response.status}` });
+  } catch (err) {
+    console.warn('[ADO Iterations API Warning]:', err.message);
+    res.json({ ok: false, iterations: [], error: err.message });
+  }
+});
+
+// 8. Fetch Areas from Azure DevOps
+app.post('/api/ado/areas', async (req, res) => {
+  const { org, project, pat } = req.body;
+  if (!org || !project) {
+    return res.status(400).json({ ok: false, error: 'Org and Project are required.' });
+  }
+
+  if (!pat) {
+    return res.json({ ok: true, areas: [], source: 'empty_no_pat' });
+  }
+
+  try {
+    const auth = Buffer.from(`:${pat}`).toString('base64');
+    const url = `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_apis/wit/classificationnodes/areas?$depth=5&api-version=7.0`;
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const flattened = flattenNodes(data);
+      const areas = flattened.map(item => ({
+        id: item.id,
+        name: item.name,
+        path: item.path
+      }));
+      return res.json({ ok: true, areas, source: 'live_ado' });
+    }
+
+    res.json({ ok: true, areas: [], source: 'empty_on_error', error: `ADO API returned status ${response.status}` });
+  } catch (err) {
+    console.warn('[ADO Areas API Warning]:', err.message);
+    res.json({ ok: false, areas: [], error: err.message });
+  }
+});
+
+// 9. Real Azure DevOps Work Item Sync (WIQL Query + Batch Extraction)
+app.post('/api/ado/sync-workitems', async (req, res) => {
+  const { org, project, pat, areaPath, iterationPath, targetInstance = 'internal' } = req.body;
+  const startTime = Date.now();
+
+  if (!org || !project || !pat) {
+    return res.json({
+      ok: false,
+      error: 'Azure DevOps Organization, Project, and Personal Access Token (PAT) are required to sync live work items.',
+      stories: [],
+      defects: [],
+      source: 'missing_credentials',
+      durationMs: Date.now() - startTime,
+      rawPayload: {
+        request: { org, project, areaPath, iterationPath, targetInstance },
+        diagnosticInfo: {
+          status: '400 Bad Request - Missing credentials',
+          totalReceived: 0,
+          mappedAsStories: 0,
+          mappedAsDefects: 0
+        }
+      }
+    });
+  }
+
+  try {
+    const auth = Buffer.from(`:${pat}`).toString('base64');
+    
+    // Normalize path separators to backslashes for ADO WIQL
+    const normalizedIter = iterationPath ? iterationPath.replace(/\//g, '\\').trim() : '';
+    const normalizedArea = areaPath ? areaPath.replace(/\//g, '\\').trim() : '';
+
+    // WIQL query to fetch work items (User Stories, Bugs, Defects, Issues, Tasks)
+    let wiqlQuery = `SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo], [System.WorkItemType], [System.AreaPath], [System.IterationPath] FROM WorkItems WHERE [System.TeamProject] = '${project}'`;
+    
+    if (normalizedIter) {
+      const cleanIter = normalizedIter.replace(/'/g, "''");
+      const prefixedIter = cleanIter.toLowerCase().startsWith((project + '\\').toLowerCase()) ? cleanIter : `${project}\\${cleanIter}`;
+      if (cleanIter === prefixedIter) {
+        wiqlQuery += ` AND ([System.IterationPath] UNDER '${cleanIter}' OR [System.IterationPath] = '${cleanIter}')`;
+      } else {
+        wiqlQuery += ` AND ([System.IterationPath] UNDER '${cleanIter}' OR [System.IterationPath] = '${cleanIter}' OR [System.IterationPath] UNDER '${prefixedIter}' OR [System.IterationPath] = '${prefixedIter}')`;
+      }
+    }
+    if (normalizedArea) {
+      const cleanArea = normalizedArea.replace(/'/g, "''");
+      const prefixedArea = cleanArea.toLowerCase().startsWith((project + '\\').toLowerCase()) ? cleanArea : `${project}\\${cleanArea}`;
+      if (cleanArea === prefixedArea) {
+        wiqlQuery += ` AND ([System.AreaPath] UNDER '${cleanArea}' OR [System.AreaPath] = '${cleanArea}')`;
+      } else {
+        wiqlQuery += ` AND ([System.AreaPath] UNDER '${cleanArea}' OR [System.AreaPath] = '${cleanArea}' OR [System.AreaPath] UNDER '${prefixedArea}' OR [System.AreaPath] = '${prefixedArea}')`;
+      }
+    }
+    wiqlQuery += ' ORDER BY [System.Id] DESC';
+
+    const wiqlUrl = `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_apis/wit/wiql?api-version=7.0`;
+    const wiqlResp = await fetch(wiqlUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query: wiqlQuery })
+    });
+
+    if (!wiqlResp.ok) {
+      const errorBody = await wiqlResp.text();
+      console.warn(`[ADO WIQL error HTTP ${wiqlResp.status}]:`, errorBody);
+      return res.json({
+        ok: false,
+        error: `Azure DevOps WIQL query failed (HTTP ${wiqlResp.status}): ${wiqlResp.statusText}`,
+        stories: [],
+        defects: [],
+        source: 'wiql_error',
+        durationMs: Date.now() - startTime,
+        rawPayload: {
+          request: { org, project, areaPath, iterationPath, targetInstance },
+          wiql: { query: wiqlQuery, httpStatus: wiqlResp.status, errorText: errorBody },
+          batchResponse: { count: 0, value: [] },
+          diagnosticInfo: {
+            status: `${wiqlResp.status} Error`,
+            totalReceived: 0,
+            mappedAsStories: 0,
+            mappedAsDefects: 0
+          }
+        }
+      });
+    }
+
+    const wiqlData = await wiqlResp.json();
+    const allWorkItems = wiqlData.workItems || [];
+    const workItemIds = allWorkItems.slice(0, 500).map(w => w.id);
+
+    if (workItemIds.length === 0) {
+      return res.json({
+        ok: true,
+        stories: [],
+        defects: [],
+        source: 'live_ado_empty',
+        durationMs: Date.now() - startTime,
+        rawPayload: {
+          request: { org, project, areaPath, iterationPath, targetInstance },
+          wiql: { query: wiqlQuery, resultCount: 0 },
+          batchResponse: { count: 0, value: [] },
+          diagnosticInfo: {
+            status: '200 OK (0 work items found for query)',
+            totalReceived: 0,
+            mappedAsStories: 0,
+            mappedAsDefects: 0
+          }
+        }
+      });
+    }
+
+    // Batch fetch details in chunks of 200 (max allowed per ADO request)
+    const batchUrl = `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_apis/wit/workitemsbatch?api-version=7.0`;
+    const requestedFields = [
+      'System.Id',
+      'System.Title',
+      'System.State',
+      'System.AssignedTo',
+      'System.CreatedBy',
+      'System.WorkItemType',
+      'System.AreaPath',
+      'System.IterationPath',
+      'System.Description',
+      'Microsoft.VSTS.Common.AcceptanceCriteria',
+      'Microsoft.VSTS.Common.Priority',
+      'Microsoft.VSTS.Common.Severity',
+      'Microsoft.VSTS.Scheduling.StoryPoints',
+      'Microsoft.VSTS.TCM.ReproSteps',
+      'Microsoft.VSTS.CMMI.Symptom',
+      'System.Tags'
+    ];
+
+    const chunkSize = 200;
+    const chunkPromises = [];
+    for (let i = 0; i < workItemIds.length; i += chunkSize) {
+      const chunk = workItemIds.slice(i, i + chunkSize);
+      chunkPromises.push(
+        fetch(batchUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            ids: chunk,
+            fields: requestedFields
+          })
+        }).then(r => r.ok ? r.json() : { count: 0, value: [] })
+      );
+    }
+
+    const chunkResults = await Promise.all(chunkPromises);
+    const allFetchedItems = chunkResults.flatMap(res => res.value || []);
+
+    const fetchedStories = [];
+    const fetchedDefects = [];
+
+    for (const item of allFetchedItems) {
+      const rawType = (item.fields['System.WorkItemType'] || 'User Story').trim();
+      const typeLower = rawType.toLowerCase();
+      const isDefect = typeLower === 'bug' || 
+                       typeLower.includes('bug') || 
+                       typeLower.includes('defect') || 
+                       typeLower.includes('issue') || 
+                       typeLower.includes('incident') || 
+                       typeLower.includes('problem') || 
+                       typeLower.includes('impediment') ||
+                       typeLower.includes('ticket') ||
+                       typeLower.includes('flaw') ||
+                       typeLower.includes('error');
+      
+      const rawState = (item.fields['System.State'] || 'New').trim();
+      const rawStateLower = rawState.toLowerCase();
+
+      // Map Story Status
+      let mappedStoryStatus = 'To Do';
+      if (rawStateLower.includes('in progress') || rawStateLower.includes('active') || rawStateLower.includes('doing') || rawStateLower.includes('committed')) {
+        mappedStoryStatus = 'Dev In Progress';
+      } else if (rawStateLower.includes('qa ready') || rawStateLower.includes('ready for test') || rawStateLower.includes('resolved')) {
+        mappedStoryStatus = 'QA Ready';
+      } else if (rawStateLower.includes('qa in progress') || rawStateLower.includes('testing')) {
+        mappedStoryStatus = 'QA In Progress';
+      } else if (rawStateLower.includes('closed') || rawStateLower.includes('done') || rawStateLower.includes('completed')) {
+        mappedStoryStatus = 'Done';
+      } else if (rawStateLower.includes('blocked')) {
+        mappedStoryStatus = 'Blocked';
+      }
+
+      // Map Defect Status ('New' | 'Active' | 'Fixed' | 'Retest' | 'Closed')
+      let mappedDefectStatus = 'Active';
+      if (rawStateLower === 'new' || rawStateLower === 'proposed' || rawStateLower === 'triaged') {
+        mappedDefectStatus = 'New';
+      } else if (rawStateLower.includes('active') || rawStateLower.includes('in progress') || rawStateLower.includes('investigating') || rawStateLower.includes('approved') || rawStateLower.includes('committed')) {
+        mappedDefectStatus = 'Active';
+      } else if (rawStateLower.includes('fixed') || rawStateLower.includes('resolved') || rawStateLower.includes('ready for qa') || rawStateLower.includes('qa ready')) {
+        mappedDefectStatus = 'Fixed';
+      } else if (rawStateLower.includes('retest') || rawStateLower.includes('verified') || rawStateLower.includes('testing')) {
+        mappedDefectStatus = 'Retest';
+      } else if (rawStateLower.includes('closed') || rawStateLower.includes('done') || rawStateLower.includes('completed') || rawStateLower.includes('rejected')) {
+        mappedDefectStatus = 'Closed';
+      }
+
+      // Map Severity ('critical' | 'high' | 'medium' | 'low')
+      const rawSeverity = item.fields['Microsoft.VSTS.Common.Severity'] || item.fields['Microsoft.VSTS.Common.Priority'];
+      let mappedSeverity = 'high';
+      if (rawSeverity !== undefined && rawSeverity !== null) {
+        const sStr = String(rawSeverity).toLowerCase();
+        if (sStr.includes('1') || sStr.includes('crit') || sStr.includes('blocker')) mappedSeverity = 'critical';
+        else if (sStr.includes('2') || sStr.includes('high')) mappedSeverity = 'high';
+        else if (sStr.includes('3') || sStr.includes('med')) mappedSeverity = 'medium';
+        else if (sStr.includes('4') || sStr.includes('low')) mappedSeverity = 'low';
+      }
+
+      const assigneeObj = item.fields['System.AssignedTo'];
+      const assigneeName = typeof assigneeObj === 'object' ? (assigneeObj?.displayName || assigneeObj?.uniqueName) : (assigneeObj || 'Unassigned');
+
+      const createdByObj = item.fields['System.CreatedBy'];
+      const createdByName = typeof createdByObj === 'object' ? (createdByObj?.displayName || createdByObj?.uniqueName) : (createdByObj || '');
+
+      const reproSteps = item.fields['Microsoft.VSTS.TCM.ReproSteps'] || item.fields['Microsoft.VSTS.CMMI.Symptom'] || '';
+      const description = item.fields['System.Description'] || reproSteps || '';
+
+      const tags = item.fields['System.Tags'] ? item.fields['System.Tags'].split(';').map(t => t.trim()).filter(Boolean) : [];
+
+      if (isDefect) {
+        fetchedDefects.push({
+          id: `def-${item.id}`,
+          adoId: item.id,
+          title: item.fields['System.Title'] || `Defect ${item.id}`,
+          status: mappedDefectStatus,
+          severity: mappedSeverity,
+          areaPath: item.fields['System.AreaPath'] || '',
+          iterationPath: item.fields['System.IterationPath'] || '',
+          assigneeName,
+          createdByName,
+          description: description,
+          stepsToReproduce: reproSteps || description,
+          tags: tags,
+          environment: 'QA',
+          sourceInstance: targetInstance === 'external' ? 'external' : 'internal'
+        });
+      } else {
+        fetchedStories.push({
+          id: `story-${item.id}`,
+          adoId: item.id,
+          title: item.fields['System.Title'] || `Story ${item.id}`,
+          status: mappedStoryStatus,
+          areaPath: item.fields['System.AreaPath'] || '',
+          iterationPath: item.fields['System.IterationPath'] || '',
+          assigneeName,
+          createdByName,
+          description: description,
+          acceptanceCriteria: item.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] ? [item.fields['Microsoft.VSTS.Common.AcceptanceCriteria']] : [],
+          storyPoints: item.fields['Microsoft.VSTS.Scheduling.StoryPoints'] || 5,
+          sourceInstance: targetInstance === 'external' ? 'external' : 'internal'
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      stories: fetchedStories,
+      defects: fetchedDefects,
+      source: 'live_ado_wiql',
+      durationMs: Date.now() - startTime,
+      rawPayload: {
+        request: { org, project, areaPath, iterationPath, targetInstance, authMode: 'Bearer/Basic' },
+        wiql: {
+          query: wiqlQuery,
+          asOf: wiqlData.asOf || new Date().toISOString(),
+          workItemsCount: (wiqlData.workItems || []).length
+        },
+        batchResponse: {
+          count: allFetchedItems.length,
+          value: allFetchedItems
+        },
+        diagnosticInfo: {
+          status: '200 OK (Live Azure DevOps)',
+          totalReceived: allFetchedItems.length,
+          mappedAsStories: fetchedStories.length,
+          mappedAsDefects: fetchedDefects.length,
+          unmapped: 0,
+          sourceEndpoint: batchUrl
+        }
+      }
+    });
+  } catch (err) {
+    console.error('[ADO WorkItem Sync Error]:', err);
+    return res.json({
+      ok: false,
+      error: err.message || String(err),
+      stories: [],
+      defects: [],
+      source: 'error',
+      durationMs: Date.now() - startTime,
+      rawPayload: {
+        request: { org, project, areaPath, iterationPath, targetInstance },
+        error: { message: err.message || String(err) },
+        batchResponse: { count: 0, value: [] }
+      }
+    });
   }
 });
 

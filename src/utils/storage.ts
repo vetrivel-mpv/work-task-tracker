@@ -1,5 +1,5 @@
-import { AppState, Task, AppSettings } from '../types';
-import { toDateStr, shiftDate } from './date';
+import { AppState, AppSettings } from '../types';
+import { toDateStr } from './date';
 import {
   INITIAL_BLUEPRINT,
   INITIAL_TEAM,
@@ -13,7 +13,7 @@ import {
 } from './demoData';
 
 const STORAGE_KEY_PREFIX = 'northstar:';
-const STATE_STORAGE_KEY = `${STORAGE_KEY_PREFIX}state:v3`;
+const STATE_STORAGE_KEY = `${STORAGE_KEY_PREFIX}state:v4`;
 
 export function getFreshDemoState(): AppState {
   const todayStr = toDateStr(new Date());
@@ -25,46 +25,13 @@ export function getFreshDemoState(): AppState {
     userStories: INITIAL_STORIES,
     defects: INITIAL_DEFECTS,
     releases: INITIAL_RELEASES,
-    standup: {
-      'tm-1': {
-        yesterday: 'Finished code review on FHIR parser PR and closed architectural RFC for multi-tenant auth in Internal ADO.',
-        today: 'Pair with Elena on PostgreSQL advisory lock for slot booking; triage Mount Sinai PDF timeout.',
-        blockers: 'None.'
-      },
-      'tm-2': {
-        yesterday: 'Executed automated regression suite (56 passed, 1 failed) in Internal ADO. Logged DEF-INT-301.',
-        today: 'Validate DEF-INT-302 fix and run automated sanity suite against Sprint 24 build.',
-        blockers: 'Awaiting advisory lock deployment to QA cluster.'
-      },
-      'tm-3': {
-        yesterday: 'Implemented TOTP QR code modal & recovery key generation on provider portal.',
-        today: 'Fix DEF-INT-303 print stylesheet and assist on Mount Sinai PDF renderer investigation.',
-        blockers: 'None.'
-      },
-      'tm-5': {
-        yesterday: 'Investigated Azure Blob 403 token issue on External ADO OPS ticket OPS-9460. Deployed fix.',
-        today: 'Triage Mayo Regional SMS routing lag (OPS-9475) and coordinate carrier shortcode fallback.',
-        blockers: 'Awaiting Twilio carrier NOC confirmation on Verizon route.'
-      }
-    },
+    standup: {},
     standupHistory: {},
-    peopleReviews: [
-      {
-        id: 'rev-1',
-        memberId: 'tm-2',
-        dateStr: todayStr,
-        period: 'quarter',
-        highlights: 'Exceptional vigilance discovering the race condition in the appointment engine before staging deployment.',
-        areasOfGrowth: 'Can expand automated Cypress coverage for Firefox mobile emulators.',
-        appreciationNote: 'Maya, thank you for your relentless dedication to delivery quality and catching high-risk flaws early!',
-        author: 'Alex Rivera (Lead)',
-        createdAt: todayStr
-      }
-    ],
+    peopleReviews: [],
     blueprintSchedule: INITIAL_BLUEPRINT,
     settings: INITIAL_SETTINGS,
     activeView: 'board',
-    selectedReleaseId: INITIAL_RELEASES[0]?.id || null,
+    selectedReleaseId: null,
     dualAdoConfig: INITIAL_DUAL_ADO_CONFIG
   };
 }
@@ -72,37 +39,27 @@ export function getFreshDemoState(): AppState {
 export function loadStoredState(): AppState {
   const todayStr = toDateStr(new Date());
   try {
-    const raw = localStorage.getItem(STATE_STORAGE_KEY) || localStorage.getItem('northstar:state:v2');
+    const raw = localStorage.getItem(STATE_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.tasks)) {
-        // Handle migration to dual ADO config
-        const dualAdoConfig = parsed.dualAdoConfig || {
-          ...INITIAL_DUAL_ADO_CONFIG,
-          internal: {
-            ...INITIAL_DUAL_ADO_CONFIG.internal,
-            organization: parsed.adoConfig?.organization || INITIAL_DUAL_ADO_CONFIG.internal.organization,
-            project: parsed.adoConfig?.project || INITIAL_DUAL_ADO_CONFIG.internal.project,
-            areaPath: parsed.adoConfig?.areaPath || INITIAL_DUAL_ADO_CONFIG.internal.areaPath,
-            iterationPath: parsed.adoConfig?.iterationPath || INITIAL_DUAL_ADO_CONFIG.internal.iterationPath
-          }
-        };
+      if (parsed && typeof parsed === 'object') {
+        const dualAdoConfig = parsed.dualAdoConfig || INITIAL_DUAL_ADO_CONFIG;
 
         const state: AppState = {
           dateStr: parsed.dateStr || todayStr,
-          tasks: parsed.tasks?.length > 0 ? parsed.tasks : getInitialTasks(todayStr),
-          team: parsed.team?.length > 0 ? parsed.team : INITIAL_TEAM,
-          groups: parsed.groups?.length > 0 ? parsed.groups : INITIAL_GROUPS,
-          userStories: parsed.userStories?.length > 0 ? parsed.userStories : INITIAL_STORIES,
-          defects: parsed.defects?.length > 0 ? parsed.defects : INITIAL_DEFECTS,
-          releases: parsed.releases?.length > 0 ? parsed.releases : INITIAL_RELEASES,
+          tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+          team: Array.isArray(parsed.team) ? parsed.team : [],
+          groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+          userStories: Array.isArray(parsed.userStories) ? parsed.userStories : [],
+          defects: Array.isArray(parsed.defects) ? parsed.defects : [],
+          releases: Array.isArray(parsed.releases) ? parsed.releases : [],
           standup: parsed.standup || {},
           standupHistory: parsed.standupHistory || {},
-          peopleReviews: parsed.peopleReviews || [],
-          blueprintSchedule: parsed.blueprintSchedule || INITIAL_BLUEPRINT,
+          peopleReviews: Array.isArray(parsed.peopleReviews) ? parsed.peopleReviews : [],
+          blueprintSchedule: Array.isArray(parsed.blueprintSchedule) ? parsed.blueprintSchedule : [],
           settings: { ...INITIAL_SETTINGS, ...(parsed.settings || {}) },
           activeView: parsed.activeView || 'board',
-          selectedReleaseId: parsed.selectedReleaseId || INITIAL_RELEASES[0]?.id || null,
+          selectedReleaseId: parsed.selectedReleaseId || null,
           dualAdoConfig
         };
 
@@ -133,7 +90,7 @@ export function resetToDemoState(): AppState {
 export function exportBackupJSON(state: AppState): void {
   const exportPayload = {
     app: 'Northstar Delivery Hub',
-    version: '3.0.0',
+    version: '4.0.0',
     exportedAt: new Date().toISOString(),
     data: state
   };
@@ -153,21 +110,21 @@ export function importBackupJSON(jsonString: string): AppState | null {
   try {
     const parsed = JSON.parse(jsonString);
     const data = parsed.data || parsed;
-    if (!data || !Array.isArray(data.tasks)) {
+    if (!data || typeof data !== 'object') {
       throw new Error('Invalid Northstar Delivery backup structure.');
     }
     const cleanState: AppState = {
       dateStr: data.dateStr || toDateStr(new Date()),
       tasks: Array.isArray(data.tasks) ? data.tasks : [],
-      team: Array.isArray(data.team) ? data.team : INITIAL_TEAM,
-      groups: Array.isArray(data.groups) ? data.groups : INITIAL_GROUPS,
-      userStories: Array.isArray(data.userStories) ? data.userStories : INITIAL_STORIES,
-      defects: Array.isArray(data.defects) ? data.defects : INITIAL_DEFECTS,
-      releases: Array.isArray(data.releases) ? data.releases : INITIAL_RELEASES,
+      team: Array.isArray(data.team) ? data.team : [],
+      groups: Array.isArray(data.groups) ? data.groups : [],
+      userStories: Array.isArray(data.userStories) ? data.userStories : [],
+      defects: Array.isArray(data.defects) ? data.defects : [],
+      releases: Array.isArray(data.releases) ? data.releases : [],
       standup: data.standup || {},
       standupHistory: data.standupHistory || {},
       peopleReviews: Array.isArray(data.peopleReviews) ? data.peopleReviews : [],
-      blueprintSchedule: Array.isArray(data.blueprintSchedule) ? data.blueprintSchedule : INITIAL_BLUEPRINT,
+      blueprintSchedule: Array.isArray(data.blueprintSchedule) ? data.blueprintSchedule : [],
       settings: {
         ...INITIAL_SETTINGS,
         ...(data.settings || {})
@@ -183,4 +140,3 @@ export function importBackupJSON(jsonString: string): AppState | null {
     return null;
   }
 }
-

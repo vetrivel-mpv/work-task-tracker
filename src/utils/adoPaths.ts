@@ -14,14 +14,9 @@ export interface IterationPathInfo {
   displayName: string;
 }
 
-export const DEFAULT_INTERNAL_AREA_PATHS = [
-  'CareFlow-Core\\EHR-Connect',
-  'CareFlow-Core\\Clinical-Portal',
-  'CareFlow-Core\\Billing-Engine',
-  'CareFlow-Core\\Security-Platform',
-  'CareFlow-Ops\\Customer-Escalations',
-  'CareFlow-Ops\\Infra-Tickets'
-];
+export const DEFAULT_INTERNAL_AREA_PATHS: string[] = [];
+
+export const KNOWN_PROJECT_ITERATIONS: Record<string, Array<{ name: string; path: string; releaseNumber: string; startDate: string; targetDate: string }>> = {};
 
 /**
  * Returns all distinct Area Paths configured or discovered across releases, stories, defects and tasks.
@@ -32,7 +27,7 @@ export function getAllAreaPaths(
   defects: Defect[] = [],
   tasks: Task[] = []
 ): string[] {
-  const set = new Set<string>(DEFAULT_INTERNAL_AREA_PATHS);
+  const set = new Set<string>();
 
   releases.forEach(r => {
     if (r.areaPath) set.add(r.areaPath);
@@ -129,6 +124,28 @@ export function getIterationPathsForArea(
         });
       }
     });
+
+    // Check project definitions if nothing was registered yet
+    const projectKey = Object.keys(KNOWN_PROJECT_ITERATIONS).find(k => normalizedFilter.startsWith(k) || normalizedFilter.includes(k));
+    if (projectKey && KNOWN_PROJECT_ITERATIONS[projectKey]) {
+      KNOWN_PROJECT_ITERATIONS[projectKey].forEach(known => {
+        if (processedIterationSet.has(known.path)) return;
+        processedIterationSet.add(known.path);
+        result.push({
+          iterationPath: known.path,
+          releaseName: known.name,
+          releaseNumber: known.releaseNumber,
+          releaseId: `rel-${known.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+          areaPath: areaPathFilter,
+          status: 'Active QA',
+          targetDate: known.targetDate,
+          userStoryCount: userStories.filter(st => st.iterationPath === known.path).length,
+          defectCount: defects.filter(df => df.iterationPath === known.path).length,
+          openBlockerCount: 0,
+          displayName: `${known.name} (${known.releaseNumber})`
+        });
+      });
+    }
   }
 
   return result;

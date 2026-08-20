@@ -237,14 +237,24 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
     if (filterAreaPath) {
       const dArea = (d.areaPath || releases.find(r => r.id === d.releaseId)?.areaPath || '').toLowerCase();
       const targetArea = filterAreaPath.toLowerCase();
-      const matchesAreaDirectly = dArea === targetArea || dArea.includes(targetArea);
+      const matchesAreaDirectly = dArea === targetArea || dArea.includes(targetArea) || targetArea.includes(dArea);
       const matchesReturnedIteration = returnedIterationPaths.some(
-        iter => iter.releaseId === d.releaseId
+        iter => iter.releaseId === d.releaseId || iter.iterationPath === d.iterationPath
       );
       if (!matchesAreaDirectly && !matchesReturnedIteration) return false;
     }
 
-    if (filterRelease && d.releaseId !== filterRelease) return false;
+    if (filterRelease) {
+      const matchesRelId = d.releaseId === filterRelease;
+      const matchesIterPath = d.iterationPath === filterRelease;
+      const matchedRelease = releases.find(r => r.id === filterRelease);
+      const matchesReleaseIteration = matchedRelease && (
+        matchedRelease.iterationPath === d.iterationPath ||
+        matchedRelease.name === d.iterationPath ||
+        (d.iterationPath && (matchedRelease.name.includes(d.iterationPath) || d.iterationPath.includes(matchedRelease.name)))
+      );
+      if (!matchesRelId && !matchesIterPath && !matchesReleaseIteration) return false;
+    }
     if (filterSeverity && d.severity !== filterSeverity) return false;
     if (filterStatus && d.status !== filterStatus) return false;
     if (search.trim()) {

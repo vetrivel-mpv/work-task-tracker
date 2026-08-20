@@ -429,14 +429,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <button
             type="button"
             onClick={() => {
-              if (window.confirm('Reset all tasks, stories, and defects to original sample workspace data?')) {
+              if (window.confirm('Clear all tasks, user stories, defects, and sprint records to start with a clean workspace?')) {
                 onResetData();
               }
             }}
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-[var(--critical)] bg-[var(--critical-bg)] hover:bg-[var(--critical-bg)] border border-[var(--critical-border)] rounded-xl shadow-xs transition-all ml-auto cursor-pointer"
           >
             <RotateCcw size={14} />
-            <span>Reset to Demo Data</span>
+            <span>Clear Workspace</span>
           </button>
         </div>
       </div>

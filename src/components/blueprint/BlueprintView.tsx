@@ -122,7 +122,23 @@ export const BlueprintView: React.FC<BlueprintViewProps> = ({
 
       {/* Blueprint Timeline */}
       <div className="flex flex-col gap-3">
-        {sortedSchedule.map((item) => {
+        {sortedSchedule.length === 0 ? (
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-12 text-center flex flex-col items-center justify-center">
+            <CalendarClock size={36} className="text-[var(--text-muted)] mb-3 opacity-60" />
+            <h3 className="text-sm font-bold text-[var(--text-primary)]">No Blueprint Time Blocks Configured</h3>
+            <p className="text-xs text-[var(--text-secondary)] mt-1 max-w-sm">
+              Add standard recurring cadence blocks (e.g. Daily Standup, QA Regression, Blocker Triage) to populate your delivery board on demand.
+            </p>
+            <button
+              onClick={openAddModal}
+              className="mt-4 inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl transition-all shadow-xs cursor-pointer"
+            >
+              <Plus size={14} />
+              <span>Add First Block</span>
+            </button>
+          </div>
+        ) : (
+          sortedSchedule.map((item) => {
           const priorityColor = 
             item.priority === 'high' ? 'text-[var(--critical)] bg-[var(--critical-bg)] border-[var(--critical-border)]' :
             item.priority === 'medium' ? 'text-[var(--medium)] bg-[var(--medium-bg)] border-[var(--medium-border)]' :
@@ -172,7 +188,7 @@ export const BlueprintView: React.FC<BlueprintViewProps> = ({
               </div>
             </div>
           );
-        })}
+        }))}
       </div>
 
       {/* Edit / Add Modal */}

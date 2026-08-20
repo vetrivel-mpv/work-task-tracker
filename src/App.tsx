@@ -286,17 +286,76 @@ export const App: React.FC = () => {
 
   // Release Operations
   const handleAddRelease = (release: Release) => {
-    setState(prev => ({
-      ...prev,
-      releases: [release, ...prev.releases]
-    }));
+    if (!release) {
+      console.error('[Release Validation] Attempted to add an invalid or undefined release object:', release);
+      return;
+    }
+
+    setState(prev => {
+      // 1. Ensure displayable name/title
+      const rawName = release.name ? release.name.trim() : '';
+      const fallbackName = (release.releaseNumber?.trim() || release.iterationPath?.trim() || 'Unnamed Release');
+      const validName = rawName || fallbackName;
+
+      if (!rawName) {
+        console.warn(`[Release Validation] Release was missing a displayable name. Using fallback name: "${validName}"`, release);
+      }
+
+      // 2. Ensure unique and valid ID
+      let validId = (release.id && release.id.trim()) ? release.id.trim() : generateId('rel');
+      const idExists = prev.releases.some(r => r.id === validId);
+      if (idExists) {
+        const uniqueId = `${validId}_${Date.now()}`;
+        console.warn(`[Release Validation] Duplicate release ID "${validId}" detected. Generated new unique ID: "${uniqueId}" for release "${validName}"`);
+        validId = uniqueId;
+      }
+
+      // 3. Construct clean, displayable release object
+      const sanitizedRelease: Release = {
+        ...release,
+        id: validId,
+        name: validName,
+        releaseNumber: release.releaseNumber?.trim() || undefined,
+        areaPath: release.areaPath?.trim() || undefined,
+        iterationPath: release.iterationPath?.trim() || undefined,
+        targetDate: release.targetDate || toDateStr(new Date()),
+        status: release.status || 'Planning',
+        createdAt: release.createdAt || toDateStr(new Date())
+      };
+
+      console.info(
+        `[Release Added] Successfully registered release "${sanitizedRelease.name}" (ID: "${sanitizedRelease.id}"). ` +
+        `Total releases available in dropdowns: ${prev.releases.length + 1}`
+      );
+
+      return {
+        ...prev,
+        releases: [sanitizedRelease, ...prev.releases]
+      };
+    });
   };
 
   const handleUpdateRelease = (updatedRelease: Release) => {
-    setState(prev => ({
-      ...prev,
-      releases: prev.releases.map(r => r.id === updatedRelease.id ? updatedRelease : r)
-    }));
+    if (!updatedRelease || !updatedRelease.id) {
+      console.warn('[Release Validation] Cannot update release without a valid ID:', updatedRelease);
+      return;
+    }
+
+    setState(prev => {
+      const cleanName = (updatedRelease.name?.trim() || updatedRelease.releaseNumber?.trim() || updatedRelease.iterationPath?.trim() || 'Unnamed Release');
+      const sanitizedRelease: Release = {
+        ...updatedRelease,
+        name: cleanName,
+        targetDate: updatedRelease.targetDate || toDateStr(new Date()),
+        status: updatedRelease.status || 'Planning',
+        createdAt: updatedRelease.createdAt || toDateStr(new Date())
+      };
+
+      return {
+        ...prev,
+        releases: prev.releases.map(r => r.id === sanitizedRelease.id ? sanitizedRelease : r)
+      };
+    });
   };
 
   const handleDeleteRelease = (releaseId: string) => {
@@ -361,12 +420,94 @@ export const App: React.FC = () => {
     }));
   };
 
-  // ADO Dual Config
+  // ADO Dual Config & Live Synchronization
   const handleSaveDualAdoConfig = (config: DualAdoConfig) => {
     setState(prev => ({
       ...prev,
       dualAdoConfig: config
     }));
+  };
+
+  const handleSyncAdoData = (synced: {
+    stories: UserStory[];
+    defects: Defect[];
+    releases?: Release[];
+    teamMembers?: Array<{ name: string; role?: string }>;
+    tasks?: Task[];
+    selectedReleaseId?: string;
+  }) => {
+    setState(prev => {
+      // 1. Merge Stories: update existing or prepend new
+      const storyMap = new Map(prev.userStories.map(s => [s.adoId ? `ado-${s.adoId}` : s.id, s]));
+      synced.stories.forEach(s => {
+        storyMap.set(s.adoId ? `ado-${s.adoId}` : s.id, s);
+      });
+      const updatedStories = Array.from(storyMap.values());
+
+      // 2. Merge Defects: update existing or prepend new
+      const defectMap = new Map(prev.defects.map(d => [d.adoId ? `ado-${d.adoId}` : d.id, d]));
+      synced.defects.forEach(d => {
+        defectMap.set(d.adoId ? `ado-${d.adoId}` : d.id, d);
+      });
+      const updatedDefects = Array.from(defectMap.values());
+
+      // 3. Merge Releases
+      const releaseMap = new Map(prev.releases.map(r => [r.id, r]));
+      if (synced.releases) {
+        synced.releases.forEach(r => {
+          releaseMap.set(r.id, r);
+        });
+      }
+      const updatedReleases = Array.from(releaseMap.values());
+
+      // 4. Merge Team Members
+      const existingMemberNames = new Set(prev.team.map(m => m.name.toLowerCase()));
+      const newMembers = [...prev.team];
+      const avatarColors = ['#0284c7', '#7c3aed', '#059669', '#d97706', '#dc2626', '#4f46e5'];
+
+      if (synced.teamMembers) {
+        synced.teamMembers.forEach((tm: any, idx) => {
+          if (tm.name && !existingMemberNames.has(tm.name.toLowerCase())) {
+            existingMemberNames.add(tm.name.toLowerCase());
+            const emailSlug = tm.name.toLowerCase().replace(/[^a-z0-9]/g, '.');
+            newMembers.push({
+              id: `member-${tm.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+              name: tm.name,
+              role: tm.role || (tm.source === 'created_by' ? 'Product / ADO Creator' : 'Software Engineer'),
+              email: `${emailSlug}@company.com`,
+              avatarColor: avatarColors[(newMembers.length + idx) % avatarColors.length],
+              groupIds: [],
+              active: true,
+              isMyTeam: false,
+              adoSource: tm.source || 'assigned_to'
+            });
+          }
+        });
+      }
+
+      // 5. Merge Tasks (Dev Backlog)
+      const taskMap = new Map(prev.tasks.map(t => [t.id, t]));
+      if (synced.tasks) {
+        synced.tasks.forEach(t => {
+          taskMap.set(t.id, t);
+        });
+      }
+      const updatedTasks = Array.from(taskMap.values());
+
+      // 6. Selected Release
+      const targetReleaseId = synced.selectedReleaseId || 
+        (synced.releases && synced.releases.length > 0 ? synced.releases[0].id : prev.selectedReleaseId);
+
+      return {
+        ...prev,
+        userStories: updatedStories,
+        defects: updatedDefects,
+        releases: updatedReleases,
+        team: newMembers,
+        tasks: updatedTasks,
+        selectedReleaseId: targetReleaseId
+      };
+    });
   };
 
   // Reset
@@ -558,7 +699,10 @@ export const App: React.FC = () => {
         defects={state.defects}
         releases={state.releases}
         tasks={state.tasks}
+        team={state.team}
         onSaveConfig={handleSaveDualAdoConfig}
+        onAddRelease={handleAddRelease}
+        onSyncData={handleSyncAdoData}
       />
 
       <EmailBroadcastModal

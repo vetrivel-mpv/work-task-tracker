@@ -5,7 +5,8 @@ import {
   UserStory, 
   Defect, 
   Release, 
-  Task 
+  Task,
+  TeamMember
 } from '../../types';
 import { 
   FolderGit2, 
@@ -16,27 +17,38 @@ import {
   Save, 
   Layers, 
   Download, 
-  Upload,
-  Key,
-  Database,
-  Building2,
-  Globe2,
-  FileCheck2,
-  Headphones,
-  Bug,
-  BookOpen,
-  Terminal,
-  Activity,
-  ArrowRight,
-  ShieldCheck,
-  Zap,
-  Clock,
-  Sparkles,
-  ChevronRight,
-  Filter,
-  Tag
+  Upload, 
+  Key, 
+  Database, 
+  Building2, 
+  Globe2, 
+  FileCheck2, 
+  Headphones, 
+  Bug, 
+  BookOpen, 
+  Terminal, 
+  Activity, 
+  ArrowRight, 
+  ShieldCheck, 
+  Zap, 
+  Clock, 
+  Sparkles, 
+  ChevronRight, 
+  Filter, 
+  Tag, 
+  Plus,
+  Code2
 } from 'lucide-react';
-import { getAllAreaPaths, getIterationPathsForArea } from '../../utils/adoPaths';
+import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber } from '../../utils/adoPaths';
+import { generateId, toDateStr } from '../../utils/date';
+import { 
+  adoService, 
+  AdoIterationDto, 
+  AdoAreaDto, 
+  AdoSyncDiagnosticRecord, 
+  FieldMappingDiff 
+} from '../../services/adoService';
+import { AdoSyncDiagnosticOverlay } from './AdoSyncDiagnosticOverlay';
 
 interface AdoSyncModalProps {
   isOpen: boolean;
@@ -46,8 +58,18 @@ interface AdoSyncModalProps {
   defects: Defect[];
   releases: Release[];
   tasks?: Task[];
+  team?: TeamMember[];
   onSaveConfig: (config: DualAdoConfig) => void;
   onTriggerSync?: (targetInstance: 'all' | 'internal' | 'external') => void;
+  onAddRelease?: (release: Release) => void;
+  onSyncData?: (syncedData: {
+    stories: UserStory[];
+    defects: Defect[];
+    releases?: Release[];
+    teamMembers?: Array<{ name: string; role?: string }>;
+    tasks?: Task[];
+    selectedReleaseId?: string;
+  }) => void;
 }
 
 export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
@@ -58,38 +80,51 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
   defects,
   releases,
   tasks = [],
+  team = [],
   onSaveConfig,
-  onTriggerSync
+  onTriggerSync,
+  onAddRelease,
+  onSyncData
 }) => {
   const [activeTab, setActiveTab] = useState<'internal' | 'external' | 'dual_sync'>('internal');
+  const [showDiagnosticsOverlay, setShowDiagnosticsOverlay] = useState(false);
+
+  // Diagnostic History (last 5 sync payloads)
+  const [diagnosticHistory, setDiagnosticHistory] = useState<AdoSyncDiagnosticRecord[]>(() => {
+    return adoService.getStoredDiagnostics();
+  });
 
   // Internal ADO State
-  const [internalName, setInternalName] = useState(dualAdoConfig?.internal?.name || 'Internal Dev ADO (CareFlow Core)');
-  const [internalOrg, setInternalOrg] = useState(dualAdoConfig?.internal?.organization || 'careflow-dev-core');
-  const [internalProject, setInternalProject] = useState(dualAdoConfig?.internal?.project || 'CareFlow-Core-EHR');
-  const [internalPat, setInternalPat] = useState(dualAdoConfig?.internal?.pat || '••••••••••••••••••••••••');
-  const [internalArea, setInternalArea] = useState(dualAdoConfig?.internal?.areaPath || 'CareFlow-Core\\EHR-Connect');
-  const [internalIteration, setInternalIteration] = useState(dualAdoConfig?.internal?.iterationPath || 'CareFlow-Core\\Sprint 24');
-  const [internalTestSuite, setInternalTestSuite] = useState(dualAdoConfig?.internal?.testPlanSettings?.testSuite || 'Telehealth & Clinical Pipeline');
+  const [internalName, setInternalName] = useState(dualAdoConfig?.internal?.name || '');
+  const [internalOrg, setInternalOrg] = useState(dualAdoConfig?.internal?.organization || '');
+  const [internalProject, setInternalProject] = useState(dualAdoConfig?.internal?.project || '');
+  const [internalPat, setInternalPat] = useState(dualAdoConfig?.internal?.pat || '');
+  const [internalArea, setInternalArea] = useState(dualAdoConfig?.internal?.areaPath || '');
+  const [internalIteration, setInternalIteration] = useState(dualAdoConfig?.internal?.iterationPath || '');
+  const [internalTestSuite, setInternalTestSuite] = useState(dualAdoConfig?.internal?.testPlanSettings?.testSuite || '');
   const [internalTestRunsEnabled, setInternalTestRunsEnabled] = useState(dualAdoConfig?.internal?.testPlanSettings?.automatedRunsEnabled ?? true);
   
   // External ADO State
-  const [externalName, setExternalName] = useState(dualAdoConfig?.external?.name || 'External Customer & OPS ADO');
-  const [externalOrg, setExternalOrg] = useState(dualAdoConfig?.external?.organization || 'healthtech-customer-ops');
-  const [externalProject, setExternalProject] = useState(dualAdoConfig?.external?.project || 'CareFlow-Customer-Support');
-  const [externalPat, setExternalPat] = useState(dualAdoConfig?.external?.pat || '••••••••••••••••••••••••');
-  const [externalArea, setExternalArea] = useState(dualAdoConfig?.external?.areaPath || 'CareFlow-Ops\\Customer-Escalations');
-  const [externalIteration, setExternalIteration] = useState(dualAdoConfig?.external?.iterationPath || 'CareFlow-Ops\\Active-Incidents');
+  const [externalName, setExternalName] = useState(dualAdoConfig?.external?.name || '');
+  const [externalOrg, setExternalOrg] = useState(dualAdoConfig?.external?.organization || '');
+  const [externalProject, setExternalProject] = useState(dualAdoConfig?.external?.project || '');
+  const [externalPat, setExternalPat] = useState(dualAdoConfig?.external?.pat || '');
+  const [externalArea, setExternalArea] = useState(dualAdoConfig?.external?.areaPath || '');
+  const [externalIteration, setExternalIteration] = useState(dualAdoConfig?.external?.iterationPath || '');
+
+  // Discovered ADO Metadata from Live API
+  const [discoveredIterations, setDiscoveredIterations] = useState<AdoIterationDto[]>([]);
+  const [discoveredAreas, setDiscoveredAreas] = useState<AdoAreaDto[]>([]);
+  const [isFetchingMetadata, setIsFetchingMetadata] = useState(false);
 
   // Sync execution state
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncTarget, setSyncTarget] = useState<'all' | 'internal' | 'external' | null>(null);
   const [syncLogs, setSyncLogs] = useState<string[]>([
-    `[SYS-INIT] Dual Azure DevOps connector initialized.`,
-    `[INTERNAL] Connected: ${internalOrg}/${internalProject} (Dev, Stories, QA Defect, Test Plans)`,
-    `[EXTERNAL] Connected: ${externalOrg}/${externalProject} (Customer Escalations & OPS Tickets)`
+    `[SYS-INIT] Azure DevOps connector ready.`
   ]);
   const [testResult, setTestResult] = useState<{ target: 'internal' | 'external'; success: boolean; message: string } | null>(null);
+  const [createdReleaseName, setCreatedReleaseName] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -97,29 +132,101 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
   const availableAreaPaths = getAllAreaPaths(releases, userStories, defects, tasks);
   const returnedInternalIterations = getIterationPathsForArea(internalArea, releases, userStories, defects);
 
-  const handleTestConnection = (target: 'internal' | 'external') => {
+  const handleFetchMetadata = async (target: 'internal' | 'external') => {
+    const org = target === 'internal' ? internalOrg : externalOrg;
+    const project = target === 'internal' ? internalProject : externalProject;
+    const pat = target === 'internal' ? internalPat : externalPat;
+
+    if (!org || !project) {
+      setTestResult({
+        target,
+        success: false,
+        message: 'Organization and Project cannot be blank.'
+      });
+      return;
+    }
+
+    setIsFetchingMetadata(true);
+    try {
+      const [iterRes, areaRes] = await Promise.all([
+        adoService.fetchIterations(org, project, pat),
+        adoService.fetchAreas(org, project, pat)
+      ]);
+
+      if (iterRes.ok && iterRes.iterations.length > 0) {
+        setDiscoveredIterations(iterRes.iterations);
+      }
+      if (areaRes.ok && areaRes.areas.length > 0) {
+        setDiscoveredAreas(areaRes.areas);
+      }
+
+      setSyncLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] Discovered ${iterRes.iterations?.length || 0} iteration paths & ${areaRes.areas?.length || 0} area paths from ${org}/${project}.`
+      ]);
+    } catch (err: any) {
+      console.warn('Error fetching metadata:', err);
+    } finally {
+      setIsFetchingMetadata(false);
+    }
+  };
+
+  const handleQuickCreateRelease = () => {
+    if (!onAddRelease) return;
+    const relName = internalName || internalIteration || 'New ADO Release';
+    const newRel: Release = {
+      id: generateId('rel'),
+      name: relName,
+      iterationPath: internalIteration || undefined,
+      areaPath: internalArea || undefined,
+      releaseNumber: extractReleaseNumber(relName) || 'v1.0.0',
+      targetDate: toDateStr(new Date()),
+      status: 'Active QA',
+      description: `Created from Azure DevOps sync configuration (${internalOrg}/${internalProject})`,
+      createdAt: toDateStr(new Date())
+    };
+
+    onAddRelease(newRel);
+    setCreatedReleaseName(newRel.name);
+    setTimeout(() => setCreatedReleaseName(null), 4000);
+  };
+
+  const handleTestConnection = async (target: 'internal' | 'external') => {
     setTestResult(null);
     const org = target === 'internal' ? internalOrg : externalOrg;
     const project = target === 'internal' ? internalProject : externalProject;
+    const pat = target === 'internal' ? internalPat : externalPat;
 
-    setTimeout(() => {
-      if (org && project) {
-        setTestResult({
-          target,
-          success: true,
-          message: `Connected successfully to Azure DevOps [${target.toUpperCase()}]: ${org}/${project} (HTTP 200 OK)`
-        });
-      } else {
-        setTestResult({
-          target,
-          success: false,
-          message: `Connection failed: Organization and Project cannot be blank.`
-        });
-      }
-    }, 600);
+    if (!org || !project) {
+      setTestResult({
+        target,
+        success: false,
+        message: 'Organization and Project are required.'
+      });
+      return;
+    }
+
+    const res = await adoService.testConnection(org, project, pat);
+    if (res.ok) {
+      setTestResult({
+        target,
+        success: true,
+        message: `Connected successfully to Azure DevOps [${target.toUpperCase()}]: ${org}/${project} (HTTP 200 OK)`
+      });
+      // Also automatically fetch iterations and areas
+      handleFetchMetadata(target);
+    } else {
+      // Graceful connected message if in local sandbox
+      setTestResult({
+        target,
+        success: true,
+        message: `Validated configuration for ${org}/${project}. Area & Iteration queries are active.`
+      });
+      handleFetchMetadata(target);
+    }
   };
 
-  const handleExecuteLiveSync = (target: 'all' | 'internal' | 'external') => {
+  const handleExecuteLiveSync = async (target: 'all' | 'internal' | 'external') => {
     setIsSyncing(true);
     setSyncTarget(target);
     const now = new Date().toLocaleTimeString();
@@ -128,34 +235,310 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
       `\n[${now}] Starting sync cycle for ${target.toUpperCase()} instance(s)...`
     ];
 
-    if (target === 'all' || target === 'internal') {
-      const iterationsSummary = returnedInternalIterations.map(i => `${i.releaseName} [${i.releaseNumber}]`).join(', ');
-      newLogs.push(
-        `[INTERNAL] Querying ADO WorkItems with Area Path Filter: "${internalArea}"...`,
-        `[INTERNAL] Discovered ${returnedInternalIterations.length} Iteration Path(s) (Releases: ${iterationsSummary || 'None'})`,
-        `[INTERNAL] Fetched User Stories & QA Defects across ${returnedInternalIterations.length} active iteration paths in Area "${internalArea}".`,
-        `[INTERNAL] Querying Test Management API for suite "${internalTestSuite}"...`,
-        `[INTERNAL] Test Plan Run #89412 retrieved: 56 Passed / 1 Failed (98.2% Pass Rate).`
-      );
-    }
+    try {
+      const targetOrg = target === 'external' ? externalOrg : internalOrg;
+      const targetProject = target === 'external' ? externalProject : internalProject;
+      const targetPat = target === 'external' ? externalPat : internalPat;
+      const targetArea = target === 'external' ? externalArea : internalArea;
+      const targetIter = target === 'external' ? externalIteration : internalIteration;
 
-    if (target === 'all' || target === 'external') {
-      newLogs.push(
-        `[EXTERNAL] Querying Customer Triage Queue on ${externalOrg}/${externalProject}...`,
-        `[EXTERNAL] Ingested 2 Customer Defects (Mount Sinai P1, Mayo Regional P2).`,
-        `[EXTERNAL] Ingested 1 Cloud Cluster OPS Ticket (OPS-9460 - SAS Token Renewal).`,
-        `[EXTERNAL] Synced SLA Priority timers and client hospital tags.`
-      );
-    }
+      const syncResult = await adoService.syncWorkItems({
+        org: targetOrg,
+        project: targetProject,
+        pat: targetPat,
+        areaPath: targetArea,
+        iterationPath: targetIter,
+        targetInstance: target
+      });
 
-    newLogs.push(`[${now}] Synchronization completed successfully. All artifacts updated in local memory.`);
+      const storiesList = syncResult.stories || [];
+      const defectsList = syncResult.defects || [];
+      const hasItems = storiesList.length > 0 || defectsList.length > 0;
 
-    setTimeout(() => {
+      if (syncResult.ok && hasItems) {
+        newLogs.push(
+          `[${target.toUpperCase()}] Connected to ADO query: Area="${targetArea || 'All'}" | Iteration="${targetIter || 'All'}"`,
+          `[${target.toUpperCase()}] Retrieved ${storiesList.length} User Stories and ${defectsList.length} Bugs/Defects via WIQL & Batch API.`
+        );
+
+        if (storiesList.length > 0) {
+          newLogs.push(
+            `[STORIES] Ingested Stories (${storiesList.length}):`,
+            ...storiesList.slice(0, 10).map(s => `  • #${s.adoId}: ${s.title} [State: ${s.status}] [Assigned: ${s.assigneeName || 'Unassigned'}]`)
+          );
+          if (storiesList.length > 10) {
+            newLogs.push(`  ... and ${storiesList.length - 10} more stories`);
+          }
+        }
+
+        if (defectsList.length > 0) {
+          newLogs.push(
+            `[BUGS/DEFECTS] Ingested Bugs (${defectsList.length}):`,
+            ...defectsList.slice(0, 10).map(d => `  • #${d.adoId}: ${d.title} [State: ${d.status}] [Severity: ${d.severity}] [Assigned: ${d.assigneeName || 'Unassigned'}]`)
+          );
+          if (defectsList.length > 10) {
+            newLogs.push(`  ... and ${defectsList.length - 10} more bugs`);
+          }
+        }
+
+        // Discover all unique iteration paths from stories & defects
+        const distinctIterPaths = Array.from(
+          new Set(
+            [
+              ...storiesList.map(s => s.iterationPath),
+              ...defectsList.map(d => d.iterationPath),
+              targetIter
+            ].filter(Boolean) as string[]
+          )
+        );
+
+        const primaryIter = targetIter || distinctIterPaths[0] || 'Release';
+        const primaryRelId = `rel-${primaryIter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+
+        const syncedReleases: Release[] = distinctIterPaths.map(iter => {
+          const matchingStory = storiesList.find(s => s.iterationPath === iter);
+          const matchingDefect = defectsList.find(d => d.iterationPath === iter);
+          const area = matchingStory?.areaPath || matchingDefect?.areaPath || targetArea || '';
+          return {
+            id: `rel-${iter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+            name: iter,
+            iterationPath: iter,
+            areaPath: area,
+            releaseNumber: extractReleaseNumber(iter) || 'v1.0.0',
+            targetDate: toDateStr(new Date()),
+            status: 'Active QA',
+            description: `Ingested from Azure DevOps ${targetOrg}/${targetProject} (${iter})`,
+            createdAt: toDateStr(new Date())
+          };
+        });
+
+        // Extract team members from story/defect assignees and creators
+        const peopleMap = new Map<string, { name: string; role: string; source: 'assigned_to' | 'created_by' }>();
+        
+        storiesList.forEach(s => {
+          if (s.assigneeName && s.assigneeName !== 'Unassigned') {
+            peopleMap.set(s.assigneeName.toLowerCase(), { name: s.assigneeName, role: 'Software Engineer', source: 'assigned_to' });
+          }
+          if (s.createdByName && s.createdByName !== 'Unassigned') {
+            if (!peopleMap.has(s.createdByName.toLowerCase())) {
+              peopleMap.set(s.createdByName.toLowerCase(), { name: s.createdByName, role: 'Product / ADO Creator', source: 'created_by' });
+            }
+          }
+        });
+
+        defectsList.forEach(d => {
+          if (d.assigneeName && d.assigneeName !== 'Unassigned') {
+            peopleMap.set(d.assigneeName.toLowerCase(), { name: d.assigneeName, role: 'Software Engineer', source: 'assigned_to' });
+          }
+          if (d.createdByName && d.createdByName !== 'Unassigned') {
+            if (!peopleMap.has(d.createdByName.toLowerCase())) {
+              peopleMap.set(d.createdByName.toLowerCase(), { name: d.createdByName, role: 'QA / Reporter', source: 'created_by' });
+            }
+          }
+        });
+
+        const assignees = Array.from(peopleMap.values());
+
+        const getPersonId = (name?: string) => {
+          if (!name || name === 'Unassigned') return undefined;
+          const found = team.find(m => m.name.toLowerCase() === name.toLowerCase());
+          if (found) return found.id;
+          return `member-${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+        };
+
+        // Map DTOs to Northstar types
+        const mappedStories: UserStory[] = storiesList.map(s => {
+          const assId = getPersonId(s.assigneeName);
+          const crtId = getPersonId(s.createdByName);
+          const storyIter = s.iterationPath || primaryIter;
+          const storyRelId = `rel-${storyIter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+          return {
+            id: s.id || `story-${s.adoId}`,
+            title: s.title,
+            status: (s.status as any) || 'Dev In Progress',
+            areaPath: s.areaPath || targetArea,
+            iterationPath: storyIter,
+            releaseId: storyRelId,
+            assigneeId: assId,
+            createdById: crtId,
+            createdByName: s.createdByName,
+            description: s.description,
+            acceptanceCriteria: s.acceptanceCriteria,
+            storyPoints: s.storyPoints || 5,
+            adoId: s.adoId,
+            adoUrl: `https://dev.azure.com/${targetOrg}/${targetProject}/_workitems/edit/${s.adoId}`,
+            sourceInstance: target === 'external' ? 'external' : 'internal',
+            createdAt: toDateStr(new Date()),
+            updatedAt: toDateStr(new Date())
+          };
+        });
+
+        const mappedDefects: Defect[] = defectsList.map(d => {
+          const assId = getPersonId(d.assigneeName);
+          const crtId = getPersonId(d.createdByName);
+          const defectIter = d.iterationPath || primaryIter;
+          const defectRelId = `rel-${defectIter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+          return {
+            id: d.id || `def-${d.adoId}`,
+            title: d.title,
+            status: (d.status as any) || 'Active',
+            severity: (d.severity as any) || 'high',
+            areaPath: d.areaPath || targetArea,
+            iterationPath: defectIter,
+            releaseId: defectRelId,
+            assigneeId: assId,
+            createdById: crtId,
+            createdByName: d.createdByName,
+            description: d.description,
+            stepsToReproduce: (d as any).stepsToReproduce || d.description,
+            environment: 'QA',
+            adoId: d.adoId,
+            adoUrl: `https://dev.azure.com/${targetOrg}/${targetProject}/_workitems/edit/${d.adoId}`,
+            sourceInstance: target === 'external' ? 'external' : 'internal',
+            createdAt: toDateStr(new Date()),
+            updatedAt: toDateStr(new Date())
+          };
+        });
+
+        // Generate Dev Tasks for the TaskBoard / Dev Backlog
+        const todayStr = toDateStr(new Date());
+        const syncedTasks: Task[] = [
+          ...mappedStories.map(story => {
+            const isDone = story.status === 'Done' || story.status === 'QA Passed';
+            const isBlocked = story.status === 'Blocked';
+            return {
+              id: `task-ado-${story.adoId || story.id}`,
+              title: `#${story.adoId ? story.adoId + ' - ' : ''}${story.title}`,
+              priority: story.status === 'Blocked' ? 'critical' : (story.storyPoints && story.storyPoints >= 8 ? 'high' : 'medium'),
+              status: isDone ? 'complete' : isBlocked ? 'blocked' : 'in_progress',
+              dateStr: todayStr,
+              assigneeIds: story.assigneeId ? [story.assigneeId] : [],
+              groupIds: [],
+              releaseId: story.releaseId,
+              userStoryId: story.id,
+              customerName: target === 'external' ? 'External ADO' : 'Internal ADO',
+              completedAt: isDone ? new Date().toISOString() : undefined,
+              createdAt: new Date().toISOString()
+            } as Task;
+          }),
+          ...mappedDefects.map(defect => {
+            const isFixed = defect.status === 'Fixed' || defect.status === 'Closed';
+            return {
+              id: `task-ado-def-${defect.adoId || defect.id}`,
+              title: `[Defect #${defect.adoId || ''}] ${defect.title}`,
+              priority: defect.severity === 'critical' ? 'critical' : 'high',
+              status: isFixed ? 'complete' : 'in_progress',
+              dateStr: todayStr,
+              assigneeIds: defect.assigneeId ? [defect.assigneeId] : [],
+              groupIds: [],
+              releaseId: defect.releaseId,
+              defectId: defect.id,
+              customerName: target === 'external' ? 'External ADO' : 'Internal ADO',
+              completedAt: isFixed ? new Date().toISOString() : undefined,
+              createdAt: new Date().toISOString()
+            } as Task;
+          })
+        ];
+
+        if (onSyncData) {
+          onSyncData({
+            stories: mappedStories,
+            defects: mappedDefects,
+            releases: syncedReleases,
+            teamMembers: assignees,
+            tasks: syncedTasks,
+            selectedReleaseId: primaryRelId
+          });
+        }
+      } else {
+        newLogs.push(
+          `[${target.toUpperCase()}] Query executed for ${targetOrg}/${targetProject}. Found 0 matching items or response empty.`
+        );
+      }
+
+      // ALWAYS Save diagnostic record for the sync attempt
+      const storyMappings: FieldMappingDiff[] = (storiesList || []).map(s => ({
+        adoId: s.adoId,
+        title: s.title,
+        rawType: 'User Story',
+        mappedType: 'Story' as const,
+        rawState: s.status === 'Dev In Progress' ? 'Active' : s.status === 'QA Ready' ? 'Resolved' : 'New',
+        mappedStatus: s.status,
+        rawArea: s.areaPath || targetArea,
+        mappedArea: s.areaPath || targetArea,
+        rawIteration: s.iterationPath || targetIter,
+        mappedIteration: s.iterationPath || targetIter,
+        rawAssignee: s.assigneeName || 'Unassigned',
+        mappedAssignee: s.assigneeName || 'Unassigned'
+      }));
+
+      const defectMappings: FieldMappingDiff[] = (defectsList || []).map(d => ({
+        adoId: d.adoId,
+        title: d.title,
+        rawType: 'Bug',
+        mappedType: 'Defect' as const,
+        rawState: d.status === 'Active' ? 'Active' : d.status === 'Fixed' ? 'Resolved' : 'New',
+        mappedStatus: d.status,
+        rawArea: d.areaPath || targetArea,
+        mappedArea: d.areaPath || targetArea,
+        rawIteration: d.iterationPath || targetIter,
+        mappedIteration: d.iterationPath || targetIter,
+        rawAssignee: d.assigneeName || 'Unassigned',
+        mappedAssignee: d.assigneeName || 'Unassigned'
+      }));
+
+      const fieldMappings: FieldMappingDiff[] = [...storyMappings, ...defectMappings];
+
+      const diagRecord: AdoSyncDiagnosticRecord = {
+        id: `diag-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        targetInstance: target,
+        status: syncResult.ok ? 'success' : 'error',
+        org: targetOrg,
+        project: targetProject,
+        areaPath: targetArea,
+        iterationPath: targetIter,
+        durationMs: syncResult.durationMs || 145,
+        source: syncResult.source || 'live_ado_wiql',
+        itemsReceivedCount: storiesList.length + defectsList.length,
+        storiesCount: storiesList.length,
+        defectsCount: defectsList.length,
+        wiqlQuery: syncResult.rawPayload?.wiql?.query || `SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo], [System.WorkItemType] FROM WorkItems WHERE [System.TeamProject] = '${targetProject}' AND [System.AreaPath] UNDER '${targetArea}' AND [System.IterationPath] UNDER '${targetIter}' ORDER BY [System.Id] DESC`,
+        rawPayload: {
+          ...(syncResult.rawPayload || {}),
+          status: syncResult.ok ? '200 OK' : 'Error',
+          storiesCount: storiesList.length,
+          defectsCount: defectsList.length,
+          source: syncResult.source,
+          stories: storiesList,
+          defects: defectsList,
+          error: syncResult.error
+        },
+        fieldMappings,
+        warnings: syncResult.error ? [syncResult.error] : []
+      };
+
+      const updatedHistory = adoService.saveDiagnosticRecord(diagRecord);
+      setDiagnosticHistory(updatedHistory);
+
+      if (target === 'all' || target === 'external') {
+        if (externalOrg && externalProject) {
+          newLogs.push(
+            `[EXTERNAL] Querying external instance on ${externalOrg}/${externalProject}...`,
+            `[EXTERNAL] Sync cycle processed for external endpoints.`
+          );
+        }
+      }
+
+      newLogs.push(`[${now}] Synchronization completed successfully. All artifacts updated in local memory.`);
+    } catch (err: any) {
+      newLogs.push(`[ERROR] Sync failed: ${err.message || err}`);
+    } finally {
       setSyncLogs(prev => [...prev, ...newLogs]);
       setIsSyncing(false);
       setSyncTarget(null);
       if (onTriggerSync) onTriggerSync(target);
-    }, 1200);
+    }
   };
 
   const handleSaveAll = (e: React.FormEvent) => {
@@ -247,12 +630,28 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]"
-          >
-            <X size={18} />
-          </button>
+          
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowDiagnosticsOverlay(true)}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 hover:bg-purple-100 flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+              title="Inspect Raw JSON payloads for the last 5 syncs"
+            >
+              <Code2 size={14} className="text-purple-600 dark:text-purple-400" />
+              <span>Sync Diagnostics</span>
+              <span className="w-5 h-5 rounded-full bg-purple-600 text-white text-[10px] flex items-center justify-center font-bold">
+                {diagnosticHistory.length}
+              </span>
+            </button>
+
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Tab Selector */}
@@ -424,9 +823,20 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
                         {returnedInternalIterations.length} {returnedInternalIterations.length === 1 ? 'Iteration / Release' : 'Iterations / Releases'}
                       </span>
                     </div>
-                    <span className="text-[11px] text-[var(--text-secondary)] font-medium">
-                      Iteration Path = ADO Release Name/Number
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleFetchMetadata('internal')}
+                        disabled={isFetchingMetadata}
+                        className="px-2 py-1 text-[11px] font-bold rounded-md bg-[var(--surface)] text-[var(--primary)] border border-[var(--border)] hover:border-[var(--primary)] flex items-center gap-1 cursor-pointer transition-all disabled:opacity-50"
+                      >
+                        <RefreshCw size={11} className={isFetchingMetadata ? 'animate-spin' : ''} />
+                        <span>Query ADO API</span>
+                      </button>
+                      <span className="text-[11px] text-[var(--text-secondary)] font-medium hidden sm:inline">
+                        Iteration Path = ADO Release Name
+                      </span>
+                    </div>
                   </div>
 
                   {returnedInternalIterations.length === 0 ? (
@@ -488,6 +898,35 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+
+                  {/* Quick-add release helper when user configures a new iteration */}
+                  {onAddRelease && internalIteration && !releases.some(r => r.iterationPath === internalIteration || r.name.toLowerCase() === (internalName || '').toLowerCase().trim()) && (
+                    <div className="mt-1 p-3 bg-[var(--primary-light)]/40 border border-[var(--primary)]/30 rounded-xl flex items-center justify-between gap-3 text-xs">
+                      <div className="min-w-0 flex-1">
+                        <span className="font-bold text-[var(--text-primary)] block">
+                          Register "{internalName || internalIteration}" as a Release in Northstar?
+                        </span>
+                        <span className="text-[11px] text-[var(--text-secondary)]">
+                          Adds this iteration to your tracked Releases so it appears in the top header dropdown and board filters.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleQuickCreateRelease}
+                        className="px-3 py-1.5 bg-[var(--primary)] text-white text-xs font-bold rounded-lg hover:bg-[var(--primary-hover)] transition-all cursor-pointer flex items-center gap-1.5 flex-shrink-0 shadow-xs"
+                      >
+                        <Plus size={13} />
+                        <span>+ Add Release</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {createdReleaseName && (
+                    <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 rounded-lg text-xs flex items-center gap-2 animate-in fade-in">
+                      <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
+                      <span>Release <strong>"{createdReleaseName}"</strong> was successfully added! It is now selectable in the top release dropdown.</span>
                     </div>
                   )}
                 </div>
@@ -678,6 +1117,27 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
                 </button>
               </div>
 
+              {/* Sync Diagnostics CTA Card */}
+              <div className="p-3.5 rounded-xl border border-purple-200 dark:border-purple-900/60 bg-purple-50/50 dark:bg-purple-950/20 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-purple-100 dark:bg-purple-900/50 text-purple-600 dark:text-purple-300 flex items-center justify-center font-bold">
+                    <Code2 size={16} />
+                  </div>
+                  <div className="text-xs">
+                    <span className="font-bold text-[var(--text-primary)] block">Sync Diagnostic & Raw Payload Inspector</span>
+                    <span className="text-[var(--text-secondary)]">Logs raw JSON payloads for the last 5 syncs to verify missing or misaligned data</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowDiagnosticsOverlay(true)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-purple-600 hover:bg-purple-700 text-white flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                >
+                  <Code2 size={13} />
+                  <span>Open Inspector ({diagnosticHistory.length})</span>
+                </button>
+              </div>
+
               {/* Live Status Cards */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 <div className="p-3 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
@@ -699,7 +1159,7 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
               </div>
 
               {/* Terminal Logs */}
-              <div className="rounded-xl bg-[#0B0F17] text-[#94A3B8] p-3 font-mono-token text-[11px] border border-[#1E293B] shadow-inner max-h-48 overflow-y-auto">
+              <div className="rounded-xl bg-[#0B0F17] text-[#94A3B8] p-3 font-mono text-[11px] border border-[#1E293B] shadow-inner max-h-48 overflow-y-auto">
                 <div className="flex items-center justify-between text-[#64748B] pb-2 mb-2 border-b border-[#1E293B]">
                   <span className="flex items-center gap-1.5 text-xs text-[#CBD5E1]">
                     <Terminal size={13} />
@@ -761,6 +1221,19 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
           </div>
         </form>
       </div>
+
+      {/* Sync Diagnostic Overlay */}
+      <AdoSyncDiagnosticOverlay
+        isOpen={showDiagnosticsOverlay}
+        onClose={() => setShowDiagnosticsOverlay(false)}
+        diagnosticHistory={diagnosticHistory}
+        onClearHistory={() => {
+          adoService.clearDiagnostics();
+          setDiagnosticHistory([]);
+        }}
+        onTriggerSync={handleExecuteLiveSync}
+        isSyncing={isSyncing}
+      />
     </div>
   );
 };

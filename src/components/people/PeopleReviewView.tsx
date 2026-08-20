@@ -9,6 +9,7 @@ import {
 } from '../../types';
 import { 
   Users, 
+  UserCheck,
   Plus, 
   Award, 
   CheckCircle2, 
@@ -29,7 +30,9 @@ import {
   Clock,
   ChevronRight,
   Flame,
-  CheckCircle
+  CheckCircle,
+  Star,
+  Search
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -62,6 +65,7 @@ interface PeopleReviewViewProps {
 }
 
 type ChartMetricMode = 'all' | 'completed' | 'workload' | 'quality';
+type TeamFilterSection = 'all' | 'my_team' | 'assigned_to' | 'created_by';
 
 export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
   team,
@@ -81,6 +85,8 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
   const [activeMemberId, setActiveMemberId] = useState<string>(team[0]?.id || '');
   const [chartMetricMode, setChartMetricMode] = useState<ChartMetricMode>('all');
   const [showTableDetails, setShowTableDetails] = useState(false);
+  const [teamSectionFilter, setTeamSectionFilter] = useState<TeamFilterSection>('all');
+  const [searchMember, setSearchMember] = useState('');
   
   // Modals
   const [memberModalOpen, setMemberModalOpen] = useState(false);
@@ -91,6 +97,7 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
   const [memberName, setMemberName] = useState('');
   const [memberRole, setMemberRole] = useState('');
   const [memberEmail, setMemberEmail] = useState('');
+  const [memberIsMyTeam, setMemberIsMyTeam] = useState(false);
 
   // Review form
   const [highlights, setHighlights] = useState('');
@@ -104,15 +111,57 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
   const memberTasks = tasks.filter(t => t.assigneeIds.includes(activeMember?.id || ''));
   const completedTasks = memberTasks.filter(t => t.status === 'complete').length;
 
-  const memberStories = userStories.filter(s => s.assigneeId === activeMember?.id);
+  const memberStories = userStories.filter(s => s.assigneeId === activeMember?.id || s.createdById === activeMember?.id);
   const storyPointsDelivered = memberStories
     .filter(s => s.status === 'QA Passed' || s.status === 'Done')
     .reduce((acc, s) => acc + (s.storyPoints || 0), 0);
 
-  const memberDefects = defects.filter(d => d.assigneeId === activeMember?.id);
+  const memberDefects = defects.filter(d => d.assigneeId === activeMember?.id || d.createdById === activeMember?.id);
   const defectsResolved = memberDefects.filter(d => d.status === 'Closed' || d.status === 'Fixed').length;
 
   const memberReviews = peopleReviews.filter(r => r.memberId === activeMember?.id);
+
+  // Split team into My Team vs other sections
+  const myTeamMembers = useMemo(() => {
+    return team.filter(m => m.isMyTeam);
+  }, [team]);
+
+  const assignedToMembers = useMemo(() => {
+    return team.filter(m => m.adoSource === 'assigned_to');
+  }, [team]);
+
+  const createdByMembers = useMemo(() => {
+    return team.filter(m => m.adoSource === 'created_by');
+  }, [team]);
+
+  // Filtered members list for left sidebar roster
+  const filteredTeam = useMemo(() => {
+    return team.filter(m => {
+      // Text search
+      if (searchMember.trim()) {
+        const query = searchMember.toLowerCase();
+        const matchName = m.name.toLowerCase().includes(query);
+        const matchRole = m.role.toLowerCase().includes(query);
+        const matchEmail = m.email.toLowerCase().includes(query);
+        if (!matchName && !matchRole && !matchEmail) return false;
+      }
+
+      // Section filter
+      if (teamSectionFilter === 'my_team') return !!m.isMyTeam;
+      if (teamSectionFilter === 'assigned_to') return m.adoSource === 'assigned_to';
+      if (teamSectionFilter === 'created_by') return m.adoSource === 'created_by';
+      return true;
+    });
+  }, [team, teamSectionFilter, searchMember]);
+
+  // Toggle "My Team" status for a member
+  const handleToggleMyTeam = (member: TeamMember, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    onUpdateMember({
+      ...member,
+      isMyTeam: !member.isMyTeam
+    });
+  };
 
   // --- 7-Day Contribution Trend Data Computation ---
   const todayStr = toDateStr(new Date());
@@ -210,11 +259,13 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
       setMemberName(member.name);
       setMemberRole(member.role);
       setMemberEmail(member.email);
+      setMemberIsMyTeam(!!member.isMyTeam);
     } else {
       setEditingMember(null);
       setMemberName('');
       setMemberRole('');
       setMemberEmail('');
+      setMemberIsMyTeam(false);
     }
     setMemberModalOpen(true);
   };
@@ -228,7 +279,8 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
         ...editingMember,
         name: memberName.trim(),
         role: memberRole.trim() || 'Software Engineer',
-        email: memberEmail.trim()
+        email: memberEmail.trim(),
+        isMyTeam: memberIsMyTeam
       });
     } else {
       onAddMember({
@@ -237,7 +289,9 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
         role: memberRole.trim() || 'Software Engineer',
         email: memberEmail.trim(),
         avatarColor: '#4F46E5',
-        active: true
+        active: true,
+        isMyTeam: memberIsMyTeam,
+        adoSource: 'manual'
       });
     }
 
@@ -327,9 +381,16 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
       {/* Header & Period Switcher */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-lg font-bold text-[var(--text-primary)] tracking-tight">People, Performance & 1-on-1s</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-bold text-[var(--text-primary)] tracking-tight">Peoples, People & Performance</h1>
+            {myTeamMembers.length > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-[var(--primary-light)] text-[var(--primary)] text-[10.5px] font-bold">
+                {myTeamMembers.length} in My Team
+              </span>
+            )}
+          </div>
           <p className="text-xs text-[var(--text-secondary)] font-medium mt-0.5">
-            Engineering roster, 7-day contribution trends, delivery velocity, and appreciation notes
+            Dedicated My Team view, ADO Assigned To & Created By peoples, 7-day contribution trends, and 1-on-1s
           </p>
         </div>
 
@@ -356,7 +417,7 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all"
           >
             <Plus size={15} />
-            <span>Add Teammate</span>
+            <span>Add Person</span>
           </button>
         </div>
       </div>
@@ -364,76 +425,188 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
       {/* Main Grid: Directory & Performance Hub */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Team Directory (4 cols) */}
-        <div className="lg:col-span-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 shadow-xs flex flex-col gap-2">
-          <div className="flex items-center justify-between pb-2 border-b border-[var(--border)]">
-            <span className="text-xs font-bold text-[var(--text-primary)]">Engineering Roster ({team.length})</span>
+        <div className="lg:col-span-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 shadow-xs flex flex-col gap-3">
+          {/* Roster Header and Section Filter */}
+          <div className="flex flex-col gap-2.5 pb-2 border-b border-[var(--border)]">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-[var(--text-primary)]">People & Team Roster ({team.length})</span>
+            </div>
+
+            {/* Filter Tabs: All, My Team, Assigned To, Created By */}
+            <div className="grid grid-cols-4 gap-1 p-1 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl text-[10px] font-bold">
+              <button
+                onClick={() => setTeamSectionFilter('all')}
+                className={`py-1 px-1 rounded-lg text-center truncate transition-all ${
+                  teamSectionFilter === 'all'
+                    ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title="All team members and peoples"
+              >
+                All ({team.length})
+              </button>
+
+              <button
+                onClick={() => setTeamSectionFilter('my_team')}
+                className={`py-1 px-1 rounded-lg text-center truncate transition-all flex items-center justify-center gap-0.5 ${
+                  teamSectionFilter === 'my_team'
+                    ? 'bg-[var(--primary)] text-white shadow-xs'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title="My direct team members"
+              >
+                <Star size={10} className={teamSectionFilter === 'my_team' ? 'fill-white' : ''} />
+                <span>My Team ({myTeamMembers.length})</span>
+              </button>
+
+              <button
+                onClick={() => setTeamSectionFilter('assigned_to')}
+                className={`py-1 px-1 rounded-lg text-center truncate transition-all ${
+                  teamSectionFilter === 'assigned_to'
+                    ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title="People from ADO Assigned To parameter"
+              >
+                Assigned ({assignedToMembers.length})
+              </button>
+
+              <button
+                onClick={() => setTeamSectionFilter('created_by')}
+                className={`py-1 px-1 rounded-lg text-center truncate transition-all ${
+                  teamSectionFilter === 'created_by'
+                    ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title="People from ADO Created By parameter"
+              >
+                Created ({createdByMembers.length})
+              </button>
+            </div>
+
+            {/* Quick Search */}
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-2.5 text-[var(--text-muted)]" />
+              <input
+                type="text"
+                placeholder="Search peoples by name or role..."
+                value={searchMember}
+                onChange={(e) => setSearchMember(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 text-xs bg-[var(--bg-subtle)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl outline-none"
+              />
+            </div>
           </div>
 
-          <div className="flex flex-col gap-2 max-h-[600px] overflow-y-auto">
-            {team.map(member => {
-              const isSelected = member.id === activeMember?.id;
-              const memberGroupNames = groups
-                .filter(g => (member.groupIds || []).includes(g.id))
-                .map(g => g.name);
+          {/* Render List */}
+          <div className="flex flex-col gap-2 max-h-[580px] overflow-y-auto pr-1">
+            {filteredTeam.length === 0 ? (
+              <div className="p-6 text-center text-xs text-[var(--text-muted)] flex flex-col items-center gap-2">
+                <Users size={24} className="opacity-40" />
+                <p>
+                  {teamSectionFilter === 'my_team' 
+                    ? 'No members marked in My Team yet. Click the star icon on any person to add them to My Team.' 
+                    : 'No matching people found.'}
+                </p>
+              </div>
+            ) : (
+              filteredTeam.map(member => {
+                const isSelected = member.id === activeMember?.id;
+                const isMyTeam = !!member.isMyTeam;
+                const memberGroupNames = groups
+                  .filter(g => (member.groupIds || []).includes(g.id))
+                  .map(g => g.name);
 
-              // Quick 7-day task count for preview
-              const member7DayDone = tasks.filter(
-                t => t.assigneeIds.includes(member.id) && t.status === 'complete' && last7Days.includes(t.dateStr)
-              ).length;
+                // Quick 7-day task count for preview
+                const member7DayDone = tasks.filter(
+                  t => t.assigneeIds.includes(member.id) && t.status === 'complete' && last7Days.includes(t.dateStr)
+                ).length;
 
-              return (
-                <div
-                  key={member.id}
-                  onClick={() => setActiveMemberId(member.id)}
-                  className={`p-3 rounded-xl border text-left cursor-pointer transition-all ${
-                    isSelected
-                      ? 'bg-[var(--primary-light)] border-[var(--primary)] text-[var(--primary-text)] shadow-xs'
-                      : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div
-                        className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-xs flex-shrink-0"
-                        style={{ backgroundColor: member.avatarColor || '#4F46E5' }}
-                      >
-                        {member.name[0]}
+                return (
+                  <div
+                    key={member.id}
+                    onClick={() => setActiveMemberId(member.id)}
+                    className={`p-3 rounded-xl border text-left cursor-pointer transition-all ${
+                      isSelected
+                        ? 'bg-[var(--primary-light)] border-[var(--primary)] text-[var(--primary-text)] shadow-xs'
+                        : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div
+                          className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-xs flex-shrink-0 relative"
+                          style={{ backgroundColor: member.avatarColor || '#4F46E5' }}
+                        >
+                          {member.name[0]}
+                          {isMyTeam && (
+                            <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-amber-500 rounded-full flex items-center justify-center text-[8px] text-white border border-[var(--surface)]">
+                              ★
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold truncate">{member.name}</span>
+                            {isMyTeam && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                My Team
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] truncate">
+                            <span className="truncate">{member.role}</span>
+                            {member.adoSource && (
+                              <span className="text-[9px] font-semibold px-1 rounded bg-[var(--surface-hover)] border border-[var(--border)] text-[var(--text-muted)]">
+                                {member.adoSource === 'assigned_to' ? 'ADO Assigned' : member.adoSource === 'created_by' ? 'ADO Creator' : 'Manual'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex flex-col min-w-0">
-                        <span className="text-xs font-bold truncate">{member.name}</span>
-                        <span className="text-[11px] text-[var(--text-secondary)] truncate">{member.role}</span>
-                      </div>
-                    </div>
 
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text-secondary)]" title="7-day tasks completed">
-                        {member7DayDone} done
-                      </span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleOpenMemberModal(member);
-                        }}
-                        className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                        title="Edit member"
-                      >
-                        <Edit3 size={13} />
-                      </button>
-                    </div>
-                  </div>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {/* Toggle My Team Star Button */}
+                        <button
+                          onClick={(e) => handleToggleMyTeam(member, e)}
+                          className={`p-1 rounded-md transition-all ${
+                            isMyTeam 
+                              ? 'text-amber-500 hover:text-amber-600 bg-amber-500/10' 
+                              : 'text-[var(--text-muted)] hover:text-amber-500'
+                          }`}
+                          title={isMyTeam ? 'Remove from My Team' : 'Add to My Team'}
+                        >
+                          <Star size={13} className={isMyTeam ? 'fill-amber-500' : ''} />
+                        </button>
 
-                  {memberGroupNames.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {memberGroupNames.map((gn, idx) => (
-                        <span key={idx} className="text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text-secondary)]">
-                          {gn}
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text-secondary)]" title="7-day tasks completed">
+                          {member7DayDone} done
                         </span>
-                      ))}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenMemberModal(member);
+                          }}
+                          className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                          title="Edit member"
+                        >
+                          <Edit3 size={13} />
+                        </button>
+                      </div>
                     </div>
-                  )}
-                </div>
-              );
-            })}
+
+                    {memberGroupNames.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {memberGroupNames.map((gn, idx) => (
+                          <span key={idx} className="text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text-secondary)]">
+                            {gn}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -446,24 +619,64 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
                 <div className="flex items-center justify-between pb-3 border-b border-[var(--border)] flex-wrap gap-3">
                   <div className="flex items-center gap-3">
                     <div
-                      className="w-12 h-12 rounded-2xl flex items-center justify-center text-base font-bold text-white shadow-xs"
+                      className="w-12 h-12 rounded-2xl flex items-center justify-center text-base font-bold text-white shadow-xs relative"
                       style={{ backgroundColor: activeMember.avatarColor || '#4F46E5' }}
                     >
                       {activeMember.name.split(' ').map(n => n[0]).join('')}
+                      {activeMember.isMyTeam && (
+                        <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 rounded-full flex items-center justify-center text-[10px] text-white border-2 border-[var(--surface)]">
+                          ★
+                        </span>
+                      )}
                     </div>
                     <div>
-                      <h2 className="text-base font-bold text-[var(--text-primary)]">{activeMember.name}</h2>
-                      <p className="text-xs text-[var(--text-secondary)] font-medium">{activeMember.role} &bull; {activeMember.email}</p>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-base font-bold text-[var(--text-primary)]">{activeMember.name}</h2>
+                        {activeMember.isMyTeam ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                            <Star size={11} className="fill-amber-500" />
+                            <span>My Team Member</span>
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleToggleMyTeam(activeMember)}
+                            className="text-[10.5px] font-semibold text-[var(--primary)] hover:underline flex items-center gap-1"
+                          >
+                            <Star size={11} />
+                            <span>Add to My Team</span>
+                          </button>
+                        )}
+                        {activeMember.adoSource && (
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[var(--surface-hover)] text-[var(--text-secondary)] border border-[var(--border)]">
+                            {activeMember.adoSource === 'assigned_to' ? 'ADO Assigned To' : activeMember.adoSource === 'created_by' ? 'ADO Created By' : 'Manual Entry'}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-[var(--text-secondary)] font-medium mt-0.5">{activeMember.role} &bull; {activeMember.email}</p>
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => setReviewModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all"
-                  >
-                    <Award size={14} />
-                    <span>Log 1-on-1 Review</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleToggleMyTeam(activeMember)}
+                      className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl border transition-all ${
+                        activeMember.isMyTeam
+                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400'
+                          : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                      }`}
+                    >
+                      <Star size={13} className={activeMember.isMyTeam ? 'fill-amber-500' : ''} />
+                      <span>{activeMember.isMyTeam ? 'In My Team' : '+ Add to My Team'}</span>
+                    </button>
+
+                    <button
+                      onClick={() => setReviewModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all"
+                    >
+                      <Award size={14} />
+                      <span>Log 1-on-1 Review</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Scorecards */}
@@ -815,6 +1028,21 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
                   onChange={(e) => setMemberEmail(e.target.value)}
                   className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl outline-none"
                 />
+              </div>
+
+              {/* My Team Checkbox */}
+              <div className="flex items-center gap-2 p-3 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl">
+                <input
+                  type="checkbox"
+                  id="myTeamCheck"
+                  checked={memberIsMyTeam}
+                  onChange={(e) => setMemberIsMyTeam(e.target.checked)}
+                  className="w-4 h-4 rounded text-[var(--primary)]"
+                />
+                <label htmlFor="myTeamCheck" className="text-xs font-bold text-[var(--text-primary)] cursor-pointer flex items-center gap-1">
+                  <Star size={13} className={memberIsMyTeam ? 'fill-amber-500 text-amber-500' : 'text-[var(--text-muted)]'} />
+                  <span>Mark as member of My Team</span>
+                </label>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-[var(--border)]">

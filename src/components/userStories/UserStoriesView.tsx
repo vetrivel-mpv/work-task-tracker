@@ -71,19 +71,26 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
   const [editingStory, setEditingStory] = useState<UserStory | null>(null);
   const [expandedCriteria, setExpandedCriteria] = useState<Set<string>>(new Set());
 
+  // Discover all distinct Area Paths in the project
+  const availableAreaPaths = getAllAreaPaths(releases, userStories, defects, tasks);
+
   // Form state for new / edit story
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<UserStoryStatus>('To Do');
   const [storyPoints, setStoryPoints] = useState<number>(5);
-  const [areaPath, setAreaPath] = useState<string>('CareFlow-Core\\EHR-Connect');
+  const [areaPath, setAreaPath] = useState<string>(filterAreaPath || availableAreaPaths[0] || '');
   const [releaseId, setReleaseId] = useState<string>(selectedReleaseId || '');
   const [assigneeId, setAssigneeId] = useState<string>('');
   const [iterationPath, setIterationPath] = useState<string>('');
   const [criteriaText, setCriteriaText] = useState<string>('');
 
-  // Discover all distinct Area Paths in the project
-  const availableAreaPaths = getAllAreaPaths(releases, userStories, defects, tasks);
+  // Keep filter release in sync if user changes global selected release
+  React.useEffect(() => {
+    if (selectedReleaseId !== undefined) {
+      setFilterRelease(selectedReleaseId || '');
+    }
+  }, [selectedReleaseId]);
 
   // Core Requirement: Based on the Area Path filter, all matching Iteration Paths are returned
   const returnedIterationPaths = getIterationPathsForArea(filterAreaPath, releases, userStories, defects);
@@ -97,7 +104,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     setDescription('');
     setStatus('To Do');
     setStoryPoints(5);
-    const defaultArea = filterAreaPath || 'CareFlow-Core\\EHR-Connect';
+    const defaultArea = filterAreaPath || availableAreaPaths[0] || '';
     setAreaPath(defaultArea);
     const iters = getIterationPathsForArea(defaultArea, releases, userStories, defects);
     const firstIter = iters[0];
@@ -114,7 +121,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     setDescription(story.description || '');
     setStatus(story.status);
     setStoryPoints(story.storyPoints || 0);
-    const storyArea = story.areaPath || releases.find(r => r.id === story.releaseId)?.areaPath || 'CareFlow-Core\\EHR-Connect';
+    const storyArea = story.areaPath || releases.find(r => r.id === story.releaseId)?.areaPath || filterAreaPath || availableAreaPaths[0] || '';
     setAreaPath(storyArea);
     setReleaseId(story.releaseId || '');
     setAssigneeId(story.assigneeId || '');
@@ -183,7 +190,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     if (filterAreaPath) {
       const sArea = (s.areaPath || releases.find(r => r.id === s.releaseId)?.areaPath || '').toLowerCase();
       const targetArea = filterAreaPath.toLowerCase();
-      const matchesAreaDirectly = sArea === targetArea || sArea.includes(targetArea);
+      const matchesAreaDirectly = sArea === targetArea || sArea.includes(targetArea) || targetArea.includes(sArea);
       const matchesReturnedIteration = returnedIterationPaths.some(
         iter => iter.releaseId === s.releaseId || iter.iterationPath === s.iterationPath
       );
@@ -194,7 +201,13 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     if (filterRelease) {
       const matchesRelId = s.releaseId === filterRelease;
       const matchesIterPath = s.iterationPath === filterRelease;
-      if (!matchesRelId && !matchesIterPath) return false;
+      const matchedRelease = releases.find(r => r.id === filterRelease);
+      const matchesReleaseIteration = matchedRelease && (
+        matchedRelease.iterationPath === s.iterationPath ||
+        matchedRelease.name === s.iterationPath ||
+        (s.iterationPath && matchedRelease.name.includes(s.iterationPath))
+      );
+      if (!matchesRelId && !matchesIterPath && !matchesReleaseIteration) return false;
     }
 
     // Status Filter

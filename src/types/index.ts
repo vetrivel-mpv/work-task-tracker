@@ -70,6 +70,8 @@ export interface TeamMember {
   avatarColor?: string;
   groupIds?: string[];
   active?: boolean;
+  isMyTeam?: boolean; // True for 'My Team' members
+  adoSource?: 'assigned_to' | 'created_by' | 'manual';
 }
 
 export interface TeamGroup {
@@ -100,6 +102,8 @@ export interface UserStory {
   areaPath?: string;
   releaseId?: string | null;
   assigneeId?: string | null;
+  createdById?: string | null;
+  createdByName?: string;
   iterationPath?: string;
   groupIds?: string[];
   sourceInstance?: 'internal' | 'external';
@@ -127,6 +131,8 @@ export interface Defect {
   userStoryId?: string | null;
   releaseId?: string | null;
   assigneeId?: string | null;
+  createdById?: string | null;
+  createdByName?: string;
   iterationPath?: string;
   tags?: string[];
   environment?: string; // 'Dev' | 'QA' | 'Staging' | 'Prod'

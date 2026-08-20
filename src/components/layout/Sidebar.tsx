@@ -111,7 +111,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'people' as AppView,
-      label: 'People & 1-on-1s',
+      label: 'Peoples, People, Performance',
       icon: Award,
       badge: null
     },

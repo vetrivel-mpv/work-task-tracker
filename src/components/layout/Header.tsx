@@ -10,7 +10,8 @@ import {
   ArrowRightLeft,
   FolderGit2,
   Building2,
-  Globe2
+  Globe2,
+  Rocket
 } from 'lucide-react';
 import { toDateStr, shiftDate, formatDisplayDate, isToday } from '../../utils/date';
 import { Release, DualAdoConfig } from '../../types';
@@ -134,16 +135,19 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Release Filter Selector */}
         {releases.length > 0 && onSelectRelease && (
-          <select
-            value={selectedReleaseId || ''}
-            onChange={(e) => onSelectRelease(e.target.value || null)}
-            className="hidden lg:block bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl px-2.5 py-1.5 text-xs font-bold text-[var(--text-primary)] outline-none max-w-[200px] truncate cursor-pointer"
-          >
-            <option value="">All Releases</option>
-            {releases.map(r => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </select>
+          <div className="flex items-center gap-1.5 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl px-2.5 py-1 text-xs font-bold text-[var(--text-primary)]">
+            <Rocket size={13} className="text-[var(--primary)] flex-shrink-0" />
+            <select
+              value={selectedReleaseId || ''}
+              onChange={(e) => onSelectRelease(e.target.value || null)}
+              className="bg-transparent text-xs font-bold text-[var(--text-primary)] outline-none max-w-[160px] sm:max-w-[220px] truncate cursor-pointer"
+            >
+              <option value="">All Releases</option>
+              {releases.map(r => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </div>
         )}
       </div>
 
