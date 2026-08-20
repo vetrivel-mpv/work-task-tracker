@@ -1,0 +1,6 @@
+{
+  "name": "Northstar Delivery",
+  "description": "Client delivery and team operations: daily board, standup, Azure DevOps sync, and release testing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
