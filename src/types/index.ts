@@ -3,6 +3,7 @@ export type TaskStatus = 'pending' | 'partial' | 'complete';
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 export type DefectStatus = 'New' | 'Active' | 'Fixed' | 'Retest' | 'Closed';
 export type UserStoryStatus = 'To Do' | 'In Analysis' | 'Dev In Progress' | 'QA Ready' | 'QA In Progress' | 'QA Passed' | 'Done' | 'Blocked';
+export type TestCaseStatus = 'Design' | 'Ready' | 'In Progress' | 'Passed' | 'Failed' | 'Blocked' | 'Closed';
 export type ReleaseStatus = 'Planning' | 'Active QA' | 'Staging' | 'Deployed' | 'Archived';
 export type AdoInstanceRole = 'internal' | 'external';
 export type AdoInstanceType = AdoInstanceRole;
@@ -15,6 +16,7 @@ export type AppView =
   | 'board' 
   | 'stories'
   | 'userStories' 
+  | 'testCases'
   | 'defects' 
   | 'qa_dashboard'
   | 'defectsDashboard' 
@@ -110,6 +112,37 @@ export interface UserStory {
   testPlanRef?: TestPlanRef;
   adoId?: number;
   adoUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TestStep {
+  stepNumber: number;
+  action: string;
+  expectedResult: string;
+}
+
+export interface TestCase {
+  id: string;
+  title: string;
+  description?: string;
+  steps?: TestStep[];
+  status: TestCaseStatus | string;
+  priority?: Priority;
+  automationStatus?: 'Automated' | 'Not Automated' | 'Planned';
+  areaPath?: string;
+  iterationPath?: string;
+  releaseId?: string | null;
+  userStoryId?: string | null;
+  defectId?: string | null;
+  assigneeId?: string | null;
+  createdById?: string | null;
+  createdByName?: string;
+  tags?: string[];
+  workItemType?: string; // 'Test Case' | 'Test Suite' | 'Test Plan'
+  adoId?: number;
+  adoUrl?: string;
+  sourceInstance?: 'internal' | 'external';
   createdAt: string;
   updatedAt: string;
 }
@@ -262,6 +295,7 @@ export interface AppState {
   team: TeamMember[];
   groups: TeamGroup[];
   userStories: UserStory[];
+  testCases: TestCase[];
   defects: Defect[];
   releases: Release[];
   standup: Record<string, StandupEntry>;

@@ -3,6 +3,7 @@ import {
   TeamMember, 
   TeamGroup, 
   UserStory, 
+  TestCase,
   Defect, 
   Release, 
   BlueprintItem, 
@@ -30,6 +31,8 @@ export const INITIAL_GROUPS: TeamGroup[] = [];
 export const INITIAL_RELEASES: Release[] = [];
 
 export const INITIAL_STORIES: UserStory[] = [];
+
+export const INITIAL_TEST_CASES: TestCase[] = [];
 
 export const INITIAL_DEFECTS: Defect[] = [];
 

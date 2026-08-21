@@ -14,7 +14,7 @@ import {
   AdoConfig,
   DualAdoConfig 
 } from './types';
-import { loadStoredState, saveStoredState, resetToDemoState } from './utils/storage';
+import { loadStoredState, saveStoredState, resetToDemoState, loadFromIndexedDB } from './utils/storage';
 import { toDateStr, shiftDate, generateId } from './utils/date';
 
 // Layout Components
@@ -49,6 +49,30 @@ export const App: React.FC = () => {
   const [adoModalOpen, setAdoModalOpen] = useState<boolean>(false);
   const [emailModalOpen, setEmailModalOpen] = useState<boolean>(false);
   const [emailInitialTab, setEmailInitialTab] = useState<'standup' | 'qa' | 'dashboard'>('standup');
+
+  // Hydrate full state from IndexedDB on initial mount if available
+  useEffect(() => {
+    let isMounted = true;
+    loadFromIndexedDB().then((idbState) => {
+      if (isMounted && idbState) {
+        setState(prev => {
+          // If IndexedDB has more/equal data, merge cleanly
+          if ((idbState.userStories?.length || 0) >= (prev.userStories?.length || 0) &&
+              (idbState.defects?.length || 0) >= (prev.defects?.length || 0)) {
+            return {
+              ...prev,
+              ...idbState,
+              settings: { ...prev.settings, ...(idbState.settings || {}) }
+            };
+          }
+          return prev;
+        });
+      }
+    }).catch(err => {
+      console.warn('[App] IndexedDB hydration note:', err);
+    });
+    return () => { isMounted = false; };
+  }, []);
 
   // Auto-persist state changes
   useEffect(() => {

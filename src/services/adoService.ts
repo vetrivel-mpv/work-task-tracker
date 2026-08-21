@@ -31,6 +31,8 @@ export interface AdoSyncResponse {
   ok: boolean;
   stories: AdoWorkItemDto[];
   defects: AdoWorkItemDto[];
+  testCases?: AdoWorkItemDto[];
+  tasks?: AdoWorkItemDto[];
   source?: string;
   error?: string;
   durationMs?: number;

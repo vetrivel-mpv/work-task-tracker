@@ -14,9 +14,20 @@ export interface IterationPathInfo {
   displayName: string;
 }
 
-export const DEFAULT_INTERNAL_AREA_PATHS: string[] = [];
+export const DEFAULT_INTERNAL_AREA_PATHS: string[] = ['ACM'];
 
-export const KNOWN_PROJECT_ITERATIONS: Record<string, Array<{ name: string; path: string; releaseNumber: string; startDate: string; targetDate: string }>> = {};
+export const KNOWN_PROJECT_ITERATIONS: Record<string, Array<{ name: string; path: string; releaseNumber: string; startDate: string; targetDate: string }>> = {
+  'acm': [
+    { name: 'D2 R 2026.03', path: 'ACM\\D2 R 2026.03', releaseNumber: 'v2026.03', startDate: '2025-11-14', targetDate: '2026-04-23' },
+    { name: 'D3 R 2026.05', path: 'ACM\\D3 R 2026.05', releaseNumber: 'v2026.05', startDate: '2026-01-06', targetDate: '2026-05-21' },
+    { name: 'D4 R 2026.07', path: 'ACM\\D4 R 2026.07', releaseNumber: 'v2026.07', startDate: '2026-03-20', targetDate: '2026-07-23' },
+    { name: 'D5 R 2026.09', path: 'ACM\\D5 R 2026.09', releaseNumber: 'v2026.09', startDate: '2026-05-15', targetDate: '2026-09-17' },
+    { name: 'R 2026.06', path: 'ACM\\R 2026.06', releaseNumber: 'v2026.06', startDate: '2026-06-01', targetDate: '2026-06-30' },
+    { name: 'R 2026.08 - Migration', path: 'ACM\\R 2026.08 - Migration', releaseNumber: 'v2026.08', startDate: '2026-06-30', targetDate: '2026-08-20' },
+    { name: 'D6 R 2026.10', path: 'ACM\\D6 R 2026.10', releaseNumber: 'v2026.10', startDate: '2026-08-01', targetDate: '2026-10-31' },
+    { name: 'D7 R 2026.11', path: 'ACM\\D7 R 2026.11', releaseNumber: 'v2026.11', startDate: '2026-09-14', targetDate: '2026-12-11' }
+  ]
+};
 
 /**
  * Returns all distinct Area Paths configured or discovered across releases, stories, defects and tasks.
@@ -25,9 +36,10 @@ export function getAllAreaPaths(
   releases: Release[] = [],
   userStories: UserStory[] = [],
   defects: Defect[] = [],
-  tasks: Task[] = []
+  tasks: Task[] = [],
+  discoveredAreas: Array<{ name: string; path: string }> = []
 ): string[] {
-  const set = new Set<string>();
+  const set = new Set<string>(['ACM']);
 
   releases.forEach(r => {
     if (r.areaPath) set.add(r.areaPath);
@@ -45,6 +57,11 @@ export function getAllAreaPaths(
     if (t.areaPath) set.add(t.areaPath);
   });
 
+  discoveredAreas.forEach(a => {
+    if (a.path) set.add(a.path);
+    if (a.name) set.add(a.name);
+  });
+
   return Array.from(set).sort();
 }
 
@@ -60,7 +77,8 @@ export function getIterationPathsForArea(
   areaPathFilter: string,
   releases: Release[] = [],
   userStories: UserStory[] = [],
-  defects: Defect[] = []
+  defects: Defect[] = [],
+  discoveredIterations: Array<{ id?: string | number; name: string; path: string; startDate?: string; finishDate?: string }> = []
 ): IterationPathInfo[] {
   const normalizedFilter = (areaPathFilter || '').trim().toLowerCase();
 
@@ -92,7 +110,7 @@ export function getIterationPathsForArea(
       releaseName: rel.name,
       releaseNumber: releaseNum,
       releaseId: rel.id,
-      areaPath: rel.areaPath || 'CareFlow-Core\\EHR-Connect',
+      areaPath: rel.areaPath || 'ACM',
       status: rel.status,
       targetDate: rel.targetDate,
       userStoryCount: relStories.length,
@@ -101,6 +119,58 @@ export function getIterationPathsForArea(
       displayName: `${rel.name} (${releaseNum})`
     });
   });
+
+  // Merge discovered iterations from live ADO
+  discoveredIterations.forEach(iter => {
+    const iterPath = iter.path || iter.name;
+    if (processedIterationSet.has(iterPath)) return;
+    processedIterationSet.add(iterPath);
+
+    const relStories = userStories.filter(s => s.iterationPath === iterPath || (s.iterationPath && s.iterationPath.includes(iter.name)));
+    const relDefects = defects.filter(d => d.iterationPath === iterPath || (d.iterationPath && d.iterationPath.includes(iter.name)));
+    const blockerCount = relDefects.filter(d => d.severity === 'critical' && d.status !== 'Closed').length;
+    const releaseNum = extractReleaseNumber(iter.name) || 'v1.0.0';
+
+    result.push({
+      iterationPath: iterPath,
+      releaseName: iter.name,
+      releaseNumber: releaseNum,
+      releaseId: `ado-${iter.id || iter.name}`,
+      areaPath: areaPathFilter || 'ACM',
+      status: 'Active QA',
+      targetDate: iter.finishDate || '2026-09-17',
+      userStoryCount: relStories.length,
+      defectCount: relDefects.length,
+      openBlockerCount: blockerCount,
+      displayName: `${iter.name} (${releaseNum})`
+    });
+  });
+
+  // If no iterations matched and project area filter matches ACM presets
+  if (result.length === 0 && (normalizedFilter.includes('acm') || !normalizedFilter)) {
+    const acmPresets = KNOWN_PROJECT_ITERATIONS['acm'] || [];
+    acmPresets.forEach(preset => {
+      if (processedIterationSet.has(preset.path)) return;
+      processedIterationSet.add(preset.path);
+
+      const relStories = userStories.filter(s => s.iterationPath === preset.path || (s.iterationPath && s.iterationPath.includes(preset.name)));
+      const relDefects = defects.filter(d => d.iterationPath === preset.path || (d.iterationPath && d.iterationPath.includes(preset.name)));
+
+      result.push({
+        iterationPath: preset.path,
+        releaseName: preset.name,
+        releaseNumber: preset.releaseNumber,
+        releaseId: `preset-${preset.name}`,
+        areaPath: 'ACM',
+        status: 'Active QA',
+        targetDate: preset.targetDate,
+        userStoryCount: relStories.length,
+        defectCount: relDefects.length,
+        openBlockerCount: 0,
+        displayName: `${preset.name} (${preset.releaseNumber})`
+      });
+    });
+  }
 
   // Also discover any standalone iteration paths on stories/defects matching this area
   if (normalizedFilter && normalizedFilter !== 'all') {
@@ -124,28 +194,6 @@ export function getIterationPathsForArea(
         });
       }
     });
-
-    // Check project definitions if nothing was registered yet
-    const projectKey = Object.keys(KNOWN_PROJECT_ITERATIONS).find(k => normalizedFilter.startsWith(k) || normalizedFilter.includes(k));
-    if (projectKey && KNOWN_PROJECT_ITERATIONS[projectKey]) {
-      KNOWN_PROJECT_ITERATIONS[projectKey].forEach(known => {
-        if (processedIterationSet.has(known.path)) return;
-        processedIterationSet.add(known.path);
-        result.push({
-          iterationPath: known.path,
-          releaseName: known.name,
-          releaseNumber: known.releaseNumber,
-          releaseId: `rel-${known.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
-          areaPath: areaPathFilter,
-          status: 'Active QA',
-          targetDate: known.targetDate,
-          userStoryCount: userStories.filter(st => st.iterationPath === known.path).length,
-          defectCount: defects.filter(df => df.iterationPath === known.path).length,
-          openBlockerCount: 0,
-          displayName: `${known.name} (${known.releaseNumber})`
-        });
-      });
-    }
   }
 
   return result;

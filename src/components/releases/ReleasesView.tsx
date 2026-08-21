@@ -18,6 +18,7 @@ import {
 import { generateReleaseNotes } from '../../services/aiService';
 import { generateId, toDateStr, formatDisplayDate } from '../../utils/date';
 import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber } from '../../utils/adoPaths';
+import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
 
 interface ReleasesViewProps {
   releases: Release[];
@@ -171,19 +172,17 @@ export const ReleasesView: React.FC<ReleasesViewProps> = ({
 
         <div className="flex items-center gap-3 flex-wrap">
           {/* Area Path filter */}
-          <div className="flex items-center gap-2 bg-[var(--surface-hover)] px-3 py-1.5 rounded-xl border border-[var(--border)]">
-            <Layers size={13} className="text-[var(--primary)] flex-shrink-0" />
-            <span className="text-xs font-bold text-[var(--text-primary)]">Area:</span>
-            <select
+          <div className="min-w-[220px]">
+            <SearchableSelect
+              options={availableAreaPaths.map(a => ({ value: a, label: a, icon: <Layers size={12} className="text-[var(--primary)]" /> }))}
               value={filterAreaPath}
-              onChange={(e) => setFilterAreaPath(e.target.value)}
-              className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2 py-1 text-xs font-semibold text-[var(--text-primary)] outline-none cursor-pointer max-w-[200px] truncate"
-            >
-              <option value="">All Area Paths</option>
-              {availableAreaPaths.map(a => (
-                <option key={a} value={a}>{a}</option>
-              ))}
-            </select>
+              onChange={setFilterAreaPath}
+              placeholder="All Area Paths"
+              searchPlaceholder="Search area paths..."
+              allOptionLabel="All Area Paths"
+              size="sm"
+              icon={<Layers size={13} />}
+            />
           </div>
 
           <button

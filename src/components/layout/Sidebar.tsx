@@ -4,11 +4,13 @@ import {
   Release, 
   Task, 
   UserStory, 
+  TestCase,
   Defect 
 } from '../../types';
 import { 
   CheckSquare, 
   BookOpen, 
+  FileCheck2,
   Bug, 
   BarChart3, 
   Rocket, 
@@ -35,10 +37,12 @@ interface SidebarProps {
   setSelectedReleaseId?: (id: string | null) => void;
   tasks?: Task[];
   userStories?: UserStory[];
+  testCases?: TestCase[];
   defects?: Defect[];
   dateStr?: string;
   pendingTasksCount?: number;
   activeStoriesCount?: number;
+  testCasesCount?: number;
   openDefectsCount?: number;
   standupCount?: number;
   onOpenAdoModal?: () => void;
@@ -52,6 +56,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setCollapsed: propSetCollapsed,
   pendingTasksCount = 0,
   activeStoriesCount = 0,
+  testCasesCount = 0,
   openDefectsCount = 0,
   standupCount = 0,
   onOpenAdoModal
@@ -81,6 +86,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'User Stories',
       icon: BookOpen,
       badge: activeStoriesCount > 0 ? String(activeStoriesCount) : null,
+      badgeType: 'neutral'
+    },
+    {
+      id: 'testCases' as AppView,
+      label: 'Test Cases',
+      icon: FileCheck2,
+      badge: testCasesCount > 0 ? String(testCasesCount) : null,
       badgeType: 'neutral'
     },
     {

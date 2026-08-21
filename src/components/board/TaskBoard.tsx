@@ -36,6 +36,8 @@ import {
   Lock
 } from 'lucide-react';
 import { isTaskOverdue } from '../../utils/date';
+import { MultiSearchableSelect } from '../common/MultiSearchableSelect';
+import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
 
 export type GroupByMode = 'priority' | 'group' | 'status' | 'source';
 
@@ -147,6 +149,30 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
   // Assignee counts on scoped tasks
   const unassignedCount = scopedTasks.filter(t => !t.assigneeIds || t.assigneeIds.length === 0).length;
+
+  // Searchable Multi-Select Assignee Options
+  const assigneeSelectOptions: SelectOption[] = React.useMemo(() => {
+    return [
+      {
+        value: 'unassigned',
+        label: 'Unassigned',
+        badge: `${unassignedCount}`,
+        icon: <Users size={12} className="text-[var(--text-muted)]" />
+      },
+      ...team.map(member => {
+        const count = scopedTasks.filter(t => t.assigneeIds && t.assigneeIds.includes(member.id)).length;
+        const initials = member.name.split(' ').map(n => n[0]).join('').slice(0, 2);
+        return {
+          value: member.id,
+          label: member.name,
+          sublabel: member.role,
+          badge: `${count}`,
+          avatarColor: member.avatarColor || 'var(--primary)',
+          avatarInitials: initials
+        };
+      })
+    ];
+  }, [team, scopedTasks, unassignedCount]);
 
   // Multi-tier filtering pipeline
   // 1. Overdue / Blocked filters
@@ -807,7 +833,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
             </div>
           </div>
 
-          {/* Assignee Filter Section */}
+          {/* Assignee Filter Section - Searchable Dropdown & Multi-Select */}
           <div className="lg:col-span-7 flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1">
@@ -827,68 +853,18 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5">
-              {/* All Assignees */}
-              <button
-                onClick={() => setSelectedAssigneeIds([])}
-                className={`px-2.5 py-1 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
-                  selectedAssigneeIds.length === 0
-                    ? 'bg-[var(--surface-hover)] text-[var(--text-primary)] border-[var(--primary)] shadow-xs ring-1 ring-[var(--primary)]/20'
-                    : 'bg-[var(--surface)] text-[var(--text-secondary)] border-[var(--border)] hover:bg-[var(--surface-hover)]'
-                }`}
-              >
-                All Members
-              </button>
-
-              {/* Team Members Chips */}
-              {team.map(member => {
-                const memberTaskCount = scopedTasks.filter(t => t.assigneeIds && t.assigneeIds.includes(member.id)).length;
-                const isSelected = selectedAssigneeIds.includes(member.id);
-                const initials = member.name.split(' ').map(n => n[0]).join('').slice(0, 2);
-
-                return (
-                  <button
-                    key={member.id}
-                    onClick={() => handleToggleAssignee(member.id)}
-                    className={`px-2.5 py-1 text-xs font-semibold rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer ${
-                      isSelected
-                        ? 'bg-[var(--primary-light)] text-[var(--primary)] border-[var(--primary)] shadow-xs ring-1 ring-[var(--primary)]'
-                        : 'bg-[var(--surface)] text-[var(--text-primary)] border-[var(--border)] hover:border-[var(--primary)]/50 hover:bg-[var(--surface-hover)]'
-                    }`}
-                    title={`${member.name} (${member.role})`}
-                  >
-                    <span
-                      className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-extrabold text-white flex-shrink-0 shadow-xs"
-                      style={{ backgroundColor: member.avatarColor || 'var(--primary)' }}
-                    >
-                      {initials}
-                    </span>
-                    <span className="truncate max-w-[105px]">{member.name.split(' ')[0]}</span>
-                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                      isSelected ? 'bg-[var(--primary)] text-white' : 'bg-[var(--surface-hover)] text-[var(--text-secondary)]'
-                    }`}>
-                      {memberTaskCount}
-                    </span>
-                  </button>
-                );
-              })}
-
-              {/* Unassigned Chip */}
-              <button
-                onClick={() => handleToggleAssignee('unassigned')}
-                className={`px-2.5 py-1 text-xs font-semibold rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer ${
-                  selectedAssigneeIds.includes('unassigned')
-                    ? 'bg-[var(--primary-light)] text-[var(--primary)] border-[var(--primary)] shadow-xs ring-1 ring-[var(--primary)]'
-                    : 'bg-[var(--surface)] text-[var(--text-secondary)] border-[var(--border)] hover:bg-[var(--surface-hover)]'
-                }`}
-              >
-                <span className="italic">Unassigned</span>
-                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                  selectedAssigneeIds.includes('unassigned') ? 'bg-[var(--primary)] text-white' : 'bg-[var(--surface-hover)] text-[var(--text-secondary)]'
-                }`}>
-                  {unassignedCount}
-                </span>
-              </button>
+            <div className="w-full">
+              <MultiSearchableSelect
+                options={assigneeSelectOptions}
+                values={selectedAssigneeIds}
+                onChange={setSelectedAssigneeIds}
+                placeholder="All Assignees / Team Members"
+                allOptionLabel="All Assignees"
+                searchPlaceholder="Search assignees by name or role..."
+                size="sm"
+                icon={<Users size={13} />}
+                maxDisplayTags={3}
+              />
             </div>
           </div>
         </div>

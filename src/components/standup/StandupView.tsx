@@ -17,7 +17,9 @@ import {
   Copy, 
   Mail, 
   Check, 
-  Clock 
+  Clock,
+  Search,
+  X
 } from 'lucide-react';
 import { generateStandupSummary } from '../../services/aiService';
 import { buildStandupEmail } from '../../services/emailService';
@@ -53,6 +55,7 @@ export const StandupView: React.FC<StandupViewProps> = ({
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [copiedMd, setCopiedMd] = useState<boolean>(false);
   const [copiedHtml, setCopiedHtml] = useState<boolean>(false);
+  const [memberSearch, setMemberSearch] = useState<string>('');
 
   const activeMember = team.find(t => t.id === activeMemberId) || team[0];
   const activeEntry: StandupEntry = standup[activeMemberId] || {
@@ -183,7 +186,7 @@ export const StandupView: React.FC<StandupViewProps> = ({
       {/* Main Grid: Roster Selector & Standup Form */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Team Roster (4 cols) */}
-        <div className="lg:col-span-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 shadow-xs flex flex-col gap-2">
+        <div className="lg:col-span-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 shadow-xs flex flex-col gap-2.5">
           <div className="flex items-center justify-between pb-2 border-b border-[var(--border)]">
             <span className="text-xs font-bold text-[var(--text-primary)]">Team Roster</span>
             <span className="text-[11px] font-semibold text-[var(--text-muted)]">
@@ -191,8 +194,35 @@ export const StandupView: React.FC<StandupViewProps> = ({
             </span>
           </div>
 
+          {/* Quick Search Input */}
+          <div className="relative flex items-center">
+            <Search size={13} className="absolute left-2.5 text-[var(--text-muted)] pointer-events-none" />
+            <input
+              type="text"
+              value={memberSearch}
+              onChange={(e) => setMemberSearch(e.target.value)}
+              placeholder="Search roster..."
+              className="w-full bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl pl-8 pr-7 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none focus:border-[var(--primary)] focus:bg-[var(--surface)] transition-all font-medium"
+            />
+            {memberSearch && (
+              <button
+                type="button"
+                onClick={() => setMemberSearch('')}
+                className="absolute right-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] p-0.5 cursor-pointer"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+
           <div className="flex flex-col gap-1.5 max-h-[500px] overflow-y-auto">
-            {team.map(member => {
+            {team
+              .filter(m => {
+                if (!memberSearch.trim()) return true;
+                const q = memberSearch.toLowerCase().trim();
+                return m.name.toLowerCase().includes(q) || (m.role && m.role.toLowerCase().includes(q));
+              })
+              .map(member => {
               const entry = standup[member.id];
               const isFilled = Boolean(entry && (entry.yesterday || entry.today));
               const hasBlockers = Boolean(entry?.blockers && entry.blockers.toLowerCase() !== 'none');

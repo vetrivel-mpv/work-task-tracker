@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   UserStory, 
   UserStoryStatus, 
@@ -22,10 +22,15 @@ import {
   ChevronUp,
   Building2,
   FolderGit2,
-  Tag
+  Tag,
+  Users,
+  Search,
+  Rocket,
+  X
 } from 'lucide-react';
 import { generateId, toDateStr } from '../../utils/date';
 import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber } from '../../utils/adoPaths';
+import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
 
 interface UserStoriesViewProps {
   userStories: UserStory[];
@@ -65,6 +70,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
 }) => {
   const [filterAreaPath, setFilterAreaPath] = useState<string>('');
   const [filterRelease, setFilterRelease] = useState<string>(selectedReleaseId || '');
+  const [filterAssignee, setFilterAssignee] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [search, setSearch] = useState<string>('');
   const [modalOpen, setModalOpen] = useState(false);
@@ -184,51 +190,183 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     });
   };
 
-  // Filter stories based on Area Path and Iteration Path
-  const filteredStories = userStories.filter(s => {
-    // Area Path Filter
-    if (filterAreaPath) {
-      const sArea = (s.areaPath || releases.find(r => r.id === s.releaseId)?.areaPath || '').toLowerCase();
-      const targetArea = filterAreaPath.toLowerCase();
-      const matchesAreaDirectly = sArea === targetArea || sArea.includes(targetArea) || targetArea.includes(sArea);
-      const matchesReturnedIteration = returnedIterationPaths.some(
-        iter => iter.releaseId === s.releaseId || iter.iterationPath === s.iterationPath
-      );
-      if (!matchesAreaDirectly && !matchesReturnedIteration) return false;
-    }
+  // Filter stories based on Area Path, Iteration Path, Assignee, Status, and exclude Test Cases
+  const filteredStories = useMemo(() => {
+    return userStories.filter(s => {
+      // Exclude Test Cases mapped mistakenly as User Story
+      const titleLower = (s.title || '').toLowerCase();
+      const isTestCase = titleLower.startsWith('[test case]') || 
+                         titleLower.startsWith('test case:') || 
+                         (s as any).workItemType === 'Test Case' ||
+                         (s as any).workItemType === 'Test Plan' ||
+                         (s as any).workItemType === 'Test Suite';
+      if (isTestCase) return false;
 
-    // Iteration / Release Filter
-    if (filterRelease) {
-      const matchesRelId = s.releaseId === filterRelease;
-      const matchesIterPath = s.iterationPath === filterRelease;
-      const matchedRelease = releases.find(r => r.id === filterRelease);
-      const matchesReleaseIteration = matchedRelease && (
-        matchedRelease.iterationPath === s.iterationPath ||
-        matchedRelease.name === s.iterationPath ||
-        (s.iterationPath && matchedRelease.name.includes(s.iterationPath))
-      );
-      if (!matchesRelId && !matchesIterPath && !matchesReleaseIteration) return false;
-    }
+      // Assignee Filter
+      if (filterAssignee) {
+        if (filterAssignee === 'unassigned') {
+          if (s.assigneeId) return false;
+        } else if (s.assigneeId !== filterAssignee) {
+          return false;
+        }
+      }
 
-    // Status Filter
-    if (filterStatus && s.status !== filterStatus) return false;
+      // Area Path Filter
+      if (filterAreaPath) {
+        const sArea = (s.areaPath || releases.find(r => r.id === s.releaseId)?.areaPath || '').toLowerCase();
+        const targetArea = filterAreaPath.toLowerCase();
+        const matchesAreaDirectly = sArea === targetArea || sArea.includes(targetArea) || targetArea.includes(sArea);
+        const matchesReturnedIteration = returnedIterationPaths.some(
+          iter => iter.releaseId === s.releaseId || iter.iterationPath === s.iterationPath
+        );
+        if (!matchesAreaDirectly && !matchesReturnedIteration) return false;
+      }
 
-    // Search query
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      const matchTitle = s.title.toLowerCase().includes(q);
-      const matchDesc = (s.description || '').toLowerCase().includes(q);
-      const matchAdo = s.adoId ? String(s.adoId).includes(q) : false;
-      const matchArea = (s.areaPath || '').toLowerCase().includes(q);
-      const matchIter = (s.iterationPath || '').toLowerCase().includes(q);
-      return matchTitle || matchDesc || matchAdo || matchArea || matchIter;
-    }
-    return true;
-  });
+      // Iteration / Release Filter
+      if (filterRelease) {
+        const matchesRelId = s.releaseId === filterRelease;
+        const matchesIterPath = s.iterationPath === filterRelease;
+        const matchedRelease = releases.find(r => r.id === filterRelease);
+        const matchesReleaseIteration = matchedRelease && (
+          matchedRelease.iterationPath === s.iterationPath ||
+          matchedRelease.name === s.iterationPath ||
+          (s.iterationPath && matchedRelease.name.includes(s.iterationPath))
+        );
+        if (!matchesRelId && !matchesIterPath && !matchesReleaseIteration) return false;
+      }
 
-  // Metrics
-  const totalPoints = filteredStories.reduce((acc, s) => acc + (s.storyPoints || 0), 0);
+      // Status Filter
+      if (filterStatus && s.status !== filterStatus) return false;
+
+      // Search query
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        const matchTitle = s.title.toLowerCase().includes(q);
+        const matchDesc = (s.description || '').toLowerCase().includes(q);
+        const matchAdo = s.adoId ? String(s.adoId).includes(q) : false;
+        const matchArea = (s.areaPath || '').toLowerCase().includes(q);
+        const matchIter = (s.iterationPath || '').toLowerCase().includes(q);
+        const memberName = s.assigneeId ? (team.find(t => t.id === s.assigneeId)?.name || '') : '';
+        const matchAssignee = memberName ? memberName.toLowerCase().includes(q) : false;
+        if (!matchTitle && !matchDesc && !matchAdo && !matchArea && !matchIter && !matchAssignee) return false;
+      }
+
+      return true;
+    });
+  }, [userStories, releases, returnedIterationPaths, filterAssignee, filterAreaPath, filterRelease, filterStatus, search]);
+
+  // Options for Searchable Area Path
+  const areaOptions: SelectOption[] = useMemo(() => {
+    return availableAreaPaths.map(area => {
+      const count = userStories.filter(s => (s.areaPath || '').toLowerCase() === area.toLowerCase()).length;
+      return {
+        value: area,
+        label: area,
+        badge: `${count} stories`,
+        icon: <FolderGit2 size={13} className="text-[var(--primary)]" />
+      };
+    });
+  }, [availableAreaPaths, userStories]);
+
+  // Options for Searchable Iteration / Release
+  const iterationOptions: SelectOption[] = useMemo(() => {
+    return returnedIterationPaths.map(iter => {
+      const count = userStories.filter(s => s.releaseId === iter.releaseId || s.iterationPath === iter.iterationPath).length;
+      return {
+        value: iter.releaseId || iter.iterationPath,
+        label: `${iter.releaseName} (${iter.releaseNumber || 'v1.0.0'})`,
+        sublabel: iter.iterationPath,
+        badge: `${count} stories`,
+        icon: <Rocket size={13} className="text-[var(--primary)]" />
+      };
+    });
+  }, [returnedIterationPaths, userStories]);
+
+  // Options for Searchable Assignee Filter
+  const assigneeOptions: SelectOption[] = useMemo(() => {
+    const unassignedCount = userStories.filter(s => !s.assigneeId).length;
+    const list: SelectOption[] = [
+      {
+        value: 'unassigned',
+        label: 'Unassigned Stories',
+        badge: `${unassignedCount}`,
+        icon: <Users size={13} className="text-[var(--text-muted)]" />
+      }
+    ];
+
+    team.forEach(m => {
+      const count = userStories.filter(s => s.assigneeId === m.id).length;
+      list.push({
+        value: m.id,
+        label: m.name,
+        sublabel: m.role,
+        badge: `${count} stories`,
+        avatarColor: m.avatarColor || 'var(--primary)',
+        avatarInitials: m.name.split(' ').map(n => n[0]).join('').slice(0, 2)
+      });
+    });
+
+    return list;
+  }, [team, userStories]);
+
+  // Options for Status Filter
+  const statusOptions: SelectOption[] = useMemo(() => {
+    return STATUS_OPTIONS.map(st => {
+      const count = userStories.filter(s => s.status === st).length;
+      return {
+        value: st,
+        label: st,
+        badge: `${count}`
+      };
+    });
+  }, [userStories]);
+
+  // Modal Assignee Options
+  const modalAssigneeOptions: SelectOption[] = useMemo(() => {
+    return [
+      { value: '', label: 'Unassigned', icon: <Users size={13} className="text-[var(--text-muted)]" /> },
+      ...team.map(m => ({
+        value: m.id,
+        label: m.name,
+        sublabel: m.role,
+        avatarColor: m.avatarColor || 'var(--primary)',
+        avatarInitials: m.name.split(' ').map(n => n[0]).join('').slice(0, 2)
+      }))
+    ];
+  }, [team]);
+
+  // Modal Release Options
+  const modalReleaseOptions: SelectOption[] = useMemo(() => {
+    const source = modalReturnedIterations.length > 0 ? modalReturnedIterations : releases.map(r => ({
+      releaseId: r.id,
+      releaseName: r.name,
+      releaseNumber: r.releaseNumber || 'v1.0.0',
+      iterationPath: r.iterationPath || r.name
+    }));
+
+    return [
+      { value: '', label: 'No Release' },
+      ...source.map(iter => ({
+        value: iter.releaseId,
+        label: `${iter.releaseName} (${iter.releaseNumber || 'v1.0.0'})`,
+        sublabel: iter.iterationPath
+      }))
+    ];
+  }, [modalReturnedIterations, releases]);
+
+  // Calculate metrics
+  const totalPoints = filteredStories.reduce((sum, s) => sum + (s.storyPoints || 0), 0);
   const passedStories = filteredStories.filter(s => s.status === 'QA Passed' || s.status === 'Done').length;
+  const blockedStories = filteredStories.filter(s => s.status === 'Blocked').length;
+  const activeFiltersCount = (filterAreaPath ? 1 : 0) + (filterRelease ? 1 : 0) + (filterAssignee ? 1 : 0) + (filterStatus ? 1 : 0) + (search ? 1 : 0);
+
+  const handleClearFilters = () => {
+    setFilterAreaPath('');
+    setFilterRelease('');
+    setFilterAssignee('');
+    setFilterStatus('');
+    setSearch('');
+  };
 
   const getStatusBadgeClass = (st: UserStoryStatus) => {
     switch (st) {
@@ -279,67 +417,88 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
           </div>
         </div>
 
-        {/* Filter Controls Bar */}
+        {/* Filter Controls Bar - Searchable Dropdowns with Latest UI */}
         <div className="flex flex-wrap items-center gap-3 mt-4 pt-4 border-t border-[var(--border)]">
-          <div className="flex-1 min-w-[200px]">
+          {/* Quick Search */}
+          <div className="flex-1 min-w-[200px] relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
             <input
               type="text"
               placeholder="Search stories, Area Path, Iteration Path, or ADO #..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:bg-[var(--surface)] focus:border-[var(--primary)]"
+              className="w-full bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl pl-9 pr-8 py-2 text-xs text-[var(--text-primary)] outline-none focus:bg-[var(--surface)] focus:border-[var(--primary)] transition-all"
+            />
+            {search && (
+              <button 
+                onClick={() => setSearch('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] p-0.5 rounded cursor-pointer"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+
+          {/* SEARCHABLE ASSIGNEE FILTER */}
+          <div className="min-w-[180px]">
+            <SearchableSelect
+              options={assigneeOptions}
+              value={filterAssignee}
+              onChange={setFilterAssignee}
+              placeholder="All Assignees"
+              label="Assignee"
+              icon={<Users size={14} />}
             />
           </div>
 
-          {/* AREA PATH FILTER */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] font-bold text-[var(--text-secondary)]">Area:</span>
-            <select
+          {/* SEARCHABLE AREA PATH FILTER */}
+          <div className="min-w-[180px]">
+            <SearchableSelect
+              options={areaOptions}
               value={filterAreaPath}
-              onChange={(e) => {
-                setFilterAreaPath(e.target.value);
+              onChange={(val) => {
+                setFilterAreaPath(val);
                 setFilterRelease(''); // reset iteration filter when area changes
               }}
-              className="bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] outline-none cursor-pointer"
-            >
-              <option value="">All Area Paths</option>
-              {availableAreaPaths.map(area => (
-                <option key={area} value={area}>{area}</option>
-              ))}
-            </select>
+              placeholder="All Area Paths"
+              label="Area Path"
+              icon={<FolderGit2 size={14} />}
+            />
           </div>
 
-          {/* ITERATION PATH FILTER (DYNAMICALLY RETURNED BASED ON AREA PATH) */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] font-bold text-[var(--text-secondary)]">Iteration:</span>
-            <select
+          {/* SEARCHABLE ITERATION PATH FILTER */}
+          <div className="min-w-[190px]">
+            <SearchableSelect
+              options={iterationOptions}
               value={filterRelease}
-              onChange={(e) => setFilterRelease(e.target.value)}
-              className="bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] outline-none cursor-pointer max-w-[260px]"
-            >
-              <option value="">
-                {filterAreaPath 
-                  ? `All Iterations in Area (${returnedIterationPaths.length} returned)`
-                  : 'All Iteration Paths (Releases)'}
-              </option>
-              {returnedIterationPaths.map(iter => (
-                <option key={iter.iterationPath + iter.releaseId} value={iter.releaseId || iter.iterationPath}>
-                  {iter.releaseName} ({iter.releaseNumber})
-                </option>
-              ))}
-            </select>
+              onChange={setFilterRelease}
+              placeholder={filterAreaPath ? `Iterations in Area (${returnedIterationPaths.length})` : 'All Iteration Paths'}
+              label="Iteration"
+              icon={<Rocket size={14} />}
+            />
           </div>
 
-          <select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            className="bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] outline-none cursor-pointer"
-          >
-            <option value="">All Statuses</option>
-            {STATUS_OPTIONS.map(st => (
-              <option key={st} value={st}>{st}</option>
-            ))}
-          </select>
+          {/* SEARCHABLE STATUS FILTER */}
+          <div className="min-w-[150px]">
+            <SearchableSelect
+              options={statusOptions}
+              value={filterStatus}
+              onChange={setFilterStatus}
+              placeholder="All Statuses"
+              label="Status"
+            />
+          </div>
+
+          {activeFiltersCount > 0 && (
+            <button
+              onClick={handleClearFilters}
+              className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl transition-all cursor-pointer"
+              title="Reset all filters"
+            >
+              <X size={13} />
+              <span>Reset</span>
+            </button>
+          )}
         </div>
 
         {/* Informative Area Path returned Iterations bar when filter is active */}
@@ -356,13 +515,13 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                 <button
                   key={iter.iterationPath + iter.releaseId}
                   onClick={() => setFilterRelease(filterRelease === (iter.releaseId || iter.iterationPath) ? '' : (iter.releaseId || iter.iterationPath))}
-                  className={`px-2 py-0.5 rounded-md text-[11px] font-semibold border transition-all cursor-pointer ${
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer ${
                     filterRelease === (iter.releaseId || iter.iterationPath)
-                      ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
+                      ? 'bg-[var(--primary)] text-white border-[var(--primary)] shadow-xs'
                       : 'bg-[var(--surface-hover)] text-[var(--text-primary)] border-[var(--border)] hover:border-[var(--primary)]/50'
                   }`}
                 >
-                  {iter.releaseName} <span className="font-mono text-[10px]">[{iter.releaseNumber}]</span>
+                  {iter.releaseName} <span className="font-mono text-[10px] opacity-80">[{iter.releaseNumber}]</span>
                 </button>
               ))
             )}
@@ -382,59 +541,72 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
       <div className="flex flex-col gap-3.5">
         {filteredStories.length > 0 ? (
           filteredStories.map(story => {
+            const release = releases.find(r => r.id === story.releaseId);
             const assignee = team.find(m => m.id === story.assigneeId);
-            const rel = releases.find(r => r.id === story.releaseId);
-            const storyArea = story.areaPath || rel?.areaPath || 'CareFlow-Core\\EHR-Connect';
-            const storyIter = story.iterationPath || rel?.iterationPath || 'CareFlow-Core\\Sprint 24';
-            const storyRelNum = rel?.releaseNumber || extractReleaseNumber(rel?.name || storyIter);
-            const linkedTasks = tasks.filter(t => t.userStoryId === story.id);
-            const linkedDefects = defects.filter(d => d.userStoryId === story.id);
-            const openDefects = linkedDefects.filter(d => d.status !== 'Closed');
             const isCriteriaExpanded = expandedCriteria.has(story.id);
+            const isPassed = story.status === 'QA Passed' || story.status === 'Done';
+            const isBlocked = story.status === 'Blocked';
 
             return (
               <div
                 key={story.id}
-                className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4.5 hover:border-[var(--primary)] transition-all shadow-xs"
+                className={`bg-[var(--surface)] border rounded-2xl p-5 shadow-xs transition-all hover:border-[var(--primary)]/30 ${
+                  isBlocked
+                    ? 'border-[var(--critical)]/40 bg-[var(--critical-bg)]/20'
+                    : isPassed
+                    ? 'border-[var(--border)]'
+                    : 'border-[var(--border)]'
+                }`}
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex items-start gap-3 flex-1 min-w-0">
-                    <div className="w-8 h-8 rounded-xl bg-[var(--primary-light)] text-[var(--primary)] flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5">
+                    <span className="mt-0.5 p-1.5 bg-[var(--primary-light)] text-[var(--primary)] rounded-lg">
                       <BookOpen size={16} />
-                    </div>
+                    </span>
 
                     <div className="flex-1 min-w-0">
                       <div className="flex flex-wrap items-center gap-2 mb-1">
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[var(--internal-ado)] bg-[var(--internal-ado-bg)] px-2 py-0.5 rounded-md border border-[var(--internal-ado)]/20">
-                          <Building2 size={10} />
-                          <span>Internal ADO</span>
-                        </span>
-
-                        {/* Area Path Badge */}
-                        <span className="text-[10.5px] font-mono font-medium text-[var(--text-secondary)] bg-[var(--surface-hover)] px-2 py-0.5 rounded-md border border-[var(--border)]">
-                          {storyArea}
-                        </span>
-
-                        {/* Iteration Path / Release Badge */}
-                        <span className="inline-flex items-center gap-1 text-[10.5px] font-bold text-[var(--primary)] bg-[var(--primary-light)] px-2 py-0.5 rounded-md">
-                          <FolderGit2 size={11} />
-                          <span>{rel?.name || storyIter}</span>
-                          <span className="font-mono text-[10px] px-1 py-0.2 bg-white/70 rounded">
-                            {storyRelNum}
-                          </span>
-                        </span>
-
                         {story.adoId && (
-                          <span className="text-[10.5px] font-bold text-[var(--primary)] bg-[var(--surface-hover)] px-2 py-0.5 rounded-md border border-[var(--border)]">
-                            US-{story.adoId}
+                          <span className="font-mono text-[11px] font-bold text-[var(--primary)] bg-[var(--primary-light)] px-2 py-0.5 rounded-md border border-[var(--border)] flex items-center gap-1">
+                            ADO #{story.adoId}
+                            {story.adoUrl && (
+                              <a
+                                href={story.adoUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[var(--text-muted)] hover:text-[var(--primary)]"
+                              >
+                                <ExternalLink size={10} />
+                              </a>
+                            )}
                           </span>
                         )}
-                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md border ${getStatusBadgeClass(story.status)}`}>
+
+                        <span
+                          className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${getStatusBadgeClass(
+                            story.status
+                          )}`}
+                        >
                           {story.status}
                         </span>
+
                         {story.storyPoints !== undefined && (
-                          <span className="text-[11px] font-bold text-[var(--text-secondary)] bg-[var(--surface-hover)] px-2 py-0.5 rounded-md">
+                          <span className="text-[11px] font-bold text-[var(--text-secondary)] bg-[var(--surface-hover)] border border-[var(--border)] px-2 py-0.5 rounded-md">
                             {story.storyPoints} pts
+                          </span>
+                        )}
+
+                        {story.areaPath && (
+                          <span className="text-[11px] font-semibold text-[var(--text-secondary)] bg-[var(--surface-hover)] border border-[var(--border)] px-2 py-0.5 rounded-md flex items-center gap-1">
+                            <FolderGit2 size={11} className="text-[var(--primary)]" />
+                            {story.areaPath}
+                          </span>
+                        )}
+
+                        {(story.iterationPath || release?.name) && (
+                          <span className="text-[11px] font-semibold text-[var(--primary)] bg-[var(--primary-light)] border border-[var(--border)] px-2 py-0.5 rounded-md flex items-center gap-1">
+                            <Rocket size={11} />
+                            {story.iterationPath || release?.name}
                           </span>
                         )}
                       </div>
@@ -449,77 +621,56 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                         </p>
                       )}
 
-                      {/* Criteria Accordion */}
+                      {/* Acceptance Criteria Expandable */}
                       {story.acceptanceCriteria && story.acceptanceCriteria.length > 0 && (
                         <div className="mt-3">
                           <button
                             onClick={() => toggleCriteria(story.id)}
                             className="inline-flex items-center gap-1.5 text-xs font-bold text-[var(--primary)] hover:underline cursor-pointer"
                           >
-                            <ListChecks size={13} />
+                            <ListChecks size={14} />
                             <span>Acceptance Criteria ({story.acceptanceCriteria.length})</span>
-                            {isCriteriaExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                            {isCriteriaExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                           </button>
 
                           {isCriteriaExpanded && (
-                            <ul className="mt-2 pl-2 space-y-1 text-xs text-[var(--text-secondary)] border-l-2 border-[var(--primary)]">
+                            <div className="mt-2 bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl p-3 flex flex-col gap-1.5 text-xs text-[var(--text-primary)]">
                               {story.acceptanceCriteria.map((c, i) => (
-                                <li key={i} className="flex items-start gap-1.5">
-                                  <span className="text-[var(--primary)] font-bold font-mono">{i + 1}.</span>
+                                <div key={i} className="flex items-start gap-2">
+                                  <CheckCircle2 size={13} className="text-[var(--low)] mt-0.5 flex-shrink-0" />
                                   <span>{c}</span>
-                                </li>
+                                </div>
                               ))}
-                            </ul>
+                            </div>
                           )}
                         </div>
                       )}
 
-                      {/* Footer Info: Assignee, Release, Test Plan & Linked Defect Counters */}
-                      <div className="flex flex-wrap items-center gap-4 text-xs font-semibold text-[var(--text-muted)] mt-3 pt-2.5 border-t border-[var(--border)]">
+                      {/* Assignee & Meta Bar */}
+                      <div className="flex flex-wrap items-center gap-4 mt-3 pt-3 border-t border-[var(--border)] text-[11px] text-[var(--text-muted)]">
                         {assignee ? (
-                          <div className="flex items-center gap-1.5 text-[var(--text-secondary)]">
-                            <span className="w-5 h-5 rounded-full bg-[var(--primary-light)] text-[var(--primary)] flex items-center justify-center text-[10px] font-bold">
-                              {assignee.name.charAt(0)}
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white shadow-2xs"
+                              style={{ backgroundColor: assignee.avatarColor || 'var(--primary)' }}
+                            >
+                              {assignee.name.slice(0, 2).toUpperCase()}
                             </span>
-                            <span>{assignee.name}</span>
+                            <span className="font-semibold text-[var(--text-primary)]">{assignee.name}</span>
+                            <span className="text-[10px]">({assignee.role})</span>
                           </div>
                         ) : (
-                          <span className="text-[var(--text-muted)]">Unassigned</span>
+                          <span className="italic">Unassigned</span>
                         )}
 
-                        {story.testPlanRef && (
-                          <div className="flex items-center gap-1 text-[var(--primary)] font-semibold">
-                            <CheckCircle2 size={13} />
-                            <span>
-                              Test Suite: {story.testPlanRef.passedTests}/{story.testPlanRef.totalTests} Passed
-                            </span>
+                        {story.createdByName && (
+                          <div className="flex items-center gap-1">
+                            <span>Created by:</span>
+                            <span className="font-semibold text-[var(--text-secondary)]">{story.createdByName}</span>
                           </div>
                         )}
 
-                        {openDefects.length > 0 && (
-                          <div className="flex items-center gap-1 text-[var(--critical)] font-bold">
-                            <AlertCircle size={13} />
-                            <span>{openDefects.length} Open Defects</span>
-                          </div>
-                        )}
-
-                        {linkedTasks.length > 0 && (
-                          <span className="text-[var(--text-secondary)]">
-                            {linkedTasks.length} linked dev tasks
-                          </span>
-                        )}
-
-                        {story.adoUrl && (
-                          <a
-                            href={story.adoUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-[var(--primary)] hover:underline ml-auto"
-                          >
-                            <span>Open in ADO</span>
-                            <ExternalLink size={12} />
-                          </a>
-                        )}
+                        <span className="ml-auto">Updated {story.updatedAt}</span>
                       </div>
                     </div>
                   </div>
@@ -527,14 +678,14 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                   <div className="flex items-center gap-1 text-[var(--text-muted)] flex-shrink-0">
                     <button
                       onClick={() => openEditModal(story)}
-                      className="p-1 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-lg cursor-pointer"
+                      className="p-1.5 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-lg cursor-pointer transition-all"
                       title="Edit"
                     >
                       <Edit3 size={14} />
                     </button>
                     <button
                       onClick={() => onDeleteStory(story.id)}
-                      className="p-1 hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] rounded-lg cursor-pointer"
+                      className="p-1.5 hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] rounded-lg cursor-pointer transition-all"
                       title="Delete"
                     >
                       <Trash2 size={14} />
@@ -564,7 +715,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
         )}
       </div>
 
-      {/* Add / Edit Modal */}
+      {/* Add / Edit Modal with Modern Searchable Selects */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl max-w-xl w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
@@ -614,9 +765,9 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                       setIterationPath(iters[0].iterationPath);
                     }
                   }}
-                  className="w-full text-xs font-medium px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+                  className="w-full text-xs font-medium px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)] mb-1.5"
                 />
-                <div className="flex flex-wrap gap-1 mt-1.5">
+                <div className="flex flex-wrap gap-1">
                   {availableAreaPaths.map(area => (
                     <button
                       key={area}
@@ -629,7 +780,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                           setIterationPath(iters[0].iterationPath);
                         }
                       }}
-                      className={`text-[10px] font-medium px-2 py-0.5 rounded border transition-all cursor-pointer ${
+                      className={`text-[10px] font-medium px-2 py-0.5 rounded-md border transition-all cursor-pointer ${
                         areaPath === area 
                           ? 'bg-[var(--primary)] text-white border-[var(--primary)]' 
                           : 'bg-[var(--surface-hover)] text-[var(--text-secondary)] border-[var(--border)] hover:border-[var(--primary)]/40'
@@ -644,15 +795,12 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Status</label>
-                  <select
+                  <SearchableSelect
+                    options={STATUS_OPTIONS.map(st => ({ value: st, label: st }))}
                     value={status}
-                    onChange={(e) => setStatus(e.target.value as UserStoryStatus)}
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
-                  >
-                    {STATUS_OPTIONS.map(st => (
-                      <option key={st} value={st}>{st}</option>
-                    ))}
-                  </select>
+                    onChange={(val) => setStatus(val as UserStoryStatus)}
+                    placeholder="Select Status"
+                  />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Story Points</label>
@@ -673,44 +821,27 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                   <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
                     Release & Iteration Path
                   </label>
-                  <select
+                  <SearchableSelect
+                    options={modalReleaseOptions}
                     value={releaseId}
-                    onChange={(e) => {
-                      const selectedId = e.target.value;
+                    onChange={(selectedId) => {
                       setReleaseId(selectedId);
                       const matchedIter = modalReturnedIterations.find(i => i.releaseId === selectedId) || releases.find(r => r.id === selectedId);
                       if (matchedIter) {
                         setIterationPath(matchedIter.iterationPath || '');
                       }
                     }}
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
-                  >
-                    <option value="">No Release</option>
-                    {modalReturnedIterations.length > 0 ? (
-                      modalReturnedIterations.map(iter => (
-                        <option key={iter.iterationPath + iter.releaseId} value={iter.releaseId}>
-                          {iter.releaseName} ({iter.releaseNumber})
-                        </option>
-                      ))
-                    ) : (
-                      releases.map(r => (
-                        <option key={r.id} value={r.id}>{r.name} ({r.releaseNumber || 'v1.0.0'})</option>
-                      ))
-                    )}
-                  </select>
+                    placeholder="Select Release"
+                  />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Assignee</label>
-                  <select
+                  <SearchableSelect
+                    options={modalAssigneeOptions}
                     value={assigneeId}
-                    onChange={(e) => setAssigneeId(e.target.value)}
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
-                  >
-                    <option value="">Unassigned</option>
-                    {team.map(m => (
-                      <option key={m.id} value={m.id}>{m.name} ({m.role})</option>
-                    ))}
-                  </select>
+                    onChange={setAssigneeId}
+                    placeholder="Select Assignee"
+                  />
                 </div>
               </div>
 

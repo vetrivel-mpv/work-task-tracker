@@ -3,6 +3,7 @@ import {
   DualAdoConfig, 
   AdoInstanceConfig, 
   UserStory, 
+  TestCase,
   Defect, 
   Release, 
   Task,
@@ -64,6 +65,7 @@ interface AdoSyncModalProps {
   onAddRelease?: (release: Release) => void;
   onSyncData?: (syncedData: {
     stories: UserStory[];
+    testCases?: TestCase[];
     defects: Defect[];
     releases?: Release[];
     teamMembers?: Array<{ name: string; role?: string }>;
@@ -126,11 +128,16 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
   const [testResult, setTestResult] = useState<{ target: 'internal' | 'external'; success: boolean; message: string } | null>(null);
   const [createdReleaseName, setCreatedReleaseName] = useState<string | null>(null);
 
-  if (!isOpen) return null;
-
   // Derived available Area Paths and returned Iteration Paths for Internal ADO
-  const availableAreaPaths = getAllAreaPaths(releases, userStories, defects, tasks);
-  const returnedInternalIterations = getIterationPathsForArea(internalArea, releases, userStories, defects);
+  const availableAreaPaths = getAllAreaPaths(releases, userStories, defects, tasks, discoveredAreas);
+  const returnedInternalIterations = getIterationPathsForArea(internalArea, releases, userStories, defects, discoveredIterations);
+
+  // Auto-fetch metadata on initial load if project is present
+  React.useEffect(() => {
+    if (isOpen && internalOrg && internalProject && discoveredIterations.length === 0) {
+      handleFetchMetadata('internal');
+    }
+  }, [isOpen, internalOrg, internalProject]);
 
   const handleFetchMetadata = async (target: 'internal' | 'external') => {
     const org = target === 'internal' ? internalOrg : externalOrg;
@@ -153,19 +160,26 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
         adoService.fetchAreas(org, project, pat)
       ]);
 
-      if (iterRes.ok && iterRes.iterations.length > 0) {
+      if (iterRes.ok && iterRes.iterations && iterRes.iterations.length > 0) {
         setDiscoveredIterations(iterRes.iterations);
       }
-      if (areaRes.ok && areaRes.areas.length > 0) {
+      if (areaRes.ok && areaRes.areas && areaRes.areas.length > 0) {
         setDiscoveredAreas(areaRes.areas);
       }
 
+      const countIter = iterRes.iterations?.length || 0;
+      const countArea = areaRes.areas?.length || 0;
+
       setSyncLogs(prev => [
         ...prev,
-        `[${new Date().toLocaleTimeString()}] Discovered ${iterRes.iterations?.length || 0} iteration paths & ${areaRes.areas?.length || 0} area paths from ${org}/${project}.`
+        `[${new Date().toLocaleTimeString()}] Query result: Found ${countIter} iteration path(s) & ${countArea} area path(s) for ${org}/${project}.`
       ]);
     } catch (err: any) {
       console.warn('Error fetching metadata:', err);
+      setSyncLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] ADO Query Note: ${err.message || err}`
+      ]);
     } finally {
       setIsFetchingMetadata(false);
     }
@@ -251,14 +265,24 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
         targetInstance: target
       });
 
-      const storiesList = syncResult.stories || [];
-      const defectsList = syncResult.defects || [];
-      const hasItems = storiesList.length > 0 || defectsList.length > 0;
+      const storiesList: any[] = (syncResult.stories || []).filter((s: any) => {
+        const titleLower = (s.title || '').toLowerCase();
+        const typeLower = (s.workItemType || '').toLowerCase();
+        return !typeLower.includes('test case') && 
+               !typeLower.includes('test plan') && 
+               !typeLower.includes('test suite') && 
+               !titleLower.startsWith('[test case]') &&
+               !titleLower.startsWith('test case:');
+      });
+      const defectsList: any[] = syncResult.defects || [];
+      const testCasesList: any[] = syncResult.testCases || [];
+      const tasksList: any[] = syncResult.tasks || [];
+      const hasItems = storiesList.length > 0 || defectsList.length > 0 || testCasesList.length > 0 || tasksList.length > 0;
 
       if (syncResult.ok && hasItems) {
         newLogs.push(
           `[${target.toUpperCase()}] Connected to ADO query: Area="${targetArea || 'All'}" | Iteration="${targetIter || 'All'}"`,
-          `[${target.toUpperCase()}] Retrieved ${storiesList.length} User Stories and ${defectsList.length} Bugs/Defects via WIQL & Batch API.`
+          `[${target.toUpperCase()}] Ingestion Summary: ${storiesList.length} User Stories, ${defectsList.length} Bugs/Defects, ${testCasesList.length} Test Cases, ${tasksList.length} Tasks via WIQL & Batch API.`
         );
 
         if (storiesList.length > 0) {
@@ -281,12 +305,23 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
           }
         }
 
-        // Discover all unique iteration paths from stories & defects
+        if (testCasesList.length > 0) {
+          newLogs.push(
+            `[TEST CASES] Ingested QA Test Cases (${testCasesList.length}):`,
+            ...testCasesList.slice(0, 10).map(tc => `  • #${tc.adoId}: ${tc.title} [Type: ${tc.workItemType || 'Test Case'}] [Status: ${tc.status}] [Assigned: ${tc.assigneeName || 'Unassigned'}]`)
+          );
+          if (testCasesList.length > 10) {
+            newLogs.push(`  ... and ${testCasesList.length - 10} more test cases`);
+          }
+        }
+
+        // Discover all unique iteration paths from stories, defects & test cases
         const distinctIterPaths = Array.from(
           new Set(
             [
               ...storiesList.map(s => s.iterationPath),
               ...defectsList.map(d => d.iterationPath),
+              ...testCasesList.map(tc => tc.iterationPath),
               targetIter
             ].filter(Boolean) as string[]
           )
@@ -298,7 +333,8 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
         const syncedReleases: Release[] = distinctIterPaths.map(iter => {
           const matchingStory = storiesList.find(s => s.iterationPath === iter);
           const matchingDefect = defectsList.find(d => d.iterationPath === iter);
-          const area = matchingStory?.areaPath || matchingDefect?.areaPath || targetArea || '';
+          const matchingTestCase = testCasesList.find(tc => tc.iterationPath === iter);
+          const area = matchingStory?.areaPath || matchingDefect?.areaPath || matchingTestCase?.areaPath || targetArea || '';
           return {
             id: `rel-${iter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
             name: iter,
@@ -312,7 +348,7 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
           };
         });
 
-        // Extract team members from story/defect assignees and creators
+        // Extract team members from story/defect/test case assignees and creators
         const peopleMap = new Map<string, { name: string; role: string; source: 'assigned_to' | 'created_by' }>();
         
         storiesList.forEach(s => {
@@ -333,6 +369,17 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
           if (d.createdByName && d.createdByName !== 'Unassigned') {
             if (!peopleMap.has(d.createdByName.toLowerCase())) {
               peopleMap.set(d.createdByName.toLowerCase(), { name: d.createdByName, role: 'QA / Reporter', source: 'created_by' });
+            }
+          }
+        });
+
+        testCasesList.forEach(tc => {
+          if (tc.assigneeName && tc.assigneeName !== 'Unassigned') {
+            peopleMap.set(tc.assigneeName.toLowerCase(), { name: tc.assigneeName, role: 'QA Automation Engineer', source: 'assigned_to' });
+          }
+          if (tc.createdByName && tc.createdByName !== 'Unassigned') {
+            if (!peopleMap.has(tc.createdByName.toLowerCase())) {
+              peopleMap.set(tc.createdByName.toLowerCase(), { name: tc.createdByName, role: 'QA Test Lead', source: 'created_by' });
             }
           }
         });
@@ -400,6 +447,54 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
           };
         });
 
+        // Map QA Test Cases
+        const mappedTestCases: TestCase[] = testCasesList.map(tc => {
+          const assId = getPersonId(tc.assigneeName);
+          const crtId = getPersonId(tc.createdByName);
+          const tcIter = tc.iterationPath || primaryIter;
+          const tcRelId = `rel-${tcIter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+          
+          // Map ADO Test Case state (Design, Ready, Closed, Active, etc.)
+          let mappedTcStatus = tc.status || 'Design';
+          const stLower = (tc.status || '').toLowerCase();
+          if (stLower === 'design' || stLower.includes('design') || stLower === 'draft') {
+            mappedTcStatus = 'Design';
+          } else if (stLower === 'ready' || stLower.includes('ready')) {
+            mappedTcStatus = 'Ready';
+          } else if (stLower.includes('progress') || stLower.includes('run') || stLower.includes('executing')) {
+            mappedTcStatus = 'In Progress';
+          } else if (stLower.includes('pass')) {
+            mappedTcStatus = 'Passed';
+          } else if (stLower.includes('fail')) {
+            mappedTcStatus = 'Failed';
+          } else if (stLower.includes('block')) {
+            mappedTcStatus = 'Blocked';
+          } else if (stLower.includes('close') || stLower.includes('done')) {
+            mappedTcStatus = 'Closed';
+          }
+
+          return {
+            id: tc.id || `tc-${tc.adoId}`,
+            title: tc.title,
+            status: mappedTcStatus,
+            workItemType: tc.workItemType || 'Test Case',
+            areaPath: tc.areaPath || targetArea,
+            iterationPath: tcIter,
+            releaseId: tcRelId,
+            assigneeId: assId,
+            createdById: crtId,
+            createdByName: tc.createdByName,
+            description: tc.description,
+            automationStatus: (tc as any).automationStatus === 'Automated' ? 'Automated' : 'Not Automated',
+            tags: (tc as any).tags || [],
+            adoId: tc.adoId,
+            adoUrl: `https://dev.azure.com/${targetOrg}/${targetProject}/_workitems/edit/${tc.adoId}`,
+            sourceInstance: target === 'external' ? 'external' : 'internal',
+            createdAt: toDateStr(new Date()),
+            updatedAt: toDateStr(new Date())
+          };
+        });
+
         // Generate Dev Tasks for the TaskBoard / Dev Backlog
         const todayStr = toDateStr(new Date());
         const syncedTasks: Task[] = [
@@ -443,6 +538,7 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
         if (onSyncData) {
           onSyncData({
             stories: mappedStories,
+            testCases: mappedTestCases,
             defects: mappedDefects,
             releases: syncedReleases,
             teamMembers: assignees,
@@ -606,6 +702,8 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
   const internalDefects = defects.filter(d => d.sourceInstance !== 'external');
   const externalDefects = defects.filter(d => d.sourceInstance === 'external');
 
+  if (!isOpen) return null;
+
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
       <div 
@@ -729,8 +827,19 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
                     type="text"
                     required
                     value={internalOrg}
-                    onChange={(e) => setInternalOrg(e.target.value)}
-                    placeholder="e.g. careflow-dev-core"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setInternalOrg(val);
+                    }}
+                    onBlur={(e) => {
+                      const val = e.target.value.trim();
+                      if (val.includes('dev.azure.com') || val.includes('http') || val.includes('/')) {
+                        const parts = val.replace(/^https?:\/\//, '').replace(/^dev\.azure\.com\//, '').split('/').filter(Boolean);
+                        if (parts[0]) setInternalOrg(parts[0]);
+                        if (parts[1] && (!internalProject || internalProject === '')) setInternalProject(parts[1]);
+                      }
+                    }}
+                    placeholder="e.g. simetricwdh"
                     className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
                   />
                 </div>
@@ -744,7 +853,14 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
                     required
                     value={internalProject}
                     onChange={(e) => setInternalProject(e.target.value)}
-                    placeholder="e.g. CareFlow-Core-EHR"
+                    onBlur={(e) => {
+                      const val = e.target.value.trim();
+                      if (val.includes('/')) {
+                        const parts = val.split('/').filter(Boolean);
+                        setInternalProject(parts[parts.length - 1]);
+                      }
+                    }}
+                    placeholder="e.g. ACM"
                     className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
                   />
                 </div>
