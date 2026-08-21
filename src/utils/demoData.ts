@@ -3,6 +3,7 @@ import {
   TeamMember, 
   TeamGroup, 
   UserStory, 
+  TestCase,
   Defect, 
   Release, 
   BlueprintItem, 
@@ -213,6 +214,215 @@ export const INITIAL_STORIES: UserStory[] = [
     adoUrl: 'https://dev.azure.com/careflow-dev-core/CareFlow-Core-EHR/_workitems/edit/44850',
     createdAt: '2026-08-15',
     updatedAt: '2026-08-19'
+  }
+];
+
+export const INITIAL_TEST_CASES: TestCase[] = [
+  {
+    id: 'tc-101',
+    title: 'TC-44901: Concurrent Provider Schedule Slot Booking Lock Verification',
+    description: 'Verify PostgreSQL advisory locking and transactional isolation when two browser clients reserve the identical appointment slot simultaneously.',
+    status: 'Design',
+    executionStatus: 'Not Run',
+    testType: 'Manual',
+    priority: 'critical',
+    userStoryId: 'us-101',
+    releaseId: 'rel-2026-q3-sprint24',
+    areaPath: 'CareFlow-Core\\Clinical-Portal',
+    iterationPath: 'CareFlow-Core\\Sprint 24',
+    assigneeId: 'tm-2',
+    preconditions: 'Two care coordinator accounts logged into CareFlow in independent incognito sessions.',
+    steps: [
+      {
+        id: 'step-101-1',
+        stepNumber: 1,
+        action: "Open Provider Dr. Emily Chen's calendar for August 28th in Session A and Session B.",
+        expectedResult: 'Both sessions display 14:00 slot as available in green.',
+        status: 'Not Run'
+      },
+      {
+        id: 'step-101-2',
+        stepNumber: 2,
+        action: "Click 'Reserve Slot' for 14:00 simultaneously in both sessions within a 100ms window.",
+        expectedResult: 'Session A receives 200 OK reservation confirmation toast; Session B receives 409 Conflict with slot taken notice.',
+        status: 'Not Run'
+      },
+      {
+        id: 'step-101-3',
+        stepNumber: 3,
+        action: 'Inspect database appointment table for slot record.',
+        expectedResult: 'Exactly one booking record exists with valid lock timestamp; no duplicate rows created.',
+        status: 'Not Run'
+      }
+    ],
+    adoId: 44901,
+    adoUrl: 'https://dev.azure.com/careflow-dev-core/CareFlow-Core-EHR/_workitems/edit/44901',
+    adoWorkItemType: 'Test Case',
+    createdAt: '2026-08-19',
+    updatedAt: '2026-08-20'
+  },
+  {
+    id: 'tc-102',
+    title: 'TC-44902: FHIR HL7 v4 Observation & DiagnosticReport JSON Schema Validation',
+    description: 'Automated integration suite validating strict conformance of FHIR JSON payloads, empty arrays handling, and quarantine routing.',
+    status: 'Ready',
+    executionStatus: 'Passed',
+    testType: 'Automated',
+    priority: 'high',
+    userStoryId: 'us-102',
+    releaseId: 'rel-2026-q3-sprint24',
+    areaPath: 'CareFlow-Core\\EHR-Connect',
+    iterationPath: 'CareFlow-Core\\Sprint 24',
+    assigneeId: 'tm-2',
+    preconditions: 'FHIR test harness runner deployed to QA cluster with mock Hospital Epic gateway.',
+    steps: [
+      {
+        id: 'step-102-1',
+        stepNumber: 1,
+        action: 'POST /api/v1/fhir/bundles with valid 100-record patient Observation bundle.',
+        expectedResult: 'HTTP 201 Created returned; all 100 records parsed and indexed in <200ms.',
+        status: 'Passed'
+      },
+      {
+        id: 'step-102-2',
+        stepNumber: 2,
+        action: 'POST bundle containing empty note array [] on DiagnosticReport resource.',
+        expectedResult: 'HTTP 201 Created returned without NullPointerException or DTO crash.',
+        status: 'Passed'
+      },
+      {
+        id: 'step-102-3',
+        stepNumber: 3,
+        action: 'POST malformed telemetry bundle with invalid HL7 date timestamp format.',
+        expectedResult: 'HTTP 422 Unprocessable Entity returned; record routed to dead-letter quarantine queue.',
+        status: 'Passed'
+      }
+    ],
+    adoId: 44902,
+    adoUrl: 'https://dev.azure.com/careflow-dev-core/CareFlow-Core-EHR/_workitems/edit/44902',
+    adoWorkItemType: 'Test Case',
+    createdAt: '2026-08-18',
+    updatedAt: '2026-08-20',
+    lastRunAt: '2026-08-20 08:45'
+  },
+  {
+    id: 'tc-103',
+    title: 'TC-44903: Multi-Factor Authentication TOTP Grace Period & Invalid Code Lockout',
+    description: 'Verify 60-second grace window on valid TOTP codes and automated 15-minute brute-force lockout after 5 failed tries.',
+    status: 'Automated',
+    executionStatus: 'Passed',
+    testType: 'Automated',
+    priority: 'high',
+    userStoryId: 'us-103',
+    releaseId: 'rel-2026-q3-sprint24',
+    areaPath: 'CareFlow-Core\\Security-Platform',
+    iterationPath: 'CareFlow-Core\\Sprint 24',
+    assigneeId: 'tm-2',
+    preconditions: 'Test clinical staff user provisioned with active TOTP secret.',
+    steps: [
+      {
+        id: 'step-103-1',
+        stepNumber: 1,
+        action: 'Submit valid 6-digit TOTP code from authenticator app.',
+        expectedResult: 'Authentication session token granted and dashboard loads.',
+        status: 'Passed'
+      },
+      {
+        id: 'step-103-2',
+        stepNumber: 2,
+        action: 'Submit expired TOTP code (within 60s grace period).',
+        expectedResult: 'Login succeeds with audit log warning of clock drift grace.',
+        status: 'Passed'
+      },
+      {
+        id: 'step-103-3',
+        stepNumber: 3,
+        action: 'Submit 5 consecutive incorrect TOTP code attempts.',
+        expectedResult: 'Account temporarily locked for 15 minutes; security email dispatched to user.',
+        status: 'Passed'
+      }
+    ],
+    adoId: 44903,
+    adoUrl: 'https://dev.azure.com/careflow-dev-core/CareFlow-Core-EHR/_workitems/edit/44903',
+    adoWorkItemType: 'Test Case',
+    createdAt: '2026-08-17',
+    updatedAt: '2026-08-19',
+    lastRunAt: '2026-08-19 16:30'
+  },
+  {
+    id: 'tc-104',
+    title: 'TC-44904: Patient Prescription Auto-Refill SMS Opt-Out Compliance',
+    description: 'Ensure automated cron refill notices strictly honor patient communication opt-outs and STOP webhook callbacks.',
+    status: 'Design',
+    executionStatus: 'Not Run',
+    testType: 'Manual',
+    priority: 'medium',
+    userStoryId: 'us-104',
+    releaseId: 'rel-2026-q3-sprint24',
+    areaPath: 'CareFlow-Core\\Clinical-Portal',
+    iterationPath: 'CareFlow-Core\\Sprint 24',
+    assigneeId: 'tm-2',
+    preconditions: 'Patient chart created with active prescription expiring in 72 hours and opt-out preference set.',
+    steps: [
+      {
+        id: 'step-104-1',
+        stepNumber: 1,
+        action: 'Trigger auto-refill notification batch worker.',
+        expectedResult: 'Zero SMS dispatched to opted-out patient; audit record logged.',
+        status: 'Not Run'
+      },
+      {
+        id: 'step-104-2',
+        stepNumber: 2,
+        action: 'Simulate patient replying STOP to active SMS thread.',
+        expectedResult: 'Inbound Twilio webhook marks optOut = true in database instantly.',
+        status: 'Not Run'
+      }
+    ],
+    adoId: 44904,
+    adoUrl: 'https://dev.azure.com/careflow-dev-core/CareFlow-Core-EHR/_workitems/edit/44904',
+    adoWorkItemType: 'Test Case',
+    createdAt: '2026-08-20',
+    updatedAt: '2026-08-20'
+  },
+  {
+    id: 'tc-105',
+    title: 'TC-44905: Mount Sinai PDF Discharge 50-Page Batch Memory Stress Test',
+    description: 'Stress test Puppeteer headless browser rendering on heavy discharge charts with 45+ embedded radiology scans.',
+    status: 'Ready',
+    executionStatus: 'Failed',
+    testType: 'Performance',
+    priority: 'critical',
+    defectId: 'def-ext-801',
+    releaseId: 'rel-2026-q3-sprint24',
+    areaPath: 'CareFlow-Ops\\Customer-Escalations',
+    iterationPath: 'CareFlow-Ops\\Customer-Escalations',
+    assigneeId: 'tm-2',
+    preconditions: 'Mount Sinai clinical workspace with 50-page test patient discharge summary.',
+    steps: [
+      {
+        id: 'step-105-1',
+        stepNumber: 1,
+        action: 'Trigger PDF export via /api/v1/export/pdf endpoint.',
+        expectedResult: 'Export completes within 8.0 seconds with valid signed PDF artifact.',
+        status: 'Failed',
+        actualResult: 'Timed out at 30.0s with 504 Gateway Timeout due to Puppeteer heap exhaustion.'
+      },
+      {
+        id: 'step-105-2',
+        stepNumber: 2,
+        action: 'Verify worker pod memory telemetry during export execution.',
+        expectedResult: 'Memory consumption stays under 1.5GB threshold.',
+        status: 'Failed',
+        actualResult: 'Memory spiked to 2.1GB and triggered OOM container restart.'
+      }
+    ],
+    adoId: 44905,
+    adoUrl: 'https://dev.azure.com/careflow-dev-core/CareFlow-Core-EHR/_workitems/edit/44905',
+    adoWorkItemType: 'Test Case',
+    createdAt: '2026-08-20',
+    updatedAt: '2026-08-20',
+    lastRunAt: '2026-08-20 07:45'
   }
 ];
 

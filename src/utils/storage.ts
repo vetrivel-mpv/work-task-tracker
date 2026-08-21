@@ -6,6 +6,7 @@ import {
   INITIAL_GROUPS,
   INITIAL_RELEASES,
   INITIAL_STORIES,
+  INITIAL_TEST_CASES,
   INITIAL_DEFECTS,
   INITIAL_SETTINGS,
   INITIAL_DUAL_ADO_CONFIG,
@@ -13,7 +14,7 @@ import {
 } from './demoData';
 
 const STORAGE_KEY_PREFIX = 'northstar:';
-const STATE_STORAGE_KEY = `${STORAGE_KEY_PREFIX}state:v3`;
+const STATE_STORAGE_KEY = `${STORAGE_KEY_PREFIX}state:v4`;
 
 export function getFreshDemoState(): AppState {
   const todayStr = toDateStr(new Date());
@@ -23,6 +24,7 @@ export function getFreshDemoState(): AppState {
     team: INITIAL_TEAM,
     groups: INITIAL_GROUPS,
     userStories: INITIAL_STORIES,
+    testCases: INITIAL_TEST_CASES,
     defects: INITIAL_DEFECTS,
     releases: INITIAL_RELEASES,
     standup: {
@@ -32,8 +34,8 @@ export function getFreshDemoState(): AppState {
         blockers: 'None.'
       },
       'tm-2': {
-        yesterday: 'Executed automated regression suite (56 passed, 1 failed) in Internal ADO. Logged DEF-INT-301.',
-        today: 'Validate DEF-INT-302 fix and run automated sanity suite against Sprint 24 build.',
+        yesterday: 'Executed automated regression suite (56 passed, 1 failed) in Internal ADO. Authored TC-44901 and logged DEF-INT-301.',
+        today: 'Validate DEF-INT-302 fix, review Test Cases in Design state, and run automated sanity suite against Sprint 24 build.',
         blockers: 'Awaiting advisory lock deployment to QA cluster.'
       },
       'tm-3': {
@@ -72,7 +74,7 @@ export function getFreshDemoState(): AppState {
 export function loadStoredState(): AppState {
   const todayStr = toDateStr(new Date());
   try {
-    const raw = localStorage.getItem(STATE_STORAGE_KEY) || localStorage.getItem('northstar:state:v2');
+    const raw = localStorage.getItem(STATE_STORAGE_KEY) || localStorage.getItem('northstar:state:v3') || localStorage.getItem('northstar:state:v2');
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.tasks)) {
@@ -88,12 +90,17 @@ export function loadStoredState(): AppState {
           }
         };
 
+        const testCases = parsed.testCases && parsed.testCases.length > 0
+          ? parsed.testCases
+          : INITIAL_TEST_CASES;
+
         const state: AppState = {
           dateStr: parsed.dateStr || todayStr,
           tasks: parsed.tasks?.length > 0 ? parsed.tasks : getInitialTasks(todayStr),
           team: parsed.team?.length > 0 ? parsed.team : INITIAL_TEAM,
           groups: parsed.groups?.length > 0 ? parsed.groups : INITIAL_GROUPS,
           userStories: parsed.userStories?.length > 0 ? parsed.userStories : INITIAL_STORIES,
+          testCases,
           defects: parsed.defects?.length > 0 ? parsed.defects : INITIAL_DEFECTS,
           releases: parsed.releases?.length > 0 ? parsed.releases : INITIAL_RELEASES,
           standup: parsed.standup || {},

@@ -183,3 +183,116 @@ export async function generateAppreciationNote(
     };
   }
 }
+
+export interface WritingAssistOptions {
+  text: string;
+  action: 'improve' | 'expand' | 'shorten' | 'bulletize' | 'formal' | 'technical';
+  tone?: string;
+  context?: string;
+}
+
+export async function requestWritingAssist(
+  options: WritingAssistOptions,
+  apiKey?: string
+): Promise<AiResponse> {
+  try {
+    const res = await fetch('/api/ai/writing-assist', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+      },
+      body: JSON.stringify(options)
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    return { ok: true, text: data.result || data.text };
+  } catch (err: any) {
+    console.error('[AI Writing Assist Error]:', err);
+    return {
+      ok: false,
+      error: err.message || 'Could not connect to writing assistance service.'
+    };
+  }
+}
+
+export interface EmailFormatOptions {
+  type?: string;
+  subject?: string;
+  recipient?: string;
+  senderName?: string;
+  rawNotes: string;
+  dataContext?: any;
+  tone?: string;
+}
+
+export async function requestEmailFormat(
+  options: EmailFormatOptions,
+  apiKey?: string
+): Promise<AiResponse> {
+  try {
+    const res = await fetch('/api/ai/email-format', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+      },
+      body: JSON.stringify(options)
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    return { ok: true, text: data.formattedEmail || data.text };
+  } catch (err: any) {
+    console.error('[AI Email Formatting Error]:', err);
+    return {
+      ok: false,
+      error: err.message || 'Could not connect to email formatting service.'
+    };
+  }
+}
+
+export async function generateAiTestSteps(
+  payload: {
+    testTitle: string;
+    testDescription?: string;
+    userStoryTitle?: string;
+    acceptanceCriteria?: string[];
+    testType?: string;
+  },
+  apiKey?: string
+): Promise<{ ok: boolean; steps?: { stepNumber: number; action: string; expectedResult: string }[]; error?: string }> {
+  try {
+    const res = await fetch('/api/ai/generate-test-steps', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    return { ok: true, steps: data.steps || [] };
+  } catch (err: any) {
+    console.error('[AI Generate Test Steps Error]:', err);
+    return {
+      ok: false,
+      error: err.message || 'Could not generate test steps.'
+    };
+  }
+}

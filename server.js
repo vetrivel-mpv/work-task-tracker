@@ -204,43 +204,192 @@ Generate a concise (2-3 paragraphs) message highlighting their impact on client 
   }
 });
 
-// 5. General Chat Completions proxy (for custom endpoints/compatibility)
-const handleChatCompletions = async (req, res) => {
+// 5. Direct Gemini AI Real-Time Text Writing Assistance endpoint
+app.post('/api/ai/writing-assist', async (req, res) => {
   try {
-    let auth = req.headers['authorization'] || '';
-    if (!auth && process.env.GEMINI_API_KEY) {
-      auth = `Bearer ${process.env.GEMINI_API_KEY}`;
+    const authHeader = req.headers['authorization'] || '';
+    const userApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const ai = getAiClient(userApiKey);
+
+    if (!ai) {
+      return res.status(400).json({
+        error: 'No Gemini API key available. Configure GEMINI_API_KEY or Settings.'
+      });
     }
 
-    const UPSTREAM = (process.env.AI_PROXY_UPSTREAM || 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions').replace(/\/+$/, '');
-    const headers = { 'Content-Type': 'application/json' };
-    if (auth) headers['Authorization'] = auth;
+    const { text, action, tone, context } = req.body;
+    if (!text && !context) {
+      return res.status(400).json({ error: 'Text or context is required for writing assistance.' });
+    }
 
-    const response = await fetch(UPSTREAM, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(req.body)
+    let instruction = '';
+    switch (action) {
+      case 'improve':
+        instruction = 'Improve clarity, flow, grammar, and executive punch while preserving core factual meaning.';
+        break;
+      case 'expand':
+        instruction = 'Elaborate on the key points with concrete details, structured delivery bullet points, and actionable next steps.';
+        break;
+      case 'shorten':
+        instruction = 'Condense into a crisp, high-impact executive summary with maximum information density.';
+        break;
+      case 'bulletize':
+        instruction = 'Convert the provided paragraph text into structured, clean bullet points categorized logically.';
+        break;
+      case 'formal':
+        instruction = 'Rewrite with a polished, highly professional corporate executive tone suitable for stakeholder updates.';
+        break;
+      case 'technical':
+        instruction = 'Sharpen technical accuracy, architectural terminology, and engineering clarity.';
+        break;
+      default:
+        instruction = 'Enhance and refine the text for engineering delivery and leadership communication.';
+    }
+
+    const prompt = `You are a Principal Technical Writer and Engineering Delivery Executive.
+INSTRUCTION: ${instruction}
+DESIRED TONE: ${tone || 'Professional & Crisp'}
+${context ? `ADDITIONAL CONTEXT: ${context}` : ''}
+
+ORIGINAL TEXT:
+"""
+${text || ''}
+"""
+
+Provide the refined text directly in clean Markdown format without unnecessary preamble or meta-commentary.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.7-flash',
+      contents: prompt
     });
 
-    const data = await response.text();
-    let json;
-    try {
-      json = JSON.parse(data);
-    } catch {
-      json = null;
+    res.json({ ok: true, result: response.text });
+  } catch (error) {
+    console.error('[AI Writing Assist Error]:', error);
+    res.status(500).json({ error: error.message || 'AI writing assistance failed' });
+  }
+});
+
+// 6. Direct Gemini AI Real-Time Email Formatting & Writing endpoint
+app.post('/api/ai/email-format', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || '';
+    const userApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const ai = getAiClient(userApiKey);
+
+    if (!ai) {
+      return res.status(400).json({
+        error: 'No Gemini API key available. Configure GEMINI_API_KEY or Settings.'
+      });
     }
 
-    res.status(response.status);
-    if (json) res.json(json);
-    else res.send(data);
-  } catch (error) {
-    console.error('[AI Proxy Error]:', error);
-    res.status(502).json({ error: error.message || 'AI Proxy request failed' });
-  }
-};
+    const { 
+      type, // 'standup_digest' | 'qa_status' | 'release_announcement' | 'client_update' | 'custom'
+      subject,
+      recipient,
+      senderName,
+      rawNotes,
+      dataContext,
+      tone 
+    } = req.body;
 
-app.post('/v1/chat/completions', handleChatCompletions);
-app.post('/chat/completions', handleChatCompletions);
+    const prompt = `You are a Principal Engineering Delivery Lead writing an executive stakeholder email broadcast.
+EMAIL TYPE: ${type || 'Executive Delivery Update'}
+TONE: ${tone || 'Polished, direct, professional'}
+SENDER: ${senderName || 'Delivery Lead'}
+RECIPIENT: ${recipient || 'Engineering & Executive Stakeholders'}
+USER SUBJECT IDEA: ${subject || 'Sprint & Delivery Status Update'}
+
+RAW BULLET POINTS / CONTENT:
+"""
+${rawNotes || ''}
+"""
+
+${dataContext ? `SYSTEM METRICS & CONTEXT:\n${JSON.stringify(dataContext, null, 2)}` : ''}
+
+Produce a complete, beautifully structured Email draft in clean format.
+Include:
+1. **Subject Line**: Crisp, high-impact, professional subject line (e.g. "[CareFlow EHR] Sprint 24 Delivery & Quality Digest — Aug 21").
+2. **Salutation**: Professional greeting.
+3. **Executive Summary**: 2-3 sentence high-level overview.
+4. **Key Highlights & Completed Deliverables**: Bulleted key wins.
+5. **Quality & QA Metrics / Blockers**: Clear risk assessment.
+6. **Next Steps & Commitments**: Explicit ownership & timelines.
+7. **Sign-off**: Professional signature.
+
+Return the result formatted in clean Markdown with clear Subject and Body sections.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.7-flash',
+      contents: prompt
+    });
+
+    res.json({ ok: true, formattedEmail: response.text });
+  } catch (error) {
+    console.error('[AI Email Formatting Error]:', error);
+    res.status(500).json({ error: error.message || 'AI email formatting failed' });
+  }
+});
+
+// 7. Direct Gemini AI QA Test Steps Generator
+app.post('/api/ai/generate-test-steps', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || '';
+    const userApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const ai = getAiClient(userApiKey);
+
+    if (!ai) {
+      return res.status(400).json({
+        error: 'No Gemini API key available. Configure GEMINI_API_KEY or Settings.'
+      });
+    }
+
+    const { testTitle, testDescription, userStoryTitle, acceptanceCriteria, testType } = req.body;
+
+    const prompt = `You are a Lead QA Automation & Verification Engineer.
+Generate concrete, sequential, verifiable Test Steps with precise Actions and Expected Results for the following test case:
+
+TEST CASE TITLE: ${testTitle || 'Verification Scenario'}
+TEST DESCRIPTION: ${testDescription || 'N/A'}
+TEST TYPE: ${testType || 'Manual / Regression'}
+LINKED USER STORY: ${userStoryTitle || 'N/A'}
+ACCEPTANCE CRITERIA:
+${(acceptanceCriteria || []).map((c, i) => `${i + 1}. ${c}`).join('\n') || 'N/A'}
+
+Respond strictly with a valid JSON array of test step objects. Each step must have:
+- stepNumber: number (1, 2, 3...)
+- action: string (precise instructions for the tester or test runner)
+- expectedResult: string (verifiable system response or UI assertion)
+
+Format output strictly as JSON array:
+[
+  { "stepNumber": 1, "action": "...", "expectedResult": "..." }
+]`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.7-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json'
+      }
+    });
+
+    let steps = [];
+    try {
+      steps = JSON.parse(response.text);
+    } catch {
+      steps = [
+        { stepNumber: 1, action: 'Execute test verification setup', expectedResult: 'Environment ready' },
+        { stepNumber: 2, action: 'Submit test payload according to requirements', expectedResult: 'Success status received' }
+      ];
+    }
+
+    res.json({ ok: true, steps });
+  } catch (error) {
+    console.error('[AI Generate Test Steps Error]:', error);
+    res.status(500).json({ error: error.message || 'Failed to generate test steps' });
+  }
+});
 
 // 6. Azure DevOps connectivity test proxy (optional helper to overcome browser CORS on PAT)
 app.post('/api/ado/test', async (req, res) => {

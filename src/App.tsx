@@ -4,6 +4,7 @@ import {
   NavView, 
   Task, 
   UserStory, 
+  TestCase,
   Defect, 
   Release, 
   StandupEntry, 
@@ -25,6 +26,7 @@ import { Header } from './components/layout/Header';
 import { TaskBoard } from './components/board/TaskBoard';
 import { NewTaskModal } from './components/board/NewTaskModal';
 import { UserStoriesView } from './components/userStories/UserStoriesView';
+import { TestCasesView } from './components/testCases/TestCasesView';
 import { DefectsView } from './components/defects/DefectsView';
 import { DefectsDashboard } from './components/defects/DefectsDashboard';
 import { ReleasesView } from './components/releases/ReleasesView';
@@ -36,6 +38,7 @@ import { SettingsView } from './components/settings/SettingsView';
 // Modals
 import { AdoSyncModal } from './components/ado/AdoSyncModal';
 import { EmailBroadcastModal } from './components/email/EmailBroadcastModal';
+import { AiWritingAssistantModal } from './components/ai/AiWritingAssistantModal';
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppState>(loadStoredState);
@@ -68,6 +71,7 @@ export const App: React.FC = () => {
   const activeStoriesCount = state.userStories.filter(
     s => s.status !== 'Done' && s.status !== 'QA Passed'
   ).length;
+  const testCasesCount = (state.testCases || []).length;
   const openDefectsCount = state.defects.filter(
     d => d.status !== 'Closed'
   ).length;
@@ -262,6 +266,28 @@ export const App: React.FC = () => {
     }));
   };
 
+  // Test Case Operations
+  const handleAddTestCase = (testCase: TestCase) => {
+    setState(prev => ({
+      ...prev,
+      testCases: [testCase, ...(prev.testCases || [])]
+    }));
+  };
+
+  const handleUpdateTestCase = (updatedTestCase: TestCase) => {
+    setState(prev => ({
+      ...prev,
+      testCases: (prev.testCases || []).map(tc => tc.id === updatedTestCase.id ? updatedTestCase : tc)
+    }));
+  };
+
+  const handleDeleteTestCase = (testCaseId: string) => {
+    setState(prev => ({
+      ...prev,
+      testCases: (prev.testCases || []).filter(tc => tc.id !== testCaseId)
+    }));
+  };
+
   // Defect Operations
   const handleAddDefect = (defect: Defect) => {
     setState(prev => ({
@@ -389,6 +415,8 @@ export const App: React.FC = () => {
         onNavigate={setActiveView}
         pendingTasksCount={pendingTasksCount}
         activeStoriesCount={activeStoriesCount}
+        testCasesCount={testCasesCount}
+        testCases={state.testCases}
         openDefectsCount={openDefectsCount}
         standupCount={standupCount}
         onOpenAdoModal={() => setAdoModalOpen(true)}
@@ -451,6 +479,21 @@ export const App: React.FC = () => {
               onAddStory={handleAddStory}
               onUpdateStory={handleUpdateStory}
               onDeleteStory={handleDeleteStory}
+            />
+          )}
+
+          {activeView === 'testCases' && (
+            <TestCasesView
+              testCases={state.testCases || []}
+              userStories={state.userStories}
+              defects={state.defects}
+              releases={state.releases}
+              team={state.team}
+              groups={state.groups}
+              selectedReleaseId={selectedReleaseId}
+              onAddTestCase={handleAddTestCase}
+              onUpdateTestCase={handleUpdateTestCase}
+              onDeleteTestCase={handleDeleteTestCase}
             />
           )}
 

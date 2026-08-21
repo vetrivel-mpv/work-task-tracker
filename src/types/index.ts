@@ -3,6 +3,9 @@ export type TaskStatus = 'pending' | 'partial' | 'complete';
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 export type DefectStatus = 'New' | 'Active' | 'Fixed' | 'Retest' | 'Closed';
 export type UserStoryStatus = 'To Do' | 'In Analysis' | 'Dev In Progress' | 'QA Ready' | 'QA In Progress' | 'QA Passed' | 'Done' | 'Blocked';
+export type TestCaseStatus = 'Design' | 'Ready' | 'In Progress' | 'Automated' | 'Closed';
+export type TestExecutionStatus = 'Passed' | 'Failed' | 'Blocked' | 'Not Run' | 'In Progress';
+export type TestCaseType = 'Manual' | 'Automated' | 'Regression' | 'Smoke' | 'Integration' | 'E2E' | 'Performance' | 'Security';
 export type ReleaseStatus = 'Planning' | 'Active QA' | 'Staging' | 'Deployed' | 'Archived';
 export type AdoInstanceRole = 'internal' | 'external';
 export type AdoInstanceType = AdoInstanceRole;
@@ -15,6 +18,8 @@ export type AppView =
   | 'board' 
   | 'stories'
   | 'userStories' 
+  | 'testCases'
+  | 'test_cases'
   | 'defects' 
   | 'qa_dashboard'
   | 'defectsDashboard' 
@@ -108,6 +113,42 @@ export interface UserStory {
   adoUrl?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TestStep {
+  id: string;
+  stepNumber: number;
+  action: string;
+  expectedResult: string;
+  status?: TestExecutionStatus;
+  actualResult?: string;
+  notes?: string;
+}
+
+export interface TestCase {
+  id: string;
+  title: string;
+  description?: string;
+  status: TestCaseStatus; // 'Design' | 'Ready' | 'In Progress' | 'Automated' | 'Closed'
+  executionStatus: TestExecutionStatus; // 'Passed' | 'Failed' | 'Blocked' | 'Not Run' | 'In Progress'
+  testType: TestCaseType;
+  priority: Priority;
+  preconditions?: string;
+  steps?: TestStep[];
+  userStoryId?: string | null;
+  defectId?: string | null;
+  releaseId?: string | null;
+  assigneeId?: string | null;
+  areaPath?: string;
+  iterationPath?: string;
+  testSuite?: string;
+  sourceInstance?: 'internal' | 'external' | 'local';
+  adoId?: number;
+  adoUrl?: string;
+  adoWorkItemType?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
 }
 
 export interface Defect {
@@ -256,6 +297,7 @@ export interface AppState {
   team: TeamMember[];
   groups: TeamGroup[];
   userStories: UserStory[];
+  testCases?: TestCase[];
   defects: Defect[];
   releases: Release[];
   standup: Record<string, StandupEntry>;
