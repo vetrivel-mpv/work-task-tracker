@@ -8,9 +8,15 @@ import {
   Release, 
   Priority, 
   TaskStatus,
-  BlueprintItem 
+  BlueprintItem,
+  StandupEntry,
+  AppState
 } from '../../types';
 import { TaskCard } from './TaskCard';
+import { DependencyChainView } from './DependencyChainView';
+import { SprintBurnupChart } from './SprintBurnupChart';
+import { StandupDiscussionSyncModal } from '../standup/StandupDiscussionSyncModal';
+import { getWorkItemAssignee } from '../../utils/assigneeUtils';
 import { 
   Plus, 
   Flame, 
@@ -33,13 +39,19 @@ import {
   X,
   UserCheck,
   GripVertical,
-  Lock
+  Lock,
+  GitBranch,
+  LayoutGrid,
+  Rocket,
+  Target
 } from 'lucide-react';
 import { isTaskOverdue } from '../../utils/date';
+import { matchesReleaseOrIteration, formatReleaseDisplayName } from '../../utils/adoPaths';
+import { cleanAdoHtml } from '../../utils/formatAdoHtml';
 import { MultiSearchableSelect } from '../common/MultiSearchableSelect';
 import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
 
-export type GroupByMode = 'priority' | 'group' | 'status' | 'source';
+export type GroupByMode = 'priority' | 'group' | 'status';
 
 interface TaskBoardProps {
   tasks: Task[];
@@ -52,6 +64,8 @@ interface TaskBoardProps {
   selectedReleaseId: string | null;
   searchQuery: string;
   blueprintSchedule: BlueprintItem[];
+  standup?: Record<string, StandupEntry>;
+  state?: AppState;
   onToggleStatus: (taskId: string) => void;
   onUpdateTask: (task: Task) => void;
   onDeleteTask: (taskId: string) => void;
@@ -65,6 +79,9 @@ interface TaskBoardProps {
     targetTaskId?: string,
     position?: 'before' | 'after'
   ) => void;
+  onSelectRelease?: (releaseId: string | null) => void;
+  onUpdateStandupEntry?: (memberId: string, entry: StandupEntry) => void;
+  onUpdateState?: (updater: (prev: AppState) => AppState) => void;
 }
 
 interface BucketConfig {
@@ -88,6 +105,8 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   selectedReleaseId,
   searchQuery,
   blueprintSchedule,
+  standup,
+  state,
   onToggleStatus,
   onUpdateTask,
   onDeleteTask,
@@ -95,8 +114,14 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   onAddComment,
   onApplyBlueprint,
   onReorderTasks,
-  onMoveTask
+  onMoveTask,
+  onSelectRelease,
+  onUpdateStandupEntry,
+  onUpdateState
 }) => {
+  // View mode (Board vs Dependency Chain)
+  const [viewType, setViewType] = useState<'board' | 'dependency_chain'>('board');
+
   // Grouping mode
   const [groupBy, setGroupBy] = useState<GroupByMode>('priority');
 
@@ -105,6 +130,8 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>([]);
   const [filterOverdueOnly, setFilterOverdueOnly] = useState(false);
   const [filterBlockedOnly, setFilterBlockedOnly] = useState(false);
+  const [filterStandupOnly, setFilterStandupOnly] = useState(false);
+  const [isReconciliationModalOpen, setIsReconciliationModalOpen] = useState(false);
 
   // Quick inputs per bucket
   const [quickInput, setQuickInput] = useState<{ [bucketId: string]: string }>({});
@@ -119,12 +146,67 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   const [dropPosition, setDropPosition] = useState<'before' | 'after' | null>(null);
   const [lastMoveNotice, setLastMoveNotice] = useState<string | null>(null);
 
+  // Check which tasks are explicitly linked in standup
+  const standupLinkedTaskIds = React.useMemo(() => {
+    if (!standup) return new Set<string>();
+    const ids = new Set<string>();
+    Object.values(standup).forEach(entry => {
+      if (entry.linkedItemIds) {
+        entry.linkedItemIds.forEach(id => ids.add(id));
+      }
+    });
+    return ids;
+  }, [standup]);
+
+  const handlePushToStandup = (task: Task) => {
+    const assignee = getWorkItemAssignee(task, team);
+    const memberId = assignee ? assignee.id : (team[0]?.id || '');
+    if (!memberId) return;
+
+    const currentEntry: StandupEntry = standup?.[memberId] || {
+      yesterday: '',
+      today: '',
+      blockers: ''
+    };
+
+    const taskLabel = task.adoId ? `#${task.adoId} ${task.title}` : task.title;
+    const isAlreadyInToday = currentEntry.today.includes(taskLabel);
+
+    if (!isAlreadyInToday) {
+      const newToday = currentEntry.today
+        ? `${currentEntry.today}\n- [ ] ${taskLabel}`
+        : `- [ ] ${taskLabel}`;
+      
+      const newLinked = [...(currentEntry.linkedItemIds || [])];
+      if (!newLinked.includes(task.id)) newLinked.push(task.id);
+
+      const updatedEntry: StandupEntry = {
+        ...currentEntry,
+        today: newToday,
+        linkedItemIds: newLinked,
+        syncedWithDashboardAt: new Date().toISOString()
+      };
+
+      if (onUpdateStandupEntry) {
+        onUpdateStandupEntry(memberId, updatedEntry);
+      } else if (onUpdateState) {
+        onUpdateState(prev => ({
+          ...prev,
+          standup: {
+            ...prev.standup,
+            [memberId]: updatedEntry
+          }
+        }));
+      }
+    }
+  };
+
   // Filter tasks for active date
   const dayTasks = tasks.filter(t => t.dateStr === dateStr);
 
   // Apply release filter if active
   const scopedTasks = selectedReleaseId
-    ? dayTasks.filter(t => !t.releaseId || t.releaseId === selectedReleaseId)
+    ? dayTasks.filter(t => matchesReleaseOrIteration(t, selectedReleaseId, releases))
     : dayTasks;
 
   // Overdue tasks calculation
@@ -140,6 +222,19 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     });
   });
   const blockedCount = blockedTasks.length;
+
+  // Standup count calculation
+  const standupDiscussedTasks = scopedTasks.filter(t => {
+    if (standupLinkedTaskIds.has(t.id)) return true;
+    if (!standup) return false;
+    const tLower = t.title.toLowerCase();
+    const idStr = t.adoId ? `#${t.adoId}` : t.id.slice(-4).toLowerCase();
+    return Object.values(standup).some(entry => {
+      const fullText = `${entry.yesterday} ${entry.today} ${entry.blockers}`.toLowerCase();
+      return fullText.includes(tLower) || fullText.includes(idStr) || (t.title.length > 8 && fullText.includes(t.title.toLowerCase().slice(0, 15)));
+    });
+  });
+  const standupCount = standupDiscussedTasks.length;
 
   // Priority counts on scoped tasks
   const criticalCount = scopedTasks.filter(t => t.priority === 'critical').length;
@@ -175,7 +270,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   }, [team, scopedTasks, unassignedCount]);
 
   // Multi-tier filtering pipeline
-  // 1. Overdue / Blocked filters
+  // 1. Overdue / Blocked / Standup filters
   let baseTasks = scopedTasks;
   if (filterOverdueOnly) {
     baseTasks = baseTasks.filter(t => isTaskOverdue(t.dueDate, t.status, dateStr));
@@ -186,6 +281,18 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
       return t.dependsOnTaskIds.some(depId => {
         const dep = tasks.find(p => p.id === depId);
         return dep && dep.status !== 'complete';
+      });
+    });
+  }
+  if (filterStandupOnly) {
+    baseTasks = baseTasks.filter(t => {
+      if (standupLinkedTaskIds.has(t.id)) return true;
+      if (!standup) return false;
+      const tLower = t.title.toLowerCase();
+      const idStr = t.adoId ? `#${t.adoId}` : t.id.slice(-4).toLowerCase();
+      return Object.values(standup).some(entry => {
+        const fullText = `${entry.yesterday} ${entry.today} ${entry.blockers}`.toLowerCase();
+        return fullText.includes(tLower) || fullText.includes(idStr) || (t.title.length > 8 && fullText.includes(t.title.toLowerCase().slice(0, 15)));
       });
     });
   }
@@ -215,7 +322,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
         const matchesCustomer = t.customerName ? t.customerName.toLowerCase().includes(q) : false;
         const matchesStory = userStories.some(s => s.id === t.userStoryId && ((s.adoId && String(s.adoId).toLowerCase().includes(q)) || s.title.toLowerCase().includes(q)));
         const matchesDefect = defects.some(d => d.id === t.defectId && ((d.adoId && String(d.adoId).toLowerCase().includes(q)) || d.title.toLowerCase().includes(q)));
-        const matchesComments = t.comments ? t.comments.some(c => c.text.toLowerCase().includes(q) || c.author.toLowerCase().includes(q)) : false;
+        const matchesComments = t.comments ? t.comments.some(c => cleanAdoHtml(c.text).toLowerCase().includes(q) || c.author.toLowerCase().includes(q)) : false;
         return matchesTitle || matchesAssignee || matchesGroup || matchesCustomer || matchesStory || matchesDefect || matchesComments;
       })
     : baseTasks;
@@ -226,13 +333,31 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     (selectedAssigneeIds.length > 0 ? 1 : 0) + 
     (filterOverdueOnly ? 1 : 0) + 
     (filterBlockedOnly ? 1 : 0) + 
+    (filterStandupOnly ? 1 : 0) +
     (searchQuery.trim() ? 1 : 0);
 
-  // Metric rollups
+  // Metric rollups - Daily scoped
   const totalCount = scopedTasks.length;
   const completedCount = scopedTasks.filter(t => t.status === 'complete').length;
   const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
   const highPending = scopedTasks.filter(t => (t.priority === 'high' || t.priority === 'critical') && t.status !== 'complete').length;
+
+  // Metric rollups - Selected Release overall tasks progress
+  const currentReleaseObj = selectedReleaseId 
+    ? releases.find(r => r.id === selectedReleaseId || r.iterationPath === selectedReleaseId || r.name === selectedReleaseId)
+    : null;
+  const currentReleaseDisplayName = currentReleaseObj 
+    ? formatReleaseDisplayName(currentReleaseObj.name, currentReleaseObj.releaseNumber)
+    : (selectedReleaseId || 'All Releases');
+
+  const releaseAllTasks = selectedReleaseId
+    ? tasks.filter(t => matchesReleaseOrIteration(t, selectedReleaseId, releases))
+    : tasks;
+  const releaseCompletedCount = releaseAllTasks.filter(t => t.status === 'complete').length;
+  const releaseTotalCount = releaseAllTasks.length;
+  const releaseProgressPercent = releaseTotalCount > 0 
+    ? Math.round((releaseCompletedCount / releaseTotalCount) * 100) 
+    : 0;
 
   // Priority toggle handler
   const handleTogglePriority = (priority: Priority) => {
@@ -254,6 +379,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     setSelectedAssigneeIds([]);
     setFilterOverdueOnly(false);
     setFilterBlockedOnly(false);
+    setFilterStandupOnly(false);
   };
 
   // Construct Dynamic Buckets according to GroupBy mode
@@ -349,37 +475,6 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
             badge: 'Closed',
             filter: (t) => t.status === 'complete',
             getDefaultProps: () => ({ status: 'complete', completedAt: new Date().toISOString() })
-          }
-        ];
-
-      case 'source':
-        return [
-          {
-            id: 'internal',
-            title: 'Internal Dev ADO',
-            subtitle: 'Core dev features, internal test suites, and regression',
-            color: 'var(--internal-ado)',
-            badge: 'Dev ADO',
-            filter: (t) => !t.sourceInstance || t.sourceInstance === 'internal',
-            getDefaultProps: () => ({ sourceInstance: 'internal' })
-          },
-          {
-            id: 'external',
-            title: 'External OPS ADO',
-            subtitle: 'Customer reported escalations and client SLA tickets',
-            color: 'var(--external-ado)',
-            badge: 'OPS ADO',
-            filter: (t) => t.sourceInstance === 'external',
-            getDefaultProps: () => ({ sourceInstance: 'external' })
-          },
-          {
-            id: 'local',
-            title: 'Local & Hub Tasks',
-            subtitle: 'Custom standup notes and direct board items',
-            color: 'var(--primary)',
-            badge: 'Local',
-            filter: (t) => t.sourceInstance === 'local',
-            getDefaultProps: () => ({ sourceInstance: 'local' })
           }
         ];
     }
@@ -554,92 +649,172 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
   return (
     <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full pb-16">
+      {/* D3.js Sprint Burnup & Release Predictability Horizon */}
+      <SprintBurnupChart
+        releases={releases}
+        userStories={userStories}
+        tasks={tasks}
+        defects={defects}
+        selectedReleaseId={selectedReleaseId}
+        currentDateStr={dateStr}
+        onSelectRelease={onSelectRelease}
+      />
+
       {/* Top Insights & Execution Health Bar */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          {/* Progress metric */}
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-[var(--primary-light)] flex items-center justify-center text-[var(--primary)] font-bold text-base shadow-xs">
-              {progressPercent}%
+      <div id="taskboard-execution-health-bar" className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs flex flex-col gap-4">
+        {/* Progress Metrics Row: Release Task Progress & Daily Execution Target */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          
+          {/* Selected Release Task Completion Progress Bar */}
+          <div 
+            id="taskboard-release-progress-card"
+            className="flex items-center gap-3.5 p-3.5 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border)] shadow-2xs"
+          >
+            <div className="w-12 h-12 rounded-xl bg-[var(--primary-light)] flex items-center justify-center text-[var(--primary)] font-bold text-base shadow-2xs shrink-0 font-mono">
+              {releaseProgressPercent}%
             </div>
-            <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-[var(--text-primary)]">Daily Execution Rate</span>
-                <span className="text-xs font-semibold text-[var(--text-secondary)]">
-                  ({completedCount}/{totalCount} tasks closed)
+            <div className="flex flex-col flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Rocket size={13} className="text-[var(--primary)] shrink-0" />
+                  <span className="text-xs font-bold text-[var(--text-primary)] truncate" title={currentReleaseDisplayName}>
+                    {selectedReleaseId ? currentReleaseDisplayName : 'Release Scope: All Sprints'}
+                  </span>
+                  {currentReleaseObj?.status && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-[var(--primary-light)] text-[var(--primary)] border border-[var(--primary)]/20 shrink-0">
+                      {currentReleaseObj.status}
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs font-semibold text-[var(--text-secondary)] font-mono shrink-0">
+                  {releaseCompletedCount}/{releaseTotalCount} tasks ({releaseProgressPercent}%)
                 </span>
               </div>
-              {/* Progress bar line */}
-              <div className="w-48 sm:w-64 h-2 bg-[var(--surface-hover)] rounded-full overflow-hidden mt-1.5 border border-[var(--border)]">
+              {/* Visual Progress Bar for Selected Release */}
+              <div className="w-full h-2.5 bg-[var(--border)] rounded-full overflow-hidden">
                 <div 
-                  className="h-full bg-[var(--primary)] rounded-full transition-all duration-500"
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    releaseProgressPercent === 100 ? 'bg-emerald-500' : 'bg-[var(--primary)]'
+                  }`}
+                  style={{ width: `${releaseProgressPercent}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Daily Task Execution Target Progress Bar */}
+          <div 
+            id="taskboard-daily-progress-card"
+            className="flex items-center gap-3.5 p-3.5 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border)] shadow-2xs"
+          >
+            <div className="w-12 h-12 rounded-xl bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center text-[var(--text-primary)] font-bold text-base shadow-2xs shrink-0 font-mono">
+              {progressPercent}%
+            </div>
+            <div className="flex flex-col flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Target size={13} className="text-[var(--medium)] shrink-0" />
+                  <span className="text-xs font-bold text-[var(--text-primary)]">
+                    Daily Execution Target
+                  </span>
+                  <span className="text-[10px] font-bold text-[var(--text-muted)] font-mono">
+                    ({dateStr})
+                  </span>
+                </div>
+                <span className="text-xs font-semibold text-[var(--text-secondary)] font-mono shrink-0">
+                  {completedCount}/{totalCount} tasks ({progressPercent}%)
+                </span>
+              </div>
+              {/* Visual Progress Bar for Daily Tasks */}
+              <div className="w-full h-2.5 bg-[var(--border)] rounded-full overflow-hidden">
+                <div 
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    progressPercent === 100 ? 'bg-emerald-500' : 'bg-[var(--medium)]'
+                  }`}
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
             </div>
           </div>
 
+        </div>
+
+        {/* Signals, Alerts & Blueprint Actions Row */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2.5 border-t border-[var(--border)]">
           {/* Quick status signals, Overdue Warning Alert, Blocked Warning Alert & Blueprint Seeder */}
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Blocked Alert Warning Badge */}
-            {blockedCount > 0 && (
+          <div className="flex flex-wrap items-center gap-2.5 w-full justify-between">
+            <div className="flex flex-wrap items-center gap-2.5">
+              {/* Blocked Alert Warning Badge */}
+              {blockedCount > 0 && (
+                <button
+                  onClick={() => setFilterBlockedOnly(!filterBlockedOnly)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-xs cursor-pointer ${
+                    filterBlockedOnly
+                      ? 'bg-red-600 text-white border-red-600 ring-2 ring-red-500/30'
+                      : 'bg-red-500/10 text-red-600 dark:text-red-300 border-red-500/30 hover:bg-red-600 hover:text-white'
+                  }`}
+                  title="Click to toggle filtering only blocked tasks"
+                >
+                  <Lock size={14} className={filterBlockedOnly ? '' : 'animate-pulse text-red-500'} />
+                  <span>{blockedCount} Blocked {blockedCount === 1 ? 'Task' : 'Tasks'}</span>
+                  <span className="text-[10px] opacity-80 underline ml-1">
+                    {filterBlockedOnly ? 'Show All' : 'Filter'}
+                  </span>
+                </button>
+              )}
+
+              {/* Overdue Alert Warning Badge */}
+              {overdueCount > 0 && (
+                <button
+                  onClick={() => setFilterOverdueOnly(!filterOverdueOnly)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-xs cursor-pointer ${
+                    filterOverdueOnly
+                      ? 'bg-[var(--critical)] text-white border-[var(--critical)] ring-2 ring-[var(--critical)]/30'
+                      : 'bg-[var(--critical-bg)] text-[var(--critical)] border-[var(--critical-border)] hover:bg-[var(--critical)] hover:text-white'
+                  }`}
+                  title="Click to toggle filtering only overdue tasks"
+                >
+                  <AlertTriangle size={14} className="animate-pulse" />
+                  <span>{overdueCount} Overdue {overdueCount === 1 ? 'Task' : 'Tasks'}</span>
+                  <span className="text-[10px] opacity-80 underline ml-1">
+                    {filterOverdueOnly ? 'Show All' : 'Filter'}
+                  </span>
+                </button>
+              )}
+
+              {highPending > 0 ? (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--critical-bg)] border border-[var(--critical-border)] text-[var(--critical)] text-xs font-bold">
+                  <Flame size={14} />
+                  <span>{highPending} High priority pending</span>
+                </div>
+              ) : totalCount > 0 ? (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--low-bg)] border border-[var(--low-border)] text-[var(--low)] text-xs font-bold">
+                  <CheckCircle2 size={14} />
+                  <span>High priority cleared</span>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Standup Discussion Sync & Blueprint Seeder Buttons */}
+            <div className="flex items-center gap-2 ml-auto">
               <button
-                onClick={() => setFilterBlockedOnly(!filterBlockedOnly)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-xs cursor-pointer ${
-                  filterBlockedOnly
-                    ? 'bg-red-600 text-white border-red-600 ring-2 ring-red-500/30'
-                    : 'bg-red-500/10 text-red-600 dark:text-red-300 border-red-500/30 hover:bg-red-600 hover:text-white'
-                }`}
-                title="Click to toggle filtering only blocked tasks"
+                onClick={() => setIsReconciliationModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--primary-light)] hover:bg-[var(--primary)] text-[var(--primary)] hover:text-white border border-[var(--primary)]/30 text-xs font-bold transition-all shadow-xs cursor-pointer"
+                title="Reconcile standup call notes and open dashboard items"
               >
-                <Lock size={14} className={filterBlockedOnly ? '' : 'animate-pulse text-red-500'} />
-                <span>{blockedCount} Blocked {blockedCount === 1 ? 'Task' : 'Tasks'}</span>
-                <span className="text-[10px] opacity-80 underline ml-1">
-                  {filterBlockedOnly ? 'Show All' : 'Filter'}
-                </span>
+                <ArrowRightLeft size={13} />
+                <span>Standup Sync</span>
               </button>
-            )}
 
-            {/* Overdue Alert Warning Badge */}
-            {overdueCount > 0 && (
               <button
-                onClick={() => setFilterOverdueOnly(!filterOverdueOnly)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-xs cursor-pointer ${
-                  filterOverdueOnly
-                    ? 'bg-[var(--critical)] text-white border-[var(--critical)] ring-2 ring-[var(--critical)]/30'
-                    : 'bg-[var(--critical-bg)] text-[var(--critical)] border-[var(--critical-border)] hover:bg-[var(--critical)] hover:text-white'
-                }`}
-                title="Click to toggle filtering only overdue tasks"
+                onClick={() => onApplyBlueprint(blueprintSchedule)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--surface-hover)] hover:bg-[var(--surface)] border border-[var(--border)] text-xs font-bold text-[var(--text-primary)] transition-all shadow-xs cursor-pointer"
+                title="Pre-populate standard daily blocks (Team Check-in, Deep Work, Sanity checks)"
               >
-                <AlertTriangle size={14} className="animate-pulse" />
-                <span>{overdueCount} Overdue {overdueCount === 1 ? 'Task' : 'Tasks'}</span>
-                <span className="text-[10px] opacity-80 underline ml-1">
-                  {filterOverdueOnly ? 'Show All' : 'Filter'}
-                </span>
+                <Zap size={14} className="text-[var(--medium)]" />
+                <span>Load Blueprint</span>
               </button>
-            )}
-
-            {highPending > 0 ? (
-              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--critical-bg)] border border-[var(--critical-border)] text-[var(--critical)] text-xs font-bold">
-                <Flame size={14} />
-                <span>{highPending} High priority pending</span>
-              </div>
-            ) : totalCount > 0 ? (
-              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--low-bg)] border border-[var(--low-border)] text-[var(--low)] text-xs font-bold">
-                <CheckCircle2 size={14} />
-                <span>High priority cleared</span>
-              </div>
-            ) : null}
-
-            {/* Quick Blueprint Seeder Button */}
-            <button
-              onClick={() => onApplyBlueprint(blueprintSchedule)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--surface-hover)] hover:bg-[var(--surface)] border border-[var(--border)] text-xs font-bold text-[var(--text-primary)] transition-all shadow-xs cursor-pointer"
-              title="Pre-populate standard daily blocks (Team Check-in, Deep Work, Sanity checks)"
-            >
-              <Zap size={14} className="text-[var(--medium)]" />
-              <span>Load Blueprint</span>
-            </button>
+            </div>
           </div>
         </div>
       </div>
@@ -682,15 +857,42 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
           {/* Quick Actions (Reset Filters / Overdue Toggle / Blocked Toggle) */}
           <div className="flex items-center gap-2">
+            {/* Dependency Chain & Blocker View Switcher Button */}
+            <button
+              onClick={() => setViewType(viewType === 'board' ? 'dependency_chain' : 'board')}
+              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all border cursor-pointer ${
+                viewType === 'dependency_chain'
+                  ? 'bg-amber-600 text-white border-amber-600 shadow-xs ring-2 ring-amber-500/30'
+                  : 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30 hover:bg-amber-600 hover:text-white'
+              }`}
+              title="Toggle Dependency Chain & Blocker View"
+            >
+              <GitBranch size={13} className={viewType === 'dependency_chain' ? '' : 'text-amber-500'} />
+              <span>{viewType === 'dependency_chain' ? 'Back to Board' : 'Dependency Chain'}</span>
+              {blockedCount > 0 && (
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                  viewType === 'dependency_chain' ? 'bg-white/30 text-white' : 'bg-red-500 text-white'
+                }`}>
+                  {blockedCount}
+                </span>
+              )}
+            </button>
+
             {blockedCount > 0 && (
               <button
-                onClick={() => setFilterBlockedOnly(!filterBlockedOnly)}
+                onClick={() => {
+                  if (viewType === 'dependency_chain') {
+                    setFilterBlockedOnly(!filterBlockedOnly);
+                  } else {
+                    setViewType('dependency_chain');
+                  }
+                }}
                 className={`px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all border cursor-pointer ${
                   filterBlockedOnly
                     ? 'bg-red-600 text-white border-red-600 shadow-xs'
                     : 'bg-red-500/10 text-red-600 dark:text-red-300 border-red-500/30 hover:bg-red-600 hover:text-white'
                 }`}
-                title="Filter tasks blocked by incomplete dependencies"
+                title="View blocked tasks and their prerequisite blockers"
               >
                 <Lock size={12} className={filterBlockedOnly ? '' : 'animate-pulse text-red-500'} />
                 <span>Blocked ({blockedCount})</span>
@@ -709,6 +911,21 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
               >
                 <AlertTriangle size={12} className={filterOverdueOnly ? '' : 'animate-pulse'} />
                 <span>Overdue ({overdueCount})</span>
+              </button>
+            )}
+
+            {standupCount > 0 && (
+              <button
+                onClick={() => setFilterStandupOnly(!filterStandupOnly)}
+                className={`px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all border cursor-pointer ${
+                  filterStandupOnly
+                    ? 'bg-[var(--primary)] text-white border-[var(--primary)] shadow-xs'
+                    : 'bg-[var(--primary-light)] text-[var(--primary)] border-[var(--primary)]/30 hover:bg-[var(--primary)] hover:text-white'
+                }`}
+                title="Filter tasks discussed in today's standup entries"
+              >
+                <Users size={12} />
+                <span>In Standup ({standupCount})</span>
               </button>
             )}
 
@@ -872,75 +1089,101 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
       {/* Grouping View Switcher & Drag-and-Drop Guidance Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 shadow-xs">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
-            <Layers size={14} className="text-[var(--primary)]" />
-            <span>Group By:</span>
-          </span>
-
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Main View Mode Selector (Board vs Dependency Chain) */}
           <div className="flex items-center bg-[var(--surface-hover)] p-1 rounded-xl border border-[var(--border)] gap-1">
             <button
-              onClick={() => setGroupBy('priority')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                groupBy === 'priority'
+              onClick={() => setViewType('board')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                viewType === 'board'
                   ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               }`}
             >
-              <Flame size={13} className={groupBy === 'priority' ? 'text-[var(--critical)]' : ''} />
-              <span>Priority</span>
+              <LayoutGrid size={13} className={viewType === 'board' ? 'text-[var(--primary)]' : ''} />
+              <span>Board Lanes</span>
             </button>
 
             <button
-              onClick={() => setGroupBy('group')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                groupBy === 'group'
-                  ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              onClick={() => setViewType('dependency_chain')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                viewType === 'dependency_chain'
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'text-[var(--text-secondary)] hover:text-amber-600'
               }`}
             >
-              <Users size={13} className={groupBy === 'group' ? 'text-[var(--primary)]' : ''} />
-              <span>Squad / Pod</span>
-            </button>
-
-            <button
-              onClick={() => setGroupBy('status')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                groupBy === 'status'
-                  ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <CheckSquare size={13} className={groupBy === 'status' ? 'text-[var(--low)]' : ''} />
-              <span>Status</span>
-            </button>
-
-            <button
-              onClick={() => setGroupBy('source')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                groupBy === 'source'
-                  ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <Building2 size={13} className={groupBy === 'source' ? 'text-[var(--internal-ado)]' : ''} />
-              <span>ADO Source</span>
+              <GitBranch size={13} />
+              <span>Dependency Chain & Blockers</span>
+              {blockedCount > 0 && (
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                  viewType === 'dependency_chain' ? 'bg-white/30 text-white' : 'bg-red-500 text-white'
+                }`}>
+                  {blockedCount}
+                </span>
+              )}
             </button>
           </div>
 
-          {/* Quick Overdue Filter Toggle */}
-          {overdueCount > 0 && (
-            <button
-              onClick={() => setFilterOverdueOnly(!filterOverdueOnly)}
-              className={`ml-2 px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all border cursor-pointer ${
-                filterOverdueOnly
-                  ? 'bg-[var(--critical)] text-white border-[var(--critical)] shadow-xs'
-                  : 'bg-[var(--critical-bg)] text-[var(--critical)] border-[var(--critical-border)] hover:bg-[var(--critical)] hover:text-white'
-              }`}
-            >
-              <AlertTriangle size={12} />
-              <span>{filterOverdueOnly ? 'Show All Tasks' : `Overdue Only (${overdueCount})`}</span>
-            </button>
+          {viewType === 'board' && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
+                <Layers size={14} className="text-[var(--primary)]" />
+                <span>Group By:</span>
+              </span>
+
+              <div className="flex items-center bg-[var(--surface-hover)] p-1 rounded-xl border border-[var(--border)] gap-1">
+                <button
+                  onClick={() => setGroupBy('priority')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    groupBy === 'priority'
+                      ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  <Flame size={13} className={groupBy === 'priority' ? 'text-[var(--critical)]' : ''} />
+                  <span>Priority</span>
+                </button>
+
+                <button
+                  onClick={() => setGroupBy('group')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    groupBy === 'group'
+                      ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  <Users size={13} className={groupBy === 'group' ? 'text-[var(--primary)]' : ''} />
+                  <span>Squad / Pod</span>
+                </button>
+
+                <button
+                  onClick={() => setGroupBy('status')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    groupBy === 'status'
+                      ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  <CheckSquare size={13} className={groupBy === 'status' ? 'text-[var(--low)]' : ''} />
+                  <span>Status</span>
+                </button>
+              </div>
+
+              {/* Quick Overdue Filter Toggle */}
+              {overdueCount > 0 && (
+                <button
+                  onClick={() => setFilterOverdueOnly(!filterOverdueOnly)}
+                  className={`ml-2 px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all border cursor-pointer ${
+                    filterOverdueOnly
+                      ? 'bg-[var(--critical)] text-white border-[var(--critical)] shadow-xs'
+                      : 'bg-[var(--critical-bg)] text-[var(--critical)] border-[var(--critical-border)] hover:bg-[var(--critical)] hover:text-white'
+                  }`}
+                >
+                  <AlertTriangle size={12} />
+                  <span>{filterOverdueOnly ? 'Show All Tasks' : `Overdue Only (${overdueCount})`}</span>
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -954,13 +1197,34 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
           ) : (
             <div className="text-[11px] font-medium text-[var(--text-muted)] flex items-center gap-1.5">
               <Info size={13} />
-              <span>Drag & drop cards to reorder or move between group buckets</span>
+              <span>
+                {viewType === 'dependency_chain'
+                  ? 'Inspect blockers, cascading prerequisites, and complete upstream tasks'
+                  : 'Drag & drop cards to reorder or move between group buckets'}
+              </span>
             </div>
           )}
         </div>
       </div>
 
-      {/* Dynamic Lanes Container */}
+      {/* Main View Area: Dependency Chain View OR Dynamic Board Lanes */}
+      {viewType === 'dependency_chain' ? (
+        <DependencyChainView
+          tasks={scopedTasks}
+          allTasks={tasks}
+          team={team}
+          groups={groups}
+          userStories={userStories}
+          defects={defects}
+          releases={releases}
+          currentDateStr={dateStr}
+          searchQuery={searchQuery}
+          onToggleStatus={onToggleStatus}
+          onUpdateTask={onUpdateTask}
+          onDeleteTask={onDeleteTask}
+          onAddComment={onAddComment}
+        />
+      ) : (
       <div className={`grid gap-6 items-start ${
         buckets.length <= 3 
           ? 'grid-cols-1 lg:grid-cols-3' 
@@ -1049,6 +1313,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                       userStories={userStories}
                       defects={defects}
                       releases={releases}
+                      standup={standup}
                       currentDateStr={dateStr}
                       searchQuery={searchQuery}
                       isDragging={draggedTaskId === task.id}
@@ -1058,6 +1323,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                       onUpdateTask={onUpdateTask}
                       onDeleteTask={onDeleteTask}
                       onAddComment={onAddComment}
+                      onPushToStandup={handlePushToStandup}
                       onDragStart={handleDragStart}
                       onDragEnd={handleDragEnd}
                       onDragOverCard={handleDragOverCard}
@@ -1114,6 +1380,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                           userStories={userStories}
                           defects={defects}
                           releases={releases}
+                          standup={standup}
                           currentDateStr={dateStr}
                           searchQuery={searchQuery}
                           isDragging={draggedTaskId === task.id}
@@ -1123,6 +1390,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                           onUpdateTask={onUpdateTask}
                           onDeleteTask={onDeleteTask}
                           onAddComment={onAddComment}
+                          onPushToStandup={handlePushToStandup}
                           onDragStart={handleDragStart}
                           onDragEnd={handleDragEnd}
                           onDragOverCard={handleDragOverCard}
@@ -1142,6 +1410,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
           );
         })}
       </div>
+      )}
 
       {/* Floating In-Flight Drag Visual Status Banner */}
       {draggedTaskId && (
@@ -1170,6 +1439,16 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
             Cancel
           </button>
         </div>
+      )}
+
+      {/* Standup Discussion Reconciliation Modal */}
+      {isReconciliationModalOpen && state && onUpdateState && (
+        <StandupDiscussionSyncModal
+          isOpen={isReconciliationModalOpen}
+          onClose={() => setIsReconciliationModalOpen(false)}
+          state={state}
+          onUpdateState={onUpdateState}
+        />
       )}
     </div>
   );

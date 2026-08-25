@@ -39,7 +39,12 @@ import {
   Maximize2
 } from 'lucide-react';
 import { generateId, toDateStr } from '../../utils/date';
-import { SearchableSelect } from '../common/SearchableSelect';
+import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
+import { FilterBar, FilterDropdownConfig } from '../common/FilterBar';
+import { useWorkItemFilters } from '../../utils/useWorkItemFilters';
+import { matchesReleaseOrIteration, formatReleaseDisplayName } from '../../utils/adoPaths';
+import { getWorkItemAssignee, matchesAssigneeFilter } from '../../utils/assigneeUtils';
+import { HighlightText } from '../common/HighlightText';
 
 interface TestCasesViewProps {
   testCases: TestCase[];
@@ -48,6 +53,7 @@ interface TestCasesViewProps {
   defects: Defect[];
   team: TeamMember[];
   selectedReleaseId?: string | null;
+  onSelectRelease?: (releaseId: string | null) => void;
   onAddTestCase: (testCase: TestCase) => void;
   onUpdateTestCase: (testCase: TestCase) => void;
   onDeleteTestCase: (id: string) => void;
@@ -60,17 +66,32 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
   defects,
   team,
   selectedReleaseId,
+  onSelectRelease,
   onAddTestCase,
   onUpdateTestCase,
   onDeleteTestCase
 }) => {
-  // Search & Filter State
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
-  const [filterReleaseId, setFilterReleaseId] = useState<string>(selectedReleaseId || 'all');
-  const [filterAreaPath, setFilterAreaPath] = useState<string>('all');
-  const [filterAssigneeId, setFilterAssigneeId] = useState<string>('all');
-  const [filterAutomation, setFilterAutomation] = useState<string>('all');
+  // Search & Filter State using useWorkItemFilters
+  const {
+    search: searchQuery,
+    setSearch: setSearchQuery,
+    filterStatus,
+    setFilterStatus,
+    filterRelease: filterReleaseId,
+    handleReleaseChange,
+    filterAssignee: filterAssigneeId,
+    setFilterAssignee: setFilterAssigneeId,
+    customFilters,
+    setCustomFilter,
+    activeFiltersCount,
+    handleClearFilters
+  } = useWorkItemFilters({
+    selectedReleaseId,
+    onSelectRelease
+  });
+
+  const filterAutomation = customFilters.automation || '';
+  const setFilterAutomation = (val: string) => setCustomFilter('automation', val);
 
   // Active detail view or modal
   const [selectedTestCase, setSelectedTestCase] = useState<TestCase | null>(null);
@@ -92,15 +113,6 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
   const failedCount = testCases.filter(t => (t.status || '').toLowerCase() === 'failed' || (t.status || '').toLowerCase() === 'blocked').length;
   const automatedCount = testCases.filter(t => t.automationStatus === 'Automated').length;
 
-  // Filter options
-  const distinctAreaPaths = useMemo(() => {
-    const set = new Set<string>();
-    testCases.forEach(tc => { if (tc.areaPath) set.add(tc.areaPath); });
-    releases.forEach(r => { if (r.areaPath) set.add(r.areaPath); });
-    userStories.forEach(s => { if (s.areaPath) set.add(s.areaPath); });
-    return Array.from(set).sort();
-  }, [testCases, releases, userStories]);
-
   const filteredTestCases = useMemo(() => {
     return testCases.filter(tc => {
       // Search
@@ -111,8 +123,8 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
         const matchAdo = tc.adoId ? String(tc.adoId).includes(q) : false;
         const matchArea = (tc.areaPath || '').toLowerCase().includes(q);
         const matchTags = (tc.tags || []).some(t => t.toLowerCase().includes(q));
-        const memberName = tc.assigneeId ? (team.find(t => t.id === tc.assigneeId)?.name || '') : (tc.createdByName || '');
-        const matchAssignee = memberName.toLowerCase().includes(q);
+        const resolved = getWorkItemAssignee(tc, team);
+        const matchAssignee = resolved ? (resolved.name.toLowerCase().includes(q) || (resolved.email && resolved.email.toLowerCase().includes(q))) : false;
 
         if (!matchTitle && !matchDesc && !matchAdo && !matchArea && !matchTags && !matchAssignee) {
           return false;
@@ -120,40 +132,31 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
       }
 
       // Status
-      if (filterStatus !== 'all') {
+      if (filterStatus && filterStatus !== 'all') {
         if ((tc.status || 'Design').toLowerCase() !== filterStatus.toLowerCase()) {
           return false;
         }
       }
 
       // Release
-      if (filterReleaseId !== 'all') {
-        if (tc.releaseId !== filterReleaseId) return false;
-      }
-
-      // Area Path
-      if (filterAreaPath !== 'all') {
-        if (tc.areaPath !== filterAreaPath) return false;
+      if (filterReleaseId && filterReleaseId !== 'all') {
+        if (!matchesReleaseOrIteration(tc, filterReleaseId, releases)) return false;
       }
 
       // Assignee
-      if (filterAssigneeId !== 'all') {
-        if (filterAssigneeId === 'unassigned') {
-          if (tc.assigneeId) return false;
-        } else {
-          if (tc.assigneeId !== filterAssigneeId) return false;
-        }
+      if (filterAssigneeId && filterAssigneeId !== 'all') {
+        if (!matchesAssigneeFilter(tc, filterAssigneeId, team)) return false;
       }
 
       // Automation
-      if (filterAutomation !== 'all') {
+      if (filterAutomation && filterAutomation !== 'all') {
         if (filterAutomation === 'automated' && tc.automationStatus !== 'Automated') return false;
         if (filterAutomation === 'manual' && tc.automationStatus === 'Automated') return false;
       }
 
       return true;
     });
-  }, [testCases, searchQuery, filterStatus, filterReleaseId, filterAreaPath, filterAssigneeId, filterAutomation, team]);
+  }, [testCases, searchQuery, filterStatus, filterReleaseId, filterAssigneeId, filterAutomation, team, releases]);
 
   // Open Create Modal
   const handleOpenCreateModal = () => {
@@ -164,7 +167,7 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
       priority: 'medium',
       automationStatus: 'Not Automated',
       releaseId: selectedReleaseId || (releases[0]?.id ?? null),
-      areaPath: releases.find(r => r.id === selectedReleaseId)?.areaPath || '',
+      areaPath: 'ACM',
       iterationPath: releases.find(r => r.id === selectedReleaseId)?.iterationPath || '',
       assigneeId: null,
       description: '',
@@ -264,6 +267,98 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
     return 'bg-slate-500/10 text-slate-600 dark:text-slate-400 border-slate-500/30';
   };
 
+  const statusOptions: SelectOption[] = [
+    { value: 'Design', label: 'Design (Draft)' },
+    { value: 'Ready', label: 'Ready' },
+    { value: 'In Progress', label: 'In Progress' },
+    { value: 'Passed', label: 'Passed' },
+    { value: 'Failed', label: 'Failed' },
+    { value: 'Blocked', label: 'Blocked' },
+    { value: 'Closed', label: 'Closed' }
+  ];
+
+  const releaseOptions: SelectOption[] = useMemo(() => [
+    ...releases.map(r => ({
+      value: r.id,
+      label: formatReleaseDisplayName(r.name, r.releaseNumber),
+      sublabel: r.iterationPath !== r.name ? r.iterationPath : undefined
+    }))
+  ], [releases]);
+
+  const assigneeOptions: SelectOption[] = useMemo(() => {
+    const unassignedCount = testCases.filter(tc => !getWorkItemAssignee(tc, team)).length;
+    const list: SelectOption[] = [
+      {
+        value: 'unassigned',
+        label: 'Unassigned Test Cases',
+        badge: `${unassignedCount}`
+      }
+    ];
+
+    team.forEach(m => {
+      const count = testCases.filter(tc => matchesAssigneeFilter(tc, m.id, team)).length;
+      list.push({
+        value: m.id,
+        label: m.name,
+        sublabel: m.role,
+        badge: `${count}`,
+        avatarColor: m.avatarColor || '#6366f1',
+        avatarInitials: m.name.split(' ').map(n => n[0]).join('').slice(0, 2)
+      });
+    });
+
+    return list;
+  }, [team, testCases]);
+
+  const automationOptions: SelectOption[] = [
+    { value: 'automated', label: 'Automated' },
+    { value: 'manual', label: 'Manual' }
+  ];
+
+  const filterConfigs: FilterDropdownConfig[] = useMemo(() => [
+    {
+      id: 'status',
+      label: 'Status',
+      placeholder: 'All Statuses',
+      allOptionLabel: 'All Statuses',
+      icon: <Filter size={13} />,
+      options: statusOptions,
+      value: filterStatus,
+      onChange: setFilterStatus,
+      minWidth: '150px'
+    },
+    {
+      id: 'assignee',
+      label: 'Assignee',
+      placeholder: 'All Assignees',
+      allOptionLabel: 'All Assignees',
+      icon: <Users size={13} />,
+      options: assigneeOptions,
+      value: filterAssigneeId,
+      onChange: setFilterAssigneeId,
+      minWidth: '160px'
+    },
+    {
+      id: 'automation',
+      label: 'Automation',
+      placeholder: 'All Automation',
+      allOptionLabel: 'All Automation',
+      icon: <Code2 size={13} />,
+      options: automationOptions,
+      value: filterAutomation,
+      onChange: setFilterAutomation,
+      minWidth: '140px'
+    }
+  ], [
+    filterStatus,
+    setFilterStatus,
+    assigneeOptions,
+    filterAssigneeId,
+    setFilterAssigneeId,
+    filterAutomation,
+    setFilterAutomation
+  ]);
+
   return (
     <div className="space-y-6 pb-12">
       {/* Header Banner */}
@@ -309,9 +404,9 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
       {/* Metrics Banner */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <div 
-          onClick={() => setFilterStatus('all')}
+          onClick={() => setFilterStatus('')}
           className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
-            filterStatus === 'all' ? 'border-[var(--primary)] bg-[var(--primary)]/5 shadow-xs' : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--border-strong)]'
+            !filterStatus || filterStatus === 'all' ? 'border-[var(--primary)] bg-[var(--primary)]/5 shadow-xs' : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--border-strong)]'
           }`}
         >
           <div className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">All Tests</div>
@@ -390,122 +485,18 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
         </div>
       </div>
 
-      {/* Filter Toolbar */}
-      <div className="bg-[var(--surface)] p-4 rounded-xl border border-[var(--border)] shadow-xs space-y-3">
-        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
-          {/* Search */}
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" size={15} />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search test cases by title, ADO #ID, steps, area..."
-              className="w-full pl-9 pr-8 py-2 text-xs rounded-lg border border-[var(--border)] bg-[var(--bg)] text-[var(--text-primary)] focus:outline-hidden focus:border-[var(--primary)]"
-            />
-            {searchQuery && (
-              <button 
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-              >
-                <X size={13} />
-              </button>
-            )}
-          </div>
-
-          {/* Quick Filters */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="w-40">
-              <SearchableSelect
-                options={[
-                  { value: 'all', label: 'All Statuses' },
-                  { value: 'Design', label: 'Design (Draft)' },
-                  { value: 'Ready', label: 'Ready' },
-                  { value: 'In Progress', label: 'In Progress' },
-                  { value: 'Passed', label: 'Passed' },
-                  { value: 'Failed', label: 'Failed' },
-                  { value: 'Blocked', label: 'Blocked' },
-                  { value: 'Closed', label: 'Closed' }
-                ]}
-                value={filterStatus}
-                onChange={setFilterStatus}
-                placeholder="Status"
-                icon={<Filter size={13} />}
-              />
-            </div>
-
-            <div className="w-48">
-              <SearchableSelect
-                options={[
-                  { value: 'all', label: 'All Releases' },
-                  ...releases.map(r => ({ value: r.id, label: r.name }))
-                ]}
-                value={filterReleaseId}
-                onChange={setFilterReleaseId}
-                placeholder="Release"
-                icon={<Rocket size={13} />}
-              />
-            </div>
-
-            <div className="w-44">
-              <SearchableSelect
-                options={[
-                  { value: 'all', label: 'All Area Paths' },
-                  ...distinctAreaPaths.map(a => ({ value: a, label: a }))
-                ]}
-                value={filterAreaPath}
-                onChange={setFilterAreaPath}
-                placeholder="Area Path"
-                icon={<FolderGit2 size={13} />}
-              />
-            </div>
-
-            <div className="w-40">
-              <SearchableSelect
-                options={[
-                  { value: 'all', label: 'All Assignees' },
-                  { value: 'unassigned', label: 'Unassigned' },
-                  ...team.map(m => ({ value: m.id, label: m.name }))
-                ]}
-                value={filterAssigneeId}
-                onChange={setFilterAssigneeId}
-                placeholder="Assignee"
-                icon={<Users size={13} />}
-              />
-            </div>
-
-            <div className="w-36">
-              <SearchableSelect
-                options={[
-                  { value: 'all', label: 'All Automation' },
-                  { value: 'automated', label: 'Automated' },
-                  { value: 'manual', label: 'Manual' }
-                ]}
-                value={filterAutomation}
-                onChange={setFilterAutomation}
-                placeholder="Automation"
-                icon={<Code2 size={13} />}
-              />
-            </div>
-
-            {(filterStatus !== 'all' || filterReleaseId !== 'all' || filterAreaPath !== 'all' || filterAssigneeId !== 'all' || filterAutomation !== 'all' || searchQuery) && (
-              <button
-                onClick={() => {
-                  setFilterStatus('all');
-                  setFilterReleaseId('all');
-                  setFilterAreaPath('all');
-                  setFilterAssigneeId('all');
-                  setFilterAutomation('all');
-                  setSearchQuery('');
-                }}
-                className="px-2.5 py-2 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-lg hover:bg-[var(--bg)] transition-colors"
-                title="Clear all filters"
-              >
-                Reset
-              </button>
-            )}
-          </div>
-        </div>
+      {/* Filter Toolbar - Standardized Reusable FilterBar */}
+      <div className="bg-[var(--surface)] p-4 rounded-xl border border-[var(--border)] shadow-xs">
+        <FilterBar
+          search={{
+            value: searchQuery,
+            onChange: setSearchQuery,
+            placeholder: 'Search test cases by title, ADO #ID, steps, area...'
+          }}
+          filters={filterConfigs}
+          onReset={handleClearFilters}
+          activeFiltersCount={activeFiltersCount}
+        />
       </div>
 
       {/* Test Cases List */}
@@ -539,7 +530,7 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
       ) : (
         <div className="space-y-3">
           {filteredTestCases.map((tc) => {
-            const assignee = team.find(m => m.id === tc.assigneeId);
+            const assignee = getWorkItemAssignee(tc, team);
             const linkedStory = userStories.find(s => s.id === tc.userStoryId);
             const release = releases.find(r => r.id === tc.releaseId);
             const stepsCount = (tc.steps || []).length;
@@ -592,11 +583,19 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
                         </span>
                       )}
 
+                      {/* Area Path */}
+                      {(tc.areaPath || release?.areaPath) && (
+                        <span className="text-[10.5px] font-medium text-[var(--text-secondary)] bg-[var(--surface-hover)] border border-[var(--border)] px-2 py-0.5 rounded-md flex items-center gap-1">
+                          <FolderGit2 size={11} className="text-[var(--primary)]" />
+                          {tc.areaPath || release?.areaPath}
+                        </span>
+                      )}
+
                       {/* Release / Iteration */}
-                      {release && (
-                        <span className="text-[11px] text-[var(--text-muted)] flex items-center gap-1">
+                      {(tc.iterationPath || release?.iterationPath || release?.name) && (
+                        <span className="text-[11px] font-semibold text-[var(--primary)] bg-[var(--primary-light)] border border-[var(--border)] px-2 py-0.5 rounded-md flex items-center gap-1">
                           <Rocket size={11} />
-                          {release.name}
+                          {tc.iterationPath || release?.iterationPath || release?.name}
                         </span>
                       )}
                     </div>
@@ -606,13 +605,13 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
                       onClick={() => setSelectedTestCase(tc)}
                       className="text-sm font-semibold text-[var(--text-primary)] hover:text-[var(--primary)] cursor-pointer transition-colors leading-snug"
                     >
-                      {tc.title}
+                      <HighlightText text={tc.title} query={searchQuery} />
                     </h3>
 
                     {/* Description preview */}
                     {tc.description && (
                       <p className="text-xs text-[var(--text-muted)] line-clamp-2 leading-relaxed">
-                        {tc.description}
+                        <HighlightText text={tc.description} query={searchQuery} />
                       </p>
                     )}
 
@@ -624,7 +623,7 @@ export const TestCasesView: React.FC<TestCasesViewProps> = ({
                         </span>
                         <span className="text-slate-400">•</span>
                         <span className="truncate max-w-md">
-                          Step 1: {tc.steps?.[0]?.action}
+                          Step 1: <HighlightText text={tc.steps?.[0]?.action || ''} query={searchQuery} />
                         </span>
                       </div>
                     )}

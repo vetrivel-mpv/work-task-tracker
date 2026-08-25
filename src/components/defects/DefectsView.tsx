@@ -2,11 +2,14 @@ import React, { useState, useMemo } from 'react';
 import { 
   Defect, 
   Severity, 
+  Priority,
   DefectStatus, 
   Release, 
   UserStory, 
   TeamMember,
-  AdoInstanceType 
+  AdoInstanceType,
+  DualAdoConfig,
+  AppUser
 } from '../../types';
 import { 
   Plus, 
@@ -24,20 +27,29 @@ import {
   Layers,
   Terminal,
   Building2,
-  Globe2,
-  Filter,
-  LifeBuoy,
   FolderGit2,
   Users,
   Search,
   Rocket,
   X,
-  Tag
+  Tag,
+  Copy,
+  Check,
+  User,
+  UserCheck,
+  Calendar,
+  Clock,
+  Filter,
+  CheckCircle
 } from 'lucide-react';
 import { generateDefectAnalysis } from '../../services/aiService';
 import { generateId, toDateStr } from '../../utils/date';
-import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber } from '../../utils/adoPaths';
+import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber, matchesReleaseOrIteration, formatReleaseDisplayName } from '../../utils/adoPaths';
+import { getWorkItemAssignee, matchesAssigneeFilter } from '../../utils/assigneeUtils';
 import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
+import { FilterBar, FilterDropdownConfig } from '../common/FilterBar';
+import { useWorkItemFilters } from '../../utils/useWorkItemFilters';
+import { HighlightText } from '../common/HighlightText';
 
 interface DefectsViewProps {
   defects: Defect[];
@@ -46,6 +58,11 @@ interface DefectsViewProps {
   team: TeamMember[];
   selectedReleaseId: string | null;
   geminiApiKey?: string;
+  dualAdoConfig?: DualAdoConfig;
+  adoConfig?: any;
+  currentUserId?: string;
+  users?: AppUser[];
+  onSelectRelease?: (releaseId: string | null) => void;
   onAddDefect: (defect: Defect) => void;
   onUpdateDefect: (defect: Defect) => void;
   onDeleteDefect: (defectId: string) => void;
@@ -58,12 +75,12 @@ const SEVERITY_CONFIG: { [key in Severity]: { label: string; bg: string; text: s
   low: { label: 'Low', bg: 'bg-[var(--low-bg)]', text: 'text-[var(--low)]', border: 'border-[var(--low-border)]' }
 };
 
-const STATUS_CONFIG: { [key in DefectStatus]: { label: string; bg: string; text: string } } = {
-  New: { label: 'New', bg: 'bg-[var(--surface-hover)]', text: 'text-[var(--text-secondary)]' },
-  Active: { label: 'Active', bg: 'bg-[var(--critical-bg)]', text: 'text-[var(--critical)]' },
-  Fixed: { label: 'Fixed', bg: 'bg-[var(--primary-light)]', text: 'text-[var(--primary)]' },
-  Retest: { label: 'Retest', bg: 'bg-[#F4EBFF]', text: 'text-[#7C3AED]' },
-  Closed: { label: 'Closed', bg: 'bg-[var(--low-bg)]', text: 'text-[var(--low)]' }
+const STATUS_CONFIG: { [key in DefectStatus]: { label: string; bg: string; text: string; border: string } } = {
+  New: { label: 'New', bg: 'bg-[var(--surface-hover)]', text: 'text-[var(--text-secondary)]', border: 'border-[var(--border)]' },
+  Active: { label: 'Active', bg: 'bg-[var(--critical-bg)]', text: 'text-[var(--critical)]', border: 'border-[var(--critical-border)]' },
+  Fixed: { label: 'Fixed', bg: 'bg-[var(--primary-light)]', text: 'text-[var(--primary)]', border: 'border-[var(--primary)]/30' },
+  Retest: { label: 'Retest', bg: 'bg-[#F4EBFF]', text: 'text-[#7C3AED]', border: 'border-[#7C3AED]/30' },
+  Closed: { label: 'Closed', bg: 'bg-[var(--low-bg)]', text: 'text-[var(--low)]', border: 'border-[var(--low-border)]' }
 };
 
 export const DefectsView: React.FC<DefectsViewProps> = ({
@@ -73,30 +90,68 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
   team,
   selectedReleaseId,
   geminiApiKey,
+  dualAdoConfig,
+  adoConfig,
+  currentUserId,
+  users = [],
+  onSelectRelease,
   onAddDefect,
   onUpdateDefect,
   onDeleteDefect
 }) => {
-  const [filterSource, setFilterSource] = useState<'all' | 'internal' | 'external'>('all');
-  const [filterAreaPath, setFilterAreaPath] = useState<string>('');
-  const [filterRelease, setFilterRelease] = useState<string>(selectedReleaseId || '');
-  const [filterAssignee, setFilterAssignee] = useState<string>('');
-  const [filterSeverity, setFilterSeverity] = useState<string>('');
-  const [filterStatus, setFilterStatus] = useState<string>('');
-  const [search, setSearch] = useState<string>('');
-  
+  const [copiedLinkDefectId, setCopiedLinkDefectId] = useState<string | null>(null);
+
+  const {
+    search,
+    setSearch,
+    filterRelease,
+    handleReleaseChange,
+    filterAssignee,
+    setFilterAssignee,
+    filterStatus,
+    setFilterStatus,
+    customFilters,
+    setCustomFilter,
+    activeFiltersCount,
+    handleClearFilters
+  } = useWorkItemFilters({
+    selectedReleaseId,
+    onSelectRelease
+  });
+
+  const filterSeverity = customFilters.severity || '';
+  const setFilterSeverity = (val: string) => setCustomFilter('severity', val);
+
+  const filterTag = customFilters.tag || '';
+  const setFilterTag = (val: string) => setCustomFilter('tag', val);
+
   const [modalOpen, setModalOpen] = useState(false);
   const [editingDefect, setEditingDefect] = useState<Defect | null>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
 
-  // Available Area Paths and returned Iterations for internal ADO
-  const availableAreaPaths = getAllAreaPaths(releases, userStories, defects);
-  const returnedIterationPaths = getIterationPathsForArea(filterAreaPath, releases, userStories, defects);
+  // Returned Iterations for internal ADO under project ACM
+  const returnedIterationPaths = getIterationPathsForArea('ACM', releases, userStories, defects);
+
+  // Extract all unique tags across defects
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    defects.forEach(d => {
+      if (Array.isArray(d.tags)) {
+        d.tags.forEach(t => {
+          const trimmed = t?.trim();
+          if (trimmed) set.add(trimmed);
+        });
+      }
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [defects]);
 
   // AI Modal State
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiAnalysisResult, setAiAnalysisResult] = useState<string>('');
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiModelUsed, setAiModelUsed] = useState<string | null>(null);
   const [selectedAiDefect, setSelectedAiDefect] = useState<Defect | null>(null);
 
   // Form State
@@ -104,18 +159,53 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
   const [description, setDescription] = useState('');
   const [stepsToReproduce, setStepsToReproduce] = useState('');
   const [severity, setSeverity] = useState<Severity>('medium');
+  const [priority, setPriority] = useState<Priority>('medium');
   const [status, setStatus] = useState<DefectStatus>('Active');
   const [sourceInstance, setSourceInstance] = useState<AdoInstanceType>('internal');
   const [customerName, setCustomerName] = useState('');
-  const [areaPath, setAreaPath] = useState<string>('CareFlow-Core\\EHR-Connect');
+  const [areaPath, setAreaPath] = useState<string>('ACM');
   const [userStoryId, setUserStoryId] = useState<string>('');
   const [releaseId, setReleaseId] = useState<string>(selectedReleaseId || '');
   const [assigneeId, setAssigneeId] = useState<string>('');
+  const [createdByName, setCreatedByName] = useState<string>('');
+  const [adoIdInput, setAdoIdInput] = useState<string>('');
+  const [adoUrlInput, setAdoUrlInput] = useState<string>('');
   const [environment, setEnvironment] = useState<string>('QA');
   const [tagsInput, setTagsInput] = useState<string>('');
   const [rootCause, setRootCause] = useState<string>('');
 
-  const modalReturnedIterations = getIterationPathsForArea(areaPath, releases, userStories, defects);
+  const modalReturnedIterations = getIterationPathsForArea('ACM', releases, userStories, defects);
+
+  // Direct ADO link resolution helper
+  const getDefectDirectUrl = (defect: Defect): string | null => {
+    if (defect.adoUrl && defect.adoUrl.startsWith('http')) {
+      return defect.adoUrl;
+    }
+    if (!defect.adoId) return null;
+
+    if (dualAdoConfig?.internal?.organization && dualAdoConfig?.internal?.project) {
+      return `https://dev.azure.com/${encodeURIComponent(dualAdoConfig.internal.organization)}/${encodeURIComponent(dualAdoConfig.internal.project)}/_workitems/edit/${defect.adoId}`;
+    }
+
+    if (adoConfig?.organization && adoConfig?.project) {
+      return `https://dev.azure.com/${encodeURIComponent(adoConfig.organization)}/${encodeURIComponent(adoConfig.project)}/_workitems/edit/${defect.adoId}`;
+    }
+
+    // Default Azure DevOps instance path
+    return `https://dev.azure.com/simetricwdh/ACM/_workitems/edit/${defect.adoId}`;
+  };
+
+  const handleCopyDirectLink = (defect: Defect, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const url = getDefectDirectUrl(defect);
+    if (url) {
+      navigator.clipboard.writeText(url);
+      setCopiedLinkDefectId(defect.id);
+      setTimeout(() => {
+        setCopiedLinkDefectId(null);
+      }, 2000);
+    }
+  };
 
   const openAddModal = () => {
     setEditingDefect(null);
@@ -123,15 +213,22 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
     setDescription('');
     setStepsToReproduce('');
     setSeverity('medium');
+    setPriority('medium');
     setStatus('Active');
     setSourceInstance('internal');
     setCustomerName('');
-    const defaultArea = filterAreaPath || 'CareFlow-Core\\EHR-Connect';
+    const defaultArea = 'ACM';
     setAreaPath(defaultArea);
     const iters = getIterationPathsForArea(defaultArea, releases, userStories, defects);
     setUserStoryId('');
     setReleaseId(iters[0]?.releaseId || selectedReleaseId || (releases[0]?.id || ''));
     setAssigneeId('');
+    
+    // Default createdByName to current logged in user or team lead
+    const currentUser = users.find(u => u.id === currentUserId);
+    setCreatedByName(currentUser ? currentUser.name : (team[0]?.name || 'QA Lead'));
+    setAdoIdInput('');
+    setAdoUrlInput('');
     setEnvironment('QA');
     setTagsInput('');
     setRootCause('');
@@ -144,14 +241,18 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
     setDescription(defect.description || '');
     setStepsToReproduce(defect.stepsToReproduce || '');
     setSeverity(defect.severity);
+    setPriority(defect.priority || 'medium');
     setStatus(defect.status);
     setSourceInstance(defect.sourceInstance || 'internal');
     setCustomerName(defect.customerName || '');
-    const defArea = defect.areaPath || releases.find(r => r.id === defect.releaseId)?.areaPath || filterAreaPath || 'CareFlow-Core\\EHR-Connect';
+    const defArea = defect.areaPath || releases.find(r => r.id === defect.releaseId)?.areaPath || 'ACM';
     setAreaPath(defArea);
     setUserStoryId(defect.userStoryId || '');
     setReleaseId(defect.releaseId || '');
     setAssigneeId(defect.assigneeId || '');
+    setCreatedByName(defect.createdByName || '');
+    setAdoIdInput(defect.adoId ? String(defect.adoId) : '');
+    setAdoUrlInput(defect.adoUrl || '');
     setEnvironment(defect.environment || 'QA');
     setTagsInput((defect.tags || []).join(', '));
     setRootCause(defect.rootCause || '');
@@ -168,6 +269,8 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
       .filter(Boolean);
 
     const now = toDateStr(new Date());
+    const parsedAdoId = adoIdInput.trim() ? parseInt(adoIdInput.trim(), 10) : undefined;
+    const selectedAssignee = team.find(m => m.id === assigneeId);
 
     if (editingDefect) {
       onUpdateDefect({
@@ -176,13 +279,18 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
         description: description.trim(),
         stepsToReproduce: stepsToReproduce.trim(),
         severity,
+        priority,
         status,
-        sourceInstance,
-        customerName: sourceInstance === 'external' ? (customerName.trim() || 'St. Jude Medical Health') : undefined,
-        areaPath: sourceInstance === 'internal' ? areaPath.trim() : 'CareFlow-Ops\\Customer-Escalations',
+        sourceInstance: 'internal',
+        customerName: customerName.trim() || undefined,
+        areaPath: 'ACM',
         userStoryId: userStoryId || undefined,
         releaseId: releaseId || null,
         assigneeId: assigneeId || null,
+        assigneeName: selectedAssignee ? selectedAssignee.name : (assigneeId ? editingDefect.assigneeName : undefined),
+        createdByName: createdByName.trim() || editingDefect.createdByName || 'QA Lead',
+        adoId: parsedAdoId !== undefined && !isNaN(parsedAdoId) ? parsedAdoId : editingDefect.adoId,
+        adoUrl: adoUrlInput.trim() || editingDefect.adoUrl,
         environment,
         tags: tagsList,
         rootCause: rootCause.trim() || undefined,
@@ -195,13 +303,18 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
         description: description.trim(),
         stepsToReproduce: stepsToReproduce.trim(),
         severity,
+        priority,
         status,
-        sourceInstance,
-        customerName: sourceInstance === 'external' ? (customerName.trim() || 'St. Jude Medical Health') : undefined,
-        areaPath: sourceInstance === 'internal' ? areaPath.trim() : 'CareFlow-Ops\\Customer-Escalations',
+        sourceInstance: 'internal',
+        customerName: customerName.trim() || undefined,
+        areaPath: 'ACM',
         userStoryId: userStoryId || undefined,
         releaseId: releaseId || null,
         assigneeId: assigneeId || null,
+        assigneeName: selectedAssignee ? selectedAssignee.name : undefined,
+        createdByName: createdByName.trim() || 'QA Lead',
+        adoId: parsedAdoId !== undefined && !isNaN(parsedAdoId) ? parsedAdoId : undefined,
+        adoUrl: adoUrlInput.trim() || undefined,
         environment,
         tags: tagsList,
         rootCause: rootCause.trim() || undefined,
@@ -227,65 +340,48 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
     setAiModalOpen(true);
     setAiLoading(true);
     setAiAnalysisResult('');
+    setAiError(null);
+    setAiModelUsed(null);
 
     try {
       const linkedStory = userStories.find(s => s.id === defect.userStoryId) || null;
       const res = await generateDefectAnalysis(defect, linkedStory, geminiApiKey);
       if (res.ok && res.text) {
         setAiAnalysisResult(res.text);
+        setAiModelUsed(res.model || 'gemini-2.5-flash');
+        setAiError(null);
       } else {
-        setAiAnalysisResult(res.error || 'AI analysis could not be generated.');
+        setAiError(res.error || 'AI analysis could not be generated at this time.');
       }
     } catch (err: any) {
-      setAiAnalysisResult(`Failed to run AI root-cause analysis: ${err.message || 'Unknown error'}`);
+      setAiError(err.message || 'Failed to run AI root-cause analysis.');
     } finally {
       setAiLoading(false);
     }
   };
 
-  // Filtered defects with comprehensive criteria
+  // Filtered defects with comprehensive criteria including tags
   const filteredDefects = useMemo(() => {
     return defects.filter(d => {
-      // Source Instance Filter
-      if (filterSource === 'internal' && d.sourceInstance === 'external') return false;
-      if (filterSource === 'external' && d.sourceInstance !== 'external') return false;
-
       // Assignee Filter
       if (filterAssignee) {
-        if (filterAssignee === 'unassigned') {
-          if (d.assigneeId) return false;
-        } else if (d.assigneeId !== filterAssignee) {
-          return false;
-        }
-      }
-
-      // Area Path filter
-      if (filterAreaPath) {
-        const dArea = (d.areaPath || releases.find(r => r.id === d.releaseId)?.areaPath || '').toLowerCase();
-        const targetArea = filterAreaPath.toLowerCase();
-        const matchesArea = dArea === targetArea || dArea.includes(targetArea) || targetArea.includes(dArea);
-        const matchesReturnedIteration = returnedIterationPaths.some(
-          iter => iter.releaseId === d.releaseId || iter.iterationPath === d.iterationPath
-        );
-        if (!matchesArea && !matchesReturnedIteration) return false;
+        if (!matchesAssigneeFilter(d, filterAssignee, team)) return false;
       }
 
       // Iteration / Release filter
-      if (filterRelease) {
-        const matchesRelId = d.releaseId === filterRelease;
-        const matchesIterPath = d.iterationPath === filterRelease;
-        const matchedRelease = releases.find(r => r.id === filterRelease);
-        const matchesReleaseIteration = matchedRelease && (
-          matchedRelease.iterationPath === d.iterationPath ||
-          matchedRelease.name === d.iterationPath ||
-          (d.iterationPath && matchedRelease.name.includes(d.iterationPath))
-        );
-        if (!matchesRelId && !matchesIterPath && !matchesReleaseIteration) return false;
+      if (filterRelease && filterRelease !== 'all') {
+        if (!matchesReleaseOrIteration(d, filterRelease, releases)) return false;
       }
 
       // Severity & Status
       if (filterSeverity && d.severity !== filterSeverity) return false;
       if (filterStatus && d.status !== filterStatus) return false;
+
+      // Tag Filter
+      if (filterTag && filterTag !== 'all') {
+        const hasTag = (d.tags || []).some(t => t.toLowerCase() === filterTag.toLowerCase());
+        if (!hasTag) return false;
+      }
 
       // Search Query
       if (search.trim()) {
@@ -297,27 +393,15 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
         const matchArea = (d.areaPath || '').toLowerCase().includes(q);
         const matchAdo = d.adoId ? String(d.adoId).includes(q) : false;
         const matchTags = (d.tags || []).some(t => t.toLowerCase().includes(q));
-        const memberName = d.assigneeId ? (team.find(t => t.id === d.assigneeId)?.name || '') : '';
-        const matchAssignee = memberName ? memberName.toLowerCase().includes(q) : false;
-        if (!matchTitle && !matchDesc && !matchSteps && !matchCust && !matchArea && !matchAdo && !matchTags && !matchAssignee) return false;
+        const resolved = getWorkItemAssignee(d, team);
+        const matchAssignee = resolved ? (resolved.name.toLowerCase().includes(q) || (resolved.email && resolved.email.toLowerCase().includes(q))) : false;
+        const matchCreator = (d.createdByName || '').toLowerCase().includes(q);
+        if (!matchTitle && !matchDesc && !matchSteps && !matchCust && !matchArea && !matchAdo && !matchTags && !matchAssignee && !matchCreator) return false;
       }
 
       return true;
     });
-  }, [defects, releases, filterSource, filterAssignee, filterAreaPath, returnedIterationPaths, filterRelease, filterSeverity, filterStatus, search]);
-
-  // Options for Searchable Area Path
-  const areaOptions: SelectOption[] = useMemo(() => {
-    return availableAreaPaths.map(area => {
-      const count = defects.filter(d => (d.areaPath || '').toLowerCase() === area.toLowerCase()).length;
-      return {
-        value: area,
-        label: area,
-        badge: `${count} bugs`,
-        icon: <FolderGit2 size={13} className="text-[var(--primary)]" />
-      };
-    });
-  }, [availableAreaPaths, defects]);
+  }, [defects, releases, filterAssignee, filterRelease, filterSeverity, filterStatus, filterTag, search, team]);
 
   // Options for Searchable Iteration / Release
   const iterationOptions: SelectOption[] = useMemo(() => {
@@ -325,51 +409,73 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
       const count = defects.filter(d => d.releaseId === iter.releaseId || d.iterationPath === iter.iterationPath).length;
       return {
         value: iter.releaseId || iter.iterationPath,
-        label: `${iter.releaseName} (${iter.releaseNumber || 'v1.0.0'})`,
-        sublabel: iter.iterationPath,
+        label: formatReleaseDisplayName(iter.releaseName, iter.releaseNumber),
+        sublabel: iter.iterationPath !== iter.releaseName ? iter.iterationPath : undefined,
         badge: `${count} bugs`,
         icon: <Rocket size={13} className="text-[var(--primary)]" />
       };
     });
   }, [returnedIterationPaths, defects]);
 
-  // Options for Searchable Assignee Filter
+  // Options for Searchable Assignees
   const assigneeOptions: SelectOption[] = useMemo(() => {
-    const unassignedCount = defects.filter(d => !d.assigneeId).length;
-    const list: SelectOption[] = [
+    const unassignedCount = defects.filter(d => !d.assigneeId && !d.assigneeName).length;
+    const items: SelectOption[] = [
       {
         value: 'unassigned',
-        label: 'Unassigned Bugs',
-        badge: `${unassignedCount}`,
+        label: 'Unassigned',
+        badge: unassignedCount > 0 ? `${unassignedCount}` : undefined,
         icon: <Users size={13} className="text-[var(--text-muted)]" />
       }
     ];
 
-    team.forEach(m => {
-      const count = defects.filter(d => d.assigneeId === m.id).length;
-      list.push({
-        value: m.id,
-        label: m.name,
-        sublabel: m.role,
-        badge: `${count} bugs`,
-        avatarColor: m.avatarColor || 'var(--primary)',
-        avatarInitials: m.name.split(' ').map(n => n[0]).join('').slice(0, 2)
+    team.forEach(member => {
+      const count = defects.filter(d => {
+        const resolved = getWorkItemAssignee(d, team);
+        return resolved?.id === member.id;
+      }).length;
+
+      items.push({
+        value: member.id,
+        label: member.name,
+        sublabel: member.role,
+        badge: `${count}`,
+        avatarColor: member.avatarColor || 'var(--primary)',
+        avatarInitials: member.name.split(' ').map(n => n[0]).join('').slice(0, 2)
       });
     });
 
-    return list;
+    return items;
   }, [team, defects]);
 
   // Options for Severity
   const severityOptions: SelectOption[] = useMemo(() => {
-    return (['critical', 'high', 'medium', 'low'] as Severity[]).map(sev => {
-      const count = defects.filter(d => d.severity === sev).length;
-      return {
-        value: sev,
-        label: sev.charAt(0).toUpperCase() + sev.slice(1),
-        badge: `${count}`
-      };
-    });
+    return [
+      {
+        value: 'critical',
+        label: 'Critical',
+        badge: `${defects.filter(d => d.severity === 'critical').length}`,
+        icon: <Flame size={13} className="text-[var(--critical)]" />
+      },
+      {
+        value: 'high',
+        label: 'High',
+        badge: `${defects.filter(d => d.severity === 'high').length}`,
+        icon: <AlertCircle size={13} className="text-[var(--high)]" />
+      },
+      {
+        value: 'medium',
+        label: 'Medium',
+        badge: `${defects.filter(d => d.severity === 'medium').length}`,
+        icon: <Bug size={13} className="text-[var(--medium)]" />
+      },
+      {
+        value: 'low',
+        label: 'Low',
+        badge: `${defects.filter(d => d.severity === 'low').length}`,
+        icon: <CheckCircle2 size={13} className="text-[var(--low)]" />
+      }
+    ];
   }, [defects]);
 
   // Options for Status
@@ -384,6 +490,19 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
     });
   }, [defects]);
 
+  // Options for Tags Filter
+  const tagOptions: SelectOption[] = useMemo(() => {
+    return allTags.map(tag => {
+      const count = defects.filter(d => (d.tags || []).some(t => t.toLowerCase() === tag.toLowerCase())).length;
+      return {
+        value: tag,
+        label: `#${tag}`,
+        badge: `${count}`,
+        icon: <Tag size={12} className="text-[var(--primary)]" />
+      };
+    });
+  }, [allTags, defects]);
+
   // Modal Assignee Options
   const modalAssigneeOptions: SelectOption[] = useMemo(() => {
     return [
@@ -397,6 +516,35 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
       }))
     ];
   }, [team]);
+
+  // Modal Creator Options
+  const modalCreatorOptions: SelectOption[] = useMemo(() => {
+    const list: SelectOption[] = [];
+    team.forEach(m => {
+      list.push({
+        value: m.name,
+        label: m.name,
+        sublabel: `${m.role} (Team)`,
+        avatarColor: m.avatarColor || 'var(--primary)',
+        avatarInitials: m.name.split(' ').map(n => n[0]).join('').slice(0, 2)
+      });
+    });
+    users.forEach(u => {
+      if (!list.some(item => item.value === u.name)) {
+        list.push({
+          value: u.name,
+          label: u.name,
+          sublabel: `${u.role} (User)`,
+          avatarColor: u.avatarColor || 'var(--primary)',
+          avatarInitials: u.name.split(' ').map(n => n[0]).join('').slice(0, 2)
+        });
+      }
+    });
+    if (!list.some(item => item.value === 'QA Lead')) {
+      list.unshift({ value: 'QA Lead', label: 'QA Lead' });
+    }
+    return list;
+  }, [team, users]);
 
   // Modal Story Options
   const modalStoryOptions: SelectOption[] = useMemo(() => {
@@ -423,8 +571,8 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
       { value: '', label: 'No Release Linked' },
       ...source.map(iter => ({
         value: iter.releaseId,
-        label: `${iter.releaseName} (${iter.releaseNumber || 'v1.0.0'})`,
-        sublabel: iter.iterationPath
+        label: formatReleaseDisplayName(iter.releaseName, iter.releaseNumber),
+        sublabel: iter.iterationPath !== iter.releaseName ? iter.iterationPath : undefined
       }))
     ];
   }, [modalReturnedIterations, releases]);
@@ -432,38 +580,93 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
   // Counts
   const criticalCount = defects.filter(d => d.severity === 'critical' && d.status !== 'Closed').length;
   const activeCount = defects.filter(d => d.status === 'Active').length;
-  const externalCount = defects.filter(d => d.sourceInstance === 'external').length;
-  const internalCount = defects.filter(d => d.sourceInstance !== 'external').length;
-  const activeFiltersCount = (filterAreaPath ? 1 : 0) + (filterRelease ? 1 : 0) + (filterAssignee ? 1 : 0) + (filterSeverity ? 1 : 0) + (filterStatus ? 1 : 0) + (search ? 1 : 0);
 
-  const handleClearFilters = () => {
-    setFilterAreaPath('');
-    setFilterRelease('');
-    setFilterAssignee('');
-    setFilterSeverity('');
-    setFilterStatus('');
-    setSearch('');
+  const totalActiveFilters = activeFiltersCount + (filterTag ? 1 : 0);
+
+  const filterConfigs: FilterDropdownConfig[] = useMemo(() => [
+    {
+      id: 'assignee',
+      label: 'Assigned To',
+      placeholder: 'All Assignees',
+      allOptionLabel: 'All Assignees',
+      icon: <Users size={14} className="text-[var(--primary)]" />,
+      options: assigneeOptions,
+      value: filterAssignee,
+      onChange: setFilterAssignee,
+      minWidth: '165px'
+    },
+    {
+      id: 'tag',
+      label: 'Tag / Label',
+      placeholder: 'All Tags',
+      allOptionLabel: 'All Tags',
+      icon: <Tag size={14} className="text-[var(--primary)]" />,
+      options: tagOptions,
+      value: filterTag,
+      onChange: setFilterTag,
+      minWidth: '150px'
+    },
+    {
+      id: 'severity',
+      label: 'Severity',
+      placeholder: 'All Severities',
+      allOptionLabel: 'All Severities',
+      icon: <Flame size={14} className="text-[var(--critical)]" />,
+      options: severityOptions,
+      value: filterSeverity,
+      onChange: setFilterSeverity,
+      minWidth: '145px'
+    },
+    {
+      id: 'status',
+      label: 'Status',
+      placeholder: 'All Statuses',
+      allOptionLabel: 'All Statuses',
+      icon: <CheckCircle2 size={14} className="text-[var(--low)]" />,
+      options: statusOptions,
+      value: filterStatus,
+      onChange: setFilterStatus,
+      minWidth: '140px'
+    }
+  ], [
+    assigneeOptions,
+    filterAssignee,
+    setFilterAssignee,
+    tagOptions,
+    filterTag,
+    setFilterTag,
+    severityOptions,
+    filterSeverity,
+    setFilterSeverity,
+    statusOptions,
+    filterStatus,
+    setFilterStatus
+  ]);
+
+  const handleResetAll = () => {
+    handleClearFilters();
+    setFilterTag('');
   };
 
   return (
     <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full pb-16">
       {/* Header & Metrics */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs flex flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-lg font-bold text-[var(--text-primary)] tracking-tight">Defect Tracking & Triage</h1>
             <p className="text-xs text-[var(--text-secondary)] font-medium mt-0.5">
-              Dual-instance ADO bug tracking, Area Path root cause classification, and AI fix proposals
+              Azure DevOps bug tracking, Area Path root cause classification, and AI fix proposals
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 bg-[var(--critical-bg)] border border-[var(--critical-border)] px-3.5 py-1.5 rounded-xl text-xs font-bold text-[var(--critical)]">
               <Flame size={14} />
-              <span>Critical Active: {criticalCount}</span>
+              <span>Critical: {criticalCount}</span>
             </div>
             <div className="flex items-center gap-2 bg-[var(--surface-hover)] border border-[var(--border)] px-3.5 py-1.5 rounded-xl text-xs font-bold">
-              <span className="text-[var(--text-muted)]">Active Total:</span>
+              <span className="text-[var(--text-muted)]">Active:</span>
               <span className="text-[var(--primary)]">{activeCount}/{defects.length}</span>
             </div>
             <button
@@ -476,136 +679,59 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
           </div>
         </div>
 
-        {/* Source Instance Tabs */}
-        <div className="flex items-center gap-2 mt-4 pt-4 border-t border-[var(--border)]">
-          <button
-            onClick={() => setFilterSource('all')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              filterSource === 'all'
-                ? 'bg-[var(--primary)] text-white shadow-xs'
-                : 'bg-[var(--surface-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            }`}
-          >
-            All Instances ({defects.length})
-          </button>
-          <button
-            onClick={() => setFilterSource('internal')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-              filterSource === 'internal'
-                ? 'bg-[var(--internal-ado)] text-white shadow-xs'
-                : 'bg-[var(--internal-ado-bg)] text-[var(--internal-ado)] hover:opacity-80'
-            }`}
-          >
-            <Building2 size={13} />
-            <span>Internal Dev/QA ({internalCount})</span>
-          </button>
-          <button
-            onClick={() => setFilterSource('external')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-              filterSource === 'external'
-                ? 'bg-[var(--external-ado)] text-white shadow-xs'
-                : 'bg-[var(--external-ado-bg)] text-[var(--external-ado)] hover:opacity-80'
-            }`}
-          >
-            <Globe2 size={13} />
-            <span>External Customer OPS ({externalCount})</span>
-          </button>
+        {/* Organized Standard Filter Bar */}
+        <div className="pt-2">
+          <FilterBar
+            search={{
+              value: search,
+              onChange: setSearch,
+              placeholder: 'Search defects by title, steps, reporter, assignee, Area Path, tags, or ADO #...'
+            }}
+            filters={filterConfigs}
+            onReset={handleResetAll}
+            activeFiltersCount={totalActiveFilters}
+          />
         </div>
 
-        {/* Filter Controls Bar with Modern Searchable Selects */}
-        <div className="flex flex-wrap items-center gap-3 mt-4 pt-4 border-t border-[var(--border)]">
-          {/* Quick Search */}
-          <div className="flex-1 min-w-[200px] relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
-            <input
-              type="text"
-              placeholder="Search defects by title, steps, customer, Area Path, tags, or ADO #..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl pl-9 pr-8 py-2 text-xs text-[var(--text-primary)] outline-none focus:bg-[var(--surface)] focus:border-[var(--primary)] transition-all"
-            />
-            {search && (
-              <button 
-                onClick={() => setSearch('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] p-0.5 rounded cursor-pointer"
-              >
-                <X size={13} />
-              </button>
-            )}
-          </div>
-
-          {/* SEARCHABLE ASSIGNEE FILTER */}
-          <div className="min-w-[170px]">
-            <SearchableSelect
-              options={assigneeOptions}
-              value={filterAssignee}
-              onChange={setFilterAssignee}
-              placeholder="All Assignees"
-              label="Assignee"
-              icon={<Users size={14} />}
-            />
-          </div>
-
-          {/* SEARCHABLE AREA PATH FILTER */}
-          <div className="min-w-[170px]">
-            <SearchableSelect
-              options={areaOptions}
-              value={filterAreaPath}
-              onChange={(val) => {
-                setFilterAreaPath(val);
-                setFilterRelease('');
-              }}
-              placeholder="All Area Paths"
-              label="Area Path"
-              icon={<FolderGit2 size={14} />}
-            />
-          </div>
-
-          {/* SEARCHABLE ITERATION FILTER */}
-          <div className="min-w-[180px]">
-            <SearchableSelect
-              options={iterationOptions}
-              value={filterRelease}
-              onChange={setFilterRelease}
-              placeholder={filterAreaPath ? `Iterations in Area (${returnedIterationPaths.length})` : 'All Releases / Iterations'}
-              label="Iteration"
-              icon={<Rocket size={14} />}
-            />
-          </div>
-
-          {/* SEARCHABLE SEVERITY FILTER */}
-          <div className="min-w-[140px]">
-            <SearchableSelect
-              options={severityOptions}
-              value={filterSeverity}
-              onChange={setFilterSeverity}
-              placeholder="All Severities"
-              label="Severity"
-            />
-          </div>
-
-          {/* SEARCHABLE STATUS FILTER */}
-          <div className="min-w-[140px]">
-            <SearchableSelect
-              options={statusOptions}
-              value={filterStatus}
-              onChange={setFilterStatus}
-              placeholder="All Statuses"
-              label="Status"
-            />
-          </div>
-
-          {activeFiltersCount > 0 && (
+        {/* Tag Quick Bar */}
+        {allTags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-3 border-t border-[var(--border)]">
+            <span className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-1 mr-1">
+              <Tag size={12} className="text-[var(--primary)]" />
+              Tags:
+            </span>
             <button
-              onClick={handleClearFilters}
-              className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl transition-all cursor-pointer"
-              title="Reset all filters"
+              onClick={() => setFilterTag('')}
+              className={`px-2 py-0.5 rounded-md text-[11px] font-semibold transition-all cursor-pointer ${
+                !filterTag
+                  ? 'bg-[var(--primary)] text-white shadow-2xs font-bold'
+                  : 'bg-[var(--surface-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border)]'
+              }`}
             >
-              <X size={13} />
-              <span>Reset</span>
+              All Tags ({defects.length})
             </button>
-          )}
-        </div>
+            {allTags.map(tag => {
+              const count = defects.filter(d => (d.tags || []).some(t => t.toLowerCase() === tag.toLowerCase())).length;
+              const isSelected = filterTag.toLowerCase() === tag.toLowerCase();
+              return (
+                <button
+                  key={tag}
+                  onClick={() => setFilterTag(isSelected ? '' : tag)}
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1 ${
+                    isSelected
+                      ? 'bg-[var(--primary)] text-white shadow-2xs font-bold'
+                      : 'bg-[var(--surface-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--primary)] border border-[var(--border)]'
+                  }`}
+                >
+                  <span>#{tag}</span>
+                  <span className={`text-[10px] px-1 rounded-full ${isSelected ? 'bg-white/20 text-white' : 'bg-[var(--border)] text-[var(--text-muted)]'}`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Defects List */}
@@ -614,19 +740,20 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
           filteredDefects.map(defect => {
             const sev = SEVERITY_CONFIG[defect.severity];
             const st = STATUS_CONFIG[defect.status];
-            const assignee = team.find(m => m.id === defect.assigneeId);
+            const assignee = getWorkItemAssignee(defect, team);
             const rel = releases.find(r => r.id === defect.releaseId);
-            const defArea = defect.areaPath || rel?.areaPath || (defect.sourceInstance === 'external' ? 'CareFlow-Ops\\Customer-Escalations' : 'CareFlow-Core\\EHR-Connect');
+            const defArea = 'ACM';
             const story = userStories.find(s => s.id === defect.userStoryId);
             const isStepsExpanded = expandedSteps.has(defect.id);
-            const isExternal = defect.sourceInstance === 'external';
+            const directAdoUrl = getDefectDirectUrl(defect);
+            const isCopied = copiedLinkDefectId === defect.id;
 
             return (
               <div
                 key={defect.id}
                 className={`bg-[var(--surface)] border rounded-2xl p-5 transition-all shadow-xs ${
                   defect.severity === 'critical' && defect.status !== 'Closed'
-                    ? 'border-[var(--critical-border)] bg-[var(--critical-bg)]/20'
+                    ? 'border-[var(--critical-border)] bg-[var(--critical-bg)]/15'
                     : 'border-[var(--border)] hover:border-[var(--primary)]/40'
                 }`}
               >
@@ -639,32 +766,40 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                     </div>
 
                     <div className="flex-1 min-w-0">
+                      {/* Top Badges Bar */}
                       <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                        {/* Instance Badge */}
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 ${
-                            isExternal
-                              ? 'bg-[var(--external-ado-bg)] text-[var(--external-ado)] border-[var(--external-ado)]/30'
-                              : 'bg-[var(--internal-ado-bg)] text-[var(--internal-ado)] border-[var(--internal-ado)]/30'
-                          }`}
-                        >
-                          {isExternal ? <Globe2 size={10} /> : <Building2 size={10} />}
-                          {isExternal ? 'Customer ADO (External)' : 'Internal ADO (Dev/QA)'}
-                        </span>
-
-                        {defect.adoId && (
+                        {/* Direct ADO Work Item Link Badge */}
+                        {directAdoUrl ? (
+                          <div className="inline-flex items-center bg-[var(--primary-light)] border border-[var(--primary)]/30 rounded-md overflow-hidden shadow-2xs">
+                            <a
+                              href={directAdoUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-mono text-[11px] font-bold text-[var(--primary)] px-2 py-0.5 hover:underline flex items-center gap-1"
+                              title="Open work item directly in Azure DevOps"
+                            >
+                              <Building2 size={10} />
+                              <span>ADO #{defect.adoId || 'Link'}</span>
+                              <ExternalLink size={10} />
+                            </a>
+                            <button
+                              type="button"
+                              onClick={(e) => handleCopyDirectLink(defect, e)}
+                              className="px-1.5 py-0.5 text-[var(--primary)] hover:bg-[var(--primary)] hover:text-white transition-colors cursor-pointer border-l border-[var(--primary)]/30"
+                              title="Copy direct ADO link"
+                            >
+                              {isCopied ? <Check size={11} className="text-[var(--low)]" /> : <Copy size={11} />}
+                            </button>
+                          </div>
+                        ) : defect.adoId ? (
                           <span className="font-mono text-[11px] font-bold text-[var(--primary)] bg-[var(--primary-light)] px-2 py-0.5 rounded-md border border-[var(--border)] flex items-center gap-1">
+                            <Building2 size={10} />
                             ADO #{defect.adoId}
-                            {defect.adoUrl && (
-                              <a
-                                href={defect.adoUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-[var(--text-muted)] hover:text-[var(--primary)]"
-                              >
-                                <ExternalLink size={10} />
-                              </a>
-                            )}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 bg-[var(--internal-ado-bg)] text-[var(--internal-ado)] border-[var(--internal-ado)]/30">
+                            <Building2 size={10} />
+                            Azure DevOps
                           </span>
                         )}
 
@@ -672,38 +807,53 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                           {sev.label}
                         </span>
 
-                        <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${st.bg} ${st.text}`}>
+                        {defect.priority && (
+                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${
+                            defect.priority === 'critical' ? 'bg-red-500/15 text-red-600 border-red-500/30' :
+                            defect.priority === 'high' ? 'bg-orange-500/15 text-orange-600 border-orange-500/30' :
+                            defect.priority === 'medium' ? 'bg-amber-500/15 text-amber-600 border-amber-500/30' :
+                            'bg-emerald-500/15 text-emerald-600 border-emerald-500/30'
+                          }`}>
+                            {defect.priority === 'critical' ? 'P1 Critical' :
+                             defect.priority === 'high' ? 'P2 High' :
+                             defect.priority === 'medium' ? 'P3 Medium' : 'P4 Low'}
+                          </span>
+                        )}
+
+                        <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${st.bg} ${st.text} ${st.border}`}>
                           {st.label}
                         </span>
 
-                        {isExternal && defect.customerName && (
-                          <span className="text-[11px] font-bold text-[var(--external-ado)] bg-[var(--external-ado-bg)] px-2 py-0.5 rounded-md border border-[var(--external-ado)]/30">
+                        {defect.customerName && (
+                          <span className="text-[11px] font-bold text-[var(--primary)] bg-[var(--primary-light)] px-2 py-0.5 rounded-md border border-[var(--primary)]/30">
                             Client: {defect.customerName}
                           </span>
                         )}
 
-                        {defArea && (
-                          <span className="text-[11px] font-semibold text-[var(--text-secondary)] bg-[var(--surface-hover)] border border-[var(--border)] px-2 py-0.5 rounded-md flex items-center gap-1">
-                            <FolderGit2 size={11} className="text-[var(--primary)]" />
-                            {defArea}
-                          </span>
-                        )}
+                        <span 
+                          className="text-[11px] font-semibold text-[var(--text-secondary)] bg-[var(--surface-hover)] border border-[var(--border)] px-2 py-0.5 rounded-md flex items-center gap-1"
+                          title="Area Path: ACM"
+                        >
+                          <FolderGit2 size={11} className="text-[var(--primary)]" />
+                          ACM
+                        </span>
 
-                        {rel && (
+                        {(defect.iterationPath || rel?.iterationPath || rel?.name) && (
                           <span className="text-[11px] font-semibold text-[var(--primary)] bg-[var(--primary-light)] border border-[var(--border)] px-2 py-0.5 rounded-md flex items-center gap-1">
                             <Rocket size={11} />
-                            {rel.name} ({rel.releaseNumber || 'v1.0.0'})
+                            {defect.iterationPath || rel?.iterationPath || rel?.name}
                           </span>
                         )}
                       </div>
 
+                      {/* Defect Title */}
                       <h3 className="text-sm font-bold text-[var(--text-primary)] leading-snug">
-                        {defect.title}
+                        <HighlightText text={defect.title} query={search} />
                       </h3>
 
                       {defect.description && (
                         <p className="text-xs text-[var(--text-secondary)] mt-1.5 leading-relaxed">
-                          {defect.description}
+                          <HighlightText text={defect.description} query={search} />
                         </p>
                       )}
 
@@ -721,7 +871,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
 
                           {isStepsExpanded && (
                             <div className="mt-2 bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl p-3.5 text-xs font-mono text-[var(--text-primary)] whitespace-pre-wrap leading-relaxed">
-                              {defect.stepsToReproduce}
+                              <HighlightText text={defect.stepsToReproduce} query={search} />
                             </div>
                           )}
                         </div>
@@ -737,44 +887,97 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                         )}
 
                         {defect.tags && defect.tags.map((tag, i) => (
-                          <span key={i} className="text-[10px] font-semibold text-[var(--text-secondary)] bg-[var(--surface-hover)] border border-[var(--border)] px-1.5 py-0.5 rounded flex items-center gap-1">
-                            <Tag size={10} className="text-[var(--text-muted)]" />
-                            {tag}
-                          </span>
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => setFilterTag(tag)}
+                            className="text-[10px] font-semibold text-[var(--text-secondary)] bg-[var(--surface-hover)] hover:border-[var(--primary)] hover:text-[var(--primary)] border border-[var(--border)] px-2 py-0.5 rounded-md flex items-center gap-1 transition-colors cursor-pointer"
+                            title={`Filter by tag: ${tag}`}
+                          >
+                            <Tag size={10} className="text-[var(--primary)]" />
+                            <span>#{tag}</span>
+                          </button>
                         ))}
                       </div>
 
-                      {/* Assignee & Meta Bar */}
-                      <div className="flex flex-wrap items-center gap-4 mt-3 pt-3 border-t border-[var(--border)] text-[11px] text-[var(--text-muted)]">
-                        {assignee ? (
-                          <div className="flex items-center gap-1.5">
-                            <span
-                              className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white shadow-2xs"
-                              style={{ backgroundColor: assignee.avatarColor || 'var(--primary)' }}
-                            >
-                              {assignee.name.slice(0, 2).toUpperCase()}
+                      {/* Prominent Assigned To & Created By Meta Bar */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mt-3 pt-3 border-t border-[var(--border)] text-xs">
+                        {/* Assigned To Section */}
+                        <div className="flex items-center gap-2 bg-[var(--surface-hover)]/60 px-2.5 py-1.5 rounded-xl border border-[var(--border)]">
+                          <span className="text-[10px] font-bold uppercase text-[var(--text-muted)] tracking-wider shrink-0">
+                            Assigned To:
+                          </span>
+                          {assignee ? (
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span
+                                className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0 shadow-2xs"
+                                style={{ backgroundColor: assignee.avatarColor || 'var(--primary)' }}
+                              >
+                                {assignee.name.slice(0, 2).toUpperCase()}
+                              </span>
+                              <span className="font-semibold text-[var(--text-primary)] truncate" title={assignee.name}>
+                                {assignee.name}
+                              </span>
+                              <span className="text-[10px] text-[var(--text-muted)] truncate shrink-0">
+                                ({assignee.role})
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="italic text-[var(--text-muted)] font-medium">Unassigned</span>
+                          )}
+                        </div>
+
+                        {/* Created By / Reported By Section */}
+                        <div className="flex items-center gap-2 bg-[var(--surface-hover)]/60 px-2.5 py-1.5 rounded-xl border border-[var(--border)]">
+                          <span className="text-[10px] font-bold uppercase text-[var(--text-muted)] tracking-wider shrink-0">
+                            Created By:
+                          </span>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <div className="w-5 h-5 rounded-full bg-[var(--primary-light)] text-[var(--primary)] flex items-center justify-center text-[10px] font-bold shrink-0">
+                              <User size={12} />
+                            </div>
+                            <span className="font-semibold text-[var(--text-secondary)] truncate" title={defect.createdByName || 'QA Lead'}>
+                              {defect.createdByName || 'QA Lead'}
                             </span>
-                            <span className="font-semibold text-[var(--text-primary)]">{assignee.name}</span>
-                            <span className="text-[10px]">({assignee.role})</span>
                           </div>
-                        ) : (
-                          <span className="italic">Unassigned</span>
-                        )}
+                        </div>
 
-                        {defect.createdByName && (
+                        {/* Timestamp & Direct Link Action */}
+                        <div className="flex items-center justify-between sm:justify-end gap-2 text-[11px] text-[var(--text-muted)] font-medium">
                           <div className="flex items-center gap-1">
-                            <span>Reported by:</span>
-                            <span className="font-semibold text-[var(--text-secondary)]">{defect.createdByName}</span>
+                            <Clock size={12} />
+                            <span>Updated {defect.updatedAt || defect.createdAt}</span>
                           </div>
-                        )}
-
-                        <span className="ml-auto">Updated {defect.updatedAt}</span>
+                          {directAdoUrl && (
+                            <a
+                              href={directAdoUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[var(--primary)] hover:underline font-bold flex items-center gap-1 ml-2"
+                              title="Direct link to Azure DevOps work item"
+                            >
+                              <span>ADO Link</span>
+                              <ExternalLink size={11} />
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Actions */}
+                  {/* Right Actions Toolbar */}
                   <div className="flex items-center gap-1 text-[var(--text-muted)] flex-shrink-0">
+                    {directAdoUrl && (
+                      <a
+                        href={directAdoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="p-1.5 text-[var(--primary)] hover:bg-[var(--primary-light)] rounded-lg cursor-pointer transition-all"
+                        title="Open direct work item in Azure DevOps"
+                      >
+                        <ExternalLink size={15} />
+                      </a>
+                    )}
                     <button
                       onClick={() => handleRunAiAnalysis(defect)}
                       className="p-1.5 text-[var(--primary)] hover:bg-[var(--primary-light)] rounded-lg cursor-pointer transition-all"
@@ -785,14 +988,14 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                     <button
                       onClick={() => openEditModal(defect)}
                       className="p-1.5 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-lg cursor-pointer transition-all"
-                      title="Edit"
+                      title="Edit Defect"
                     >
                       <Edit3 size={14} />
                     </button>
                     <button
                       onClick={() => onDeleteDefect(defect.id)}
                       className="p-1.5 hover:text-[var(--critical)] hover:bg-[var(--critical-bg)] rounded-lg cursor-pointer transition-all"
-                      title="Delete"
+                      title="Delete Defect"
                     >
                       <Trash2 size={14} />
                     </button>
@@ -806,82 +1009,49 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
             <Bug size={36} className="mx-auto text-[var(--text-muted)] mb-3 opacity-40" />
             <h3 className="text-sm font-bold text-[var(--text-primary)]">No defects match your filters</h3>
             <p className="text-xs text-[var(--text-secondary)] mt-1 max-w-sm mx-auto">
-              {filterAreaPath 
-                ? `No defects found under Area Path "${filterAreaPath}". Try changing filters or logging a defect.`
-                : 'All clear or no defects logged yet.'}
+              All clear or no defects logged yet for the selected filters.
             </p>
-            <button
-              onClick={openAddModal}
-              className="mt-4 px-4 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus size={14} />
-              <span>Log New Defect</span>
-            </button>
+            <div className="flex items-center justify-center gap-2 mt-4">
+              {totalActiveFilters > 0 && (
+                <button
+                  onClick={handleResetAll}
+                  className="px-3.5 py-2 text-xs font-semibold text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl cursor-pointer"
+                >
+                  Reset All Filters
+                </button>
+              )}
+              <button
+                onClick={openAddModal}
+                className="px-4 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <Plus size={14} />
+                <span>Log New Defect</span>
+              </button>
+            </div>
           </div>
         )}
       </div>
 
-      {/* Add / Edit Modal with Modern Searchable Selects */}
+      {/* Add / Edit Modal with Created By, Assigned To, Tags and Direct ADO Link */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl max-w-xl w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
-              <h2 className="text-base font-bold text-[var(--text-primary)]">
-                {editingDefect ? 'Edit Defect' : 'Log New Defect'}
-              </h2>
+              <div className="flex items-center gap-2">
+                <Bug size={18} className="text-[var(--primary)]" />
+                <h2 className="text-base font-bold text-[var(--text-primary)]">
+                  {editingDefect ? 'Edit Defect' : 'Log New Defect'}
+                </h2>
+              </div>
               <button
                 onClick={() => setModalOpen(false)}
-                className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer text-lg leading-none"
               >
                 &times;
               </button>
             </div>
 
             <form onSubmit={handleSaveModal} className="p-6 flex flex-col gap-4 max-h-[calc(85vh-80px)] overflow-y-auto">
-              {/* Instance Selector */}
-              <div>
-                <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Target ADO Instance</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSourceInstance('internal')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                      sourceInstance === 'internal'
-                        ? 'border-[var(--internal-ado)] bg-[var(--internal-ado-bg)] text-[var(--internal-ado)] shadow-xs'
-                        : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]'
-                    }`}
-                  >
-                    <Building2 size={13} />
-                    <span>Internal ADO (Dev/QA)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSourceInstance('external')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                      sourceInstance === 'external'
-                        ? 'border-[var(--external-ado)] bg-[var(--external-ado-bg)] text-[var(--external-ado)] shadow-xs'
-                        : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]'
-                    }`}
-                  >
-                    <Globe2 size={13} />
-                    <span>External ADO (Customer OPS)</span>
-                  </button>
-                </div>
-              </div>
-
-              {sourceInstance === 'external' && (
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Customer / Hospital Client</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. St. Jude Medical Health, Kaiser Permanente"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
-                  />
-                </div>
-              )}
-
               <div>
                 <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
                   Defect Title <span className="text-[var(--critical)]">*</span>
@@ -897,19 +1067,74 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              {/* ADO ID and ADO URL (Direct link configuration) */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
+                    ADO Work Item ID #
+                  </label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 10293"
+                    value={adoIdInput}
+                    onChange={(e) => setAdoIdInput(e.target.value)}
+                    className="w-full text-xs font-mono px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1 flex items-center justify-between">
+                    <span>Direct ADO URL (Optional)</span>
+                    {adoUrlInput && (
+                      <a
+                        href={adoUrlInput}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[var(--primary)] hover:underline flex items-center gap-0.5 text-[10px]"
+                      >
+                        <ExternalLink size={10} />
+                        <span>Test</span>
+                      </a>
+                    )}
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="https://dev.azure.com/org/project/_workitems/edit/10293"
+                    value={adoUrlInput}
+                    onChange={(e) => setAdoUrlInput(e.target.value)}
+                    className="w-full text-xs font-mono px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Severity</label>
                   <SearchableSelect
                     options={[
-                      { value: 'critical', label: 'Critical' },
-                      { value: 'high', label: 'High' },
-                      { value: 'medium', label: 'Medium' },
-                      { value: 'low', label: 'Low' }
+                      { value: 'critical', label: 'Critical (S1)', icon: <Flame size={13} className="text-[var(--critical)]" /> },
+                      { value: 'high', label: 'High (S2)', icon: <AlertCircle size={13} className="text-[var(--high)]" /> },
+                      { value: 'medium', label: 'Medium (S3)', icon: <Bug size={13} className="text-[var(--medium)]" /> },
+                      { value: 'low', label: 'Low (S4)', icon: <CheckCircle2 size={13} className="text-[var(--low)]" /> }
                     ]}
                     value={severity}
                     onChange={(val) => setSeverity(val as Severity)}
                     placeholder="Severity"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Priority</label>
+                  <SearchableSelect
+                    options={[
+                      { value: 'critical', label: 'Critical (P1)', icon: <Flame size={13} className="text-[var(--critical)]" /> },
+                      { value: 'high', label: 'High (P2)', icon: <AlertCircle size={13} className="text-[var(--high)]" /> },
+                      { value: 'medium', label: 'Medium (P3)', icon: <Bug size={13} className="text-[var(--medium)]" /> },
+                      { value: 'low', label: 'Low (P4)', icon: <CheckCircle2 size={13} className="text-[var(--low)]" /> }
+                    ]}
+                    value={priority}
+                    onChange={(val) => setPriority(val as Priority)}
+                    placeholder="Priority"
                   />
                 </div>
 
@@ -945,29 +1170,50 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                 </div>
               </div>
 
-              {sourceInstance === 'internal' && (
+              {/* People: Assigned To and Created By */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1 flex items-center gap-1">
+                    <UserCheck size={13} className="text-[var(--primary)]" />
+                    <span>Assigned To</span>
+                  </label>
+                  <SearchableSelect
+                    options={modalAssigneeOptions}
+                    value={assigneeId}
+                    onChange={setAssigneeId}
+                    placeholder="Select Assignee"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1 flex items-center gap-1">
+                    <User size={13} className="text-[var(--primary)]" />
+                    <span>Created / Reported By</span>
+                  </label>
+                  <SearchableSelect
+                    options={modalCreatorOptions}
+                    value={createdByName}
+                    onChange={setCreatedByName}
+                    placeholder="Select Creator"
+                  />
+                </div>
+              </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
-                      Area Path (ADO)
+                    <label className="block text-xs font-bold text-[var(--text-primary)] mb-1 flex items-center justify-between">
+                      <span>Area Path</span>
+                      <span className="text-[10px] text-[var(--primary)] font-semibold">Fixed ADO Project</span>
                     </label>
-                    <SearchableSelect
-                      options={areaOptions}
-                      value={areaPath}
-                      onChange={(newArea) => {
-                        setAreaPath(newArea);
-                        const iters = getIterationPathsForArea(newArea, releases, userStories, defects);
-                        if (iters.length > 0) {
-                          setReleaseId(iters[0].releaseId);
-                        }
-                      }}
-                      placeholder="Select Area Path"
-                    />
+                    <div className="w-full text-xs px-3 py-2 bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl text-[var(--text-primary)] font-mono font-bold flex items-center gap-1.5">
+                      <FolderGit2 size={13} className="text-[var(--primary)]" />
+                      <span>ACM</span>
+                    </div>
                   </div>
 
                   <div>
                     <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
-                      Returned Iteration / Release
+                      Release / Iteration (ACM)
                     </label>
                     <SearchableSelect
                       options={modalReleaseOptions}
@@ -977,38 +1223,28 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                     />
                   </div>
                 </div>
-              )}
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Linked Story</label>
-                  <SearchableSelect
-                    options={modalStoryOptions}
-                    value={userStoryId}
-                    onChange={setUserStoryId}
-                    placeholder="Select User Story"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Assignee</label>
-                  <SearchableSelect
-                    options={modalAssigneeOptions}
-                    value={assigneeId}
-                    onChange={setAssigneeId}
-                    placeholder="Select Assignee"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Linked Story</label>
+                <SearchableSelect
+                  options={modalStoryOptions}
+                  value={userStoryId}
+                  onChange={setUserStoryId}
+                  placeholder="Select User Story"
+                />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Tags (Comma-separated)</label>
+                <label className="block text-xs font-bold text-[var(--text-primary)] mb-1 flex items-center justify-between">
+                  <span>Tags (Comma-separated)</span>
+                  <span className="text-[10px] text-[var(--text-muted)]">e.g. concurrency, database, blocker</span>
+                </label>
                 <input
                   type="text"
                   placeholder="e.g. Concurrency, Database, Blocker"
                   value={tagsInput}
                   onChange={(e) => setTagsInput(e.target.value)}
-                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)] focus:border-[var(--primary)]"
                 />
               </div>
 
@@ -1019,7 +1255,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                   placeholder="What is the observed vs expected behavior?"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)] focus:border-[var(--primary)]"
                 />
               </div>
 
@@ -1030,7 +1266,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                   placeholder="1. Navigate to /schedule&#10;2. Select slot 14:00&#10;3. Submit simultaneously"
                   value={stepsToReproduce}
                   onChange={(e) => setStepsToReproduce(e.target.value)}
-                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none font-mono text-[var(--text-primary)]"
+                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none font-mono text-[var(--text-primary)] focus:border-[var(--primary)]"
                 />
               </div>
 
@@ -1041,7 +1277,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                   placeholder="e.g. Missing PostgreSQL optimistic locking on slot_reservation"
                   value={rootCause}
                   onChange={(e) => setRootCause(e.target.value)}
-                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)] focus:border-[var(--primary)]"
                 />
               </div>
 
@@ -1055,7 +1291,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] cursor-pointer"
+                  className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] cursor-pointer shadow-xs"
                 >
                   {editingDefect ? 'Update Defect' : 'Log Defect'}
                 </button>
@@ -1075,10 +1311,15 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                 <h2 className="text-base font-bold text-[var(--text-primary)]">
                   AI Root Cause & Patch Proposal
                 </h2>
+                {aiModelUsed && (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[var(--primary-light)] text-[var(--primary)] font-mono">
+                    {aiModelUsed}
+                  </span>
+                )}
               </div>
               <button
                 onClick={() => setAiModalOpen(false)}
-                className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer text-lg leading-none"
               >
                 &times;
               </button>
@@ -1086,11 +1327,16 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
 
             <div className="p-6 flex flex-col gap-4 max-h-[calc(85vh-80px)] overflow-y-auto">
               {selectedAiDefect && (
-                <div className="p-3 bg-[var(--surface-hover)] rounded-xl border border-[var(--border)]">
-                  <span className="text-[10px] font-bold uppercase text-[var(--text-muted)] tracking-wider">Target Defect:</span>
-                  <p className="text-xs font-bold text-[var(--text-primary)] mt-0.5">
-                    {selectedAiDefect.adoId ? `#${selectedAiDefect.adoId} - ` : ''}{selectedAiDefect.title}
-                  </p>
+                <div className="p-3 bg-[var(--surface-hover)] rounded-xl border border-[var(--border)] flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-[var(--text-muted)] tracking-wider">Target Defect:</span>
+                    <p className="text-xs font-bold text-[var(--text-primary)] mt-0.5">
+                      {selectedAiDefect.adoId ? `#${selectedAiDefect.adoId} - ` : ''}{selectedAiDefect.title}
+                    </p>
+                  </div>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${SEVERITY_CONFIG[selectedAiDefect.severity].bg} ${SEVERITY_CONFIG[selectedAiDefect.severity].text} ${SEVERITY_CONFIG[selectedAiDefect.severity].border}`}>
+                    {SEVERITY_CONFIG[selectedAiDefect.severity].label}
+                  </span>
                 </div>
               )}
 
@@ -1098,8 +1344,35 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                 <div className="py-12 flex flex-col items-center justify-center gap-3 text-center">
                   <div className="w-8 h-8 border-3 border-[var(--primary)] border-t-transparent rounded-full animate-spin" />
                   <p className="text-xs font-semibold text-[var(--text-secondary)]">
-                    Analyzing logs, stack traces, and ADO work item history...
+                    Analyzing defect logs, reproduction steps, and root causes...
                   </p>
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    Connecting to Google Gemini with automated fallback redundancy...
+                  </p>
+                </div>
+              ) : aiError ? (
+                <div className="p-4 bg-[var(--critical-bg)] border border-[var(--critical-border)] rounded-xl flex flex-col gap-3">
+                  <div className="flex items-start gap-2.5">
+                    <AlertCircle size={18} className="text-[var(--critical)] shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-bold text-[var(--critical)]">AI Generation Notice</h4>
+                      <p className="text-xs text-[var(--text-primary)] mt-1 leading-relaxed">
+                        {aiError}
+                      </p>
+                    </div>
+                  </div>
+                  {selectedAiDefect && (
+                    <div className="flex justify-end pt-2 border-t border-[var(--critical-border)]">
+                      <button
+                        type="button"
+                        onClick={() => handleRunAiAnalysis(selectedAiDefect)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-[var(--critical)] hover:opacity-90 transition-opacity cursor-pointer shadow-xs"
+                      >
+                        <RotateCcw size={13} />
+                        Retry Analysis
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="prose prose-sm max-w-none text-xs text-[var(--text-primary)] whitespace-pre-wrap leading-relaxed bg-[var(--surface-hover)] p-4 rounded-xl border border-[var(--border)] font-mono">
@@ -1107,14 +1380,39 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                 </div>
               )}
 
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setAiModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] cursor-pointer"
-                >
-                  Close
-                </button>
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <div>
+                  {!aiLoading && !aiError && aiAnalysisResult && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(aiAnalysisResult);
+                      }}
+                      className="flex items-center gap-1 text-xs font-medium text-[var(--primary)] hover:underline cursor-pointer"
+                    >
+                      Copy Analysis
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {!aiLoading && selectedAiDefect && !aiError && (
+                    <button
+                      type="button"
+                      onClick={() => handleRunAiAnalysis(selectedAiDefect)}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                    >
+                      <RotateCcw size={13} />
+                      Regenerate
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAiModalOpen(false)}
+                    className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           </div>

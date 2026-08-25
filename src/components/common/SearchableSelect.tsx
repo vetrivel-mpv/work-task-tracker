@@ -172,19 +172,20 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
         } ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${buttonClassName}`}
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          {icon && <span className="text-[var(--primary)] flex-shrink-0">{icon}</span>}
-          
           {selectedOption ? (
             <div className="flex items-center gap-2 min-w-0 flex-1">
-              {selectedOption.avatarColor && (
+              {selectedOption.avatarColor ? (
                 <div
                   className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0"
                   style={{ backgroundColor: selectedOption.avatarColor }}
                 >
                   {selectedOption.avatarInitials || selectedOption.label[0]}
                 </div>
-              )}
-              {selectedOption.icon && <span className="flex-shrink-0">{selectedOption.icon}</span>}
+              ) : selectedOption.icon ? (
+                <span className="flex-shrink-0 text-[var(--primary)]">{selectedOption.icon}</span>
+              ) : icon ? (
+                <span className="text-[var(--primary)] flex-shrink-0">{icon}</span>
+              ) : null}
               <span className="truncate">{selectedOption.label}</span>
               {selectedOption.badge && (
                 <span 
@@ -199,9 +200,12 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
               )}
             </div>
           ) : (
-            <span className="text-[var(--text-muted)] truncate">
-              {allOptionLabel || placeholder}
-            </span>
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              {icon && <span className="text-[var(--primary)] flex-shrink-0">{icon}</span>}
+              <span className="text-[var(--text-muted)] truncate">
+                {allOptionLabel || placeholder}
+              </span>
+            </div>
           )}
         </div>
 

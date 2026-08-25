@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { 
   DualAdoConfig, 
-  AdoInstanceConfig, 
   UserStory, 
   TestCase,
   Defect, 
@@ -18,17 +17,12 @@ import {
   Save, 
   Layers, 
   Download, 
-  Upload, 
   Key, 
   Database, 
-  Building2, 
-  Globe2, 
   FileCheck2, 
-  Headphones, 
   Bug, 
   BookOpen, 
   Terminal, 
-  Activity, 
   ArrowRight, 
   ShieldCheck, 
   Zap, 
@@ -36,20 +30,25 @@ import {
   Sparkles, 
   ChevronRight, 
   Filter, 
-  Tag, 
   Plus,
-  Code2
+  Code2,
+  Check,
+  Building2,
+  Sliders,
+  Play
 } from 'lucide-react';
-import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber } from '../../utils/adoPaths';
+import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber, parseAdoTarget, formatAdoUrl, normalizeAdoTarget } from '../../utils/adoPaths';
 import { generateId, toDateStr } from '../../utils/date';
 import { 
   adoService, 
   AdoIterationDto, 
   AdoAreaDto, 
-  AdoSyncDiagnosticRecord, 
-  FieldMappingDiff 
+  AdoSyncDiagnosticRecord,
+  AdoServerConfig 
 } from '../../services/adoService';
 import { AdoSyncDiagnosticOverlay } from './AdoSyncDiagnosticOverlay';
+import { WiqlEditorTab } from './WiqlEditorTab';
+import { isTestCaseItem, isDefectItem, convertStoryToTestCase } from '../../utils/itemClassification';
 
 interface AdoSyncModalProps {
   isOpen: boolean;
@@ -61,7 +60,7 @@ interface AdoSyncModalProps {
   tasks?: Task[];
   team?: TeamMember[];
   onSaveConfig: (config: DualAdoConfig) => void;
-  onTriggerSync?: (targetInstance: 'all' | 'internal' | 'external') => void;
+  onTriggerSync?: (targetInstance?: 'all' | 'internal' | 'external') => void;
   onAddRelease?: (release: Release) => void;
   onSyncData?: (syncedData: {
     stories: UserStory[];
@@ -88,7 +87,7 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
   onAddRelease,
   onSyncData
 }) => {
-  const [activeTab, setActiveTab] = useState<'internal' | 'external' | 'dual_sync'>('internal');
+  const [activeTab, setActiveTab] = useState<'connection' | 'wiql' | 'diagnostics'>('connection');
   const [showDiagnosticsOverlay, setShowDiagnosticsOverlay] = useState(false);
 
   // Diagnostic History (last 5 sync payloads)
@@ -96,57 +95,98 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
     return adoService.getStoredDiagnostics();
   });
 
-  // Internal ADO State
-  const [internalName, setInternalName] = useState(dualAdoConfig?.internal?.name || '');
-  const [internalOrg, setInternalOrg] = useState(dualAdoConfig?.internal?.organization || '');
-  const [internalProject, setInternalProject] = useState(dualAdoConfig?.internal?.project || '');
-  const [internalPat, setInternalPat] = useState(dualAdoConfig?.internal?.pat || '');
-  const [internalArea, setInternalArea] = useState(dualAdoConfig?.internal?.areaPath || '');
-  const [internalIteration, setInternalIteration] = useState(dualAdoConfig?.internal?.iterationPath || '');
-  const [internalTestSuite, setInternalTestSuite] = useState(dualAdoConfig?.internal?.testPlanSettings?.testSuite || '');
-  const [internalTestRunsEnabled, setInternalTestRunsEnabled] = useState(dualAdoConfig?.internal?.testPlanSettings?.automatedRunsEnabled ?? true);
-  
-  // External ADO State
-  const [externalName, setExternalName] = useState(dualAdoConfig?.external?.name || '');
-  const [externalOrg, setExternalOrg] = useState(dualAdoConfig?.external?.organization || '');
-  const [externalProject, setExternalProject] = useState(dualAdoConfig?.external?.project || '');
-  const [externalPat, setExternalPat] = useState(dualAdoConfig?.external?.pat || '');
-  const [externalArea, setExternalArea] = useState(dualAdoConfig?.external?.areaPath || '');
-  const [externalIteration, setExternalIteration] = useState(dualAdoConfig?.external?.iterationPath || '');
+  // Single ADO Config State (backed by internal config in DualAdoConfig for persistence)
+  const primaryConfig = dualAdoConfig?.internal || ({} as any);
+
+  const initialTarget = parseAdoTarget(primaryConfig.organization, primaryConfig.project);
+  const [org, setOrg] = useState(initialTarget.cleanOrg);
+  const [project, setProject] = useState(initialTarget.cleanProject);
+  const [pat, setPat] = useState(primaryConfig.pat || '');
+  const [areaPath, setAreaPath] = useState(primaryConfig.areaPath || '');
+  const [iterationPath, setIterationPath] = useState(primaryConfig.iterationPath || '');
+  const [testSuite, setTestSuite] = useState(primaryConfig.testPlanSettings?.testSuite || 'Automated Regression Suite');
+  const [automatedRunsEnabled, setAutomatedRunsEnabled] = useState(primaryConfig.testPlanSettings?.automatedRunsEnabled ?? true);
+
+  // Active parsed target with normalization
+  const currentTarget = parseAdoTarget(org, project);
+
+  const handleOrgChange = (raw: string) => {
+    // If user pasted a full URL or slash-separated string
+    if (raw.includes('dev.azure.com') || raw.includes('visualstudio.com') || raw.startsWith('http://') || raw.startsWith('https://') || raw.includes('/') || raw.includes('\\')) {
+      const parsed = normalizeAdoTarget(raw, project);
+      if (parsed.isValid) {
+        setOrg(parsed.cleanOrg);
+        if (parsed.cleanProject) {
+          setProject(parsed.cleanProject);
+        }
+        setSyncLogs(prev => [...prev, `[SMART-URL] Normalized pasted ADO link: ${parsed.cleanOrg}/${parsed.cleanProject} (${parsed.detectedType})`]);
+      } else {
+        setOrg(raw);
+      }
+    } else {
+      setOrg(raw);
+    }
+  };
+
+  const handleProjectChange = (raw: string) => {
+    if (raw.includes('dev.azure.com') || raw.includes('visualstudio.com') || raw.startsWith('http://') || raw.startsWith('https://') || raw.includes('/') || raw.includes('\\')) {
+      const parsed = normalizeAdoTarget(raw);
+      if (parsed.isValid) {
+        setProject(parsed.cleanProject || raw);
+        if (parsed.cleanOrg) {
+          setOrg(parsed.cleanOrg);
+        }
+        setSyncLogs(prev => [...prev, `[SMART-URL] Normalized pasted project link: ${parsed.cleanOrg}/${parsed.cleanProject}`]);
+      } else {
+        setProject(raw);
+      }
+    } else {
+      setProject(raw);
+    }
+  };
 
   // Discovered ADO Metadata from Live API
   const [discoveredIterations, setDiscoveredIterations] = useState<AdoIterationDto[]>([]);
   const [discoveredAreas, setDiscoveredAreas] = useState<AdoAreaDto[]>([]);
   const [isFetchingMetadata, setIsFetchingMetadata] = useState(false);
+  const [serverConfig, setServerConfig] = useState<AdoServerConfig | null>(null);
 
   // Sync execution state
   const [isSyncing, setIsSyncing] = useState(false);
-  const [syncTarget, setSyncTarget] = useState<'all' | 'internal' | 'external' | null>(null);
   const [syncLogs, setSyncLogs] = useState<string[]>([
     `[SYS-INIT] Azure DevOps connector ready.`
   ]);
-  const [testResult, setTestResult] = useState<{ target: 'internal' | 'external'; success: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: any } | null>(null);
   const [createdReleaseName, setCreatedReleaseName] = useState<string | null>(null);
+  const [lastSyncResult, setLastSyncResult] = useState<any>(null);
 
-  // Derived available Area Paths and returned Iteration Paths for Internal ADO
+  // Load server-side PAT config
+  React.useEffect(() => {
+    if (isOpen) {
+      adoService.getServerConfig().then(cfg => {
+        setServerConfig(cfg);
+        if (cfg.hasServerPat && !pat) {
+          setSyncLogs(prev => [...prev, `[SERVER-PAT] Active server-side Personal Access Token detected (${cfg.defaultOrg}/${cfg.defaultProject}).`]);
+        }
+      });
+    }
+  }, [isOpen]);
+
+  // Derived available Area Paths and returned Iteration Paths
   const availableAreaPaths = getAllAreaPaths(releases, userStories, defects, tasks, discoveredAreas);
-  const returnedInternalIterations = getIterationPathsForArea(internalArea, releases, userStories, defects, discoveredIterations);
+  const returnedIterations = getIterationPathsForArea(areaPath, releases, userStories, defects, discoveredIterations);
 
   // Auto-fetch metadata on initial load if project is present
   React.useEffect(() => {
-    if (isOpen && internalOrg && internalProject && discoveredIterations.length === 0) {
-      handleFetchMetadata('internal');
+    if (isOpen && currentTarget.cleanOrg && currentTarget.cleanProject && discoveredIterations.length === 0) {
+      handleFetchMetadata();
     }
-  }, [isOpen, internalOrg, internalProject]);
+  }, [isOpen, currentTarget.cleanOrg, currentTarget.cleanProject]);
 
-  const handleFetchMetadata = async (target: 'internal' | 'external') => {
-    const org = target === 'internal' ? internalOrg : externalOrg;
-    const project = target === 'internal' ? internalProject : externalProject;
-    const pat = target === 'internal' ? internalPat : externalPat;
-
-    if (!org || !project) {
+  const handleFetchMetadata = async () => {
+    const target = parseAdoTarget(org, project);
+    if (!target.cleanOrg || !target.cleanProject) {
       setTestResult({
-        target,
         success: false,
         message: 'Organization and Project cannot be blank.'
       });
@@ -155,30 +195,47 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
 
     setIsFetchingMetadata(true);
     try {
-      const [iterRes, areaRes] = await Promise.all([
-        adoService.fetchIterations(org, project, pat),
-        adoService.fetchAreas(org, project, pat)
-      ]);
+      const meta = await adoService.discoverMetadata(target.cleanOrg, target.cleanProject, pat);
 
-      if (iterRes.ok && iterRes.iterations && iterRes.iterations.length > 0) {
-        setDiscoveredIterations(iterRes.iterations);
+      if (meta.ok) {
+        if (meta.iterations && meta.iterations.length > 0) {
+          setDiscoveredIterations(meta.iterations);
+          // If no iteration is currently selected, suggest the active/current iteration
+          if (!iterationPath && meta.currentIteration?.path) {
+            setIterationPath(meta.currentIteration.path);
+          }
+        }
+        if (meta.areas && meta.areas.length > 0) {
+          setDiscoveredAreas(meta.areas);
+        }
+
+        const countIter = meta.iterations?.length || 0;
+        const countArea = meta.areas?.length || 0;
+        const activeName = meta.currentIteration?.name || 'None detected';
+
+        setSyncLogs(prev => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] Metadata Discovery: Found ${countIter} iteration(s) (Active: ${activeName}) & ${countArea} area path(s) [Source: ${meta.source || 'live'}].`
+        ]);
+      } else {
+        // Fallback to separate fetchers
+        const [iterRes, areaRes] = await Promise.all([
+          adoService.fetchIterations(target.cleanOrg, target.cleanProject, pat),
+          adoService.fetchAreas(target.cleanOrg, target.cleanProject, pat)
+        ]);
+
+        if (iterRes.ok && iterRes.iterations && iterRes.iterations.length > 0) {
+          setDiscoveredIterations(iterRes.iterations);
+        }
+        if (areaRes.ok && areaRes.areas && areaRes.areas.length > 0) {
+          setDiscoveredAreas(areaRes.areas);
+        }
       }
-      if (areaRes.ok && areaRes.areas && areaRes.areas.length > 0) {
-        setDiscoveredAreas(areaRes.areas);
-      }
-
-      const countIter = iterRes.iterations?.length || 0;
-      const countArea = areaRes.areas?.length || 0;
-
-      setSyncLogs(prev => [
-        ...prev,
-        `[${new Date().toLocaleTimeString()}] Query result: Found ${countIter} iteration path(s) & ${countArea} area path(s) for ${org}/${project}.`
-      ]);
     } catch (err: any) {
       console.warn('Error fetching metadata:', err);
       setSyncLogs(prev => [
         ...prev,
-        `[${new Date().toLocaleTimeString()}] ADO Query Note: ${err.message || err}`
+        `[${new Date().toLocaleTimeString()}] ADO Discovery Note: ${err.message || err}`
       ]);
     } finally {
       setIsFetchingMetadata(false);
@@ -187,469 +244,146 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
 
   const handleQuickCreateRelease = () => {
     if (!onAddRelease) return;
-    const relName = internalName || internalIteration || 'New ADO Release';
+    const relName = iterationPath || currentTarget.cleanProject || 'New ADO Release';
     const newRel: Release = {
       id: generateId('rel'),
       name: relName,
-      iterationPath: internalIteration || undefined,
-      areaPath: internalArea || undefined,
+      iterationPath: iterationPath || undefined,
+      areaPath: areaPath || undefined,
       releaseNumber: extractReleaseNumber(relName) || 'v1.0.0',
       targetDate: toDateStr(new Date()),
       status: 'Active QA',
-      description: `Created from Azure DevOps sync configuration (${internalOrg}/${internalProject})`,
-      createdAt: toDateStr(new Date())
+      description: `Created from Azure DevOps sync configuration (${currentTarget.cleanOrg}/${currentTarget.cleanProject})`,
+      createdAt: new Date().toISOString()
     };
-
     onAddRelease(newRel);
-    setCreatedReleaseName(newRel.name);
-    setTimeout(() => setCreatedReleaseName(null), 4000);
+    setCreatedReleaseName(relName);
+    setTimeout(() => setCreatedReleaseName(null), 3000);
   };
 
-  const handleTestConnection = async (target: 'internal' | 'external') => {
-    setTestResult(null);
-    const org = target === 'internal' ? internalOrg : externalOrg;
-    const project = target === 'internal' ? internalProject : externalProject;
-    const pat = target === 'internal' ? internalPat : externalPat;
-
-    if (!org || !project) {
+  const handleTestConnection = async () => {
+    const target = parseAdoTarget(org, project);
+    if (!target.cleanOrg || !target.cleanProject) {
       setTestResult({
-        target,
         success: false,
-        message: 'Organization and Project are required.'
+        message: 'Please fill in Organization and Project name.'
       });
       return;
     }
 
-    const res = await adoService.testConnection(org, project, pat);
-    if (res.ok) {
+    setTestResult(null);
+    const now = new Date().toLocaleTimeString();
+    setSyncLogs(prev => [...prev, `[${now}] Running PAT health check against https://dev.azure.com/${target.cleanOrg}/${target.cleanProject}...`]);
+
+    try {
+      const health = await adoService.checkHealth(target.cleanOrg, target.cleanProject, pat);
+      if (health.ok) {
+        setTestResult({
+          success: true,
+          message: health.message || `Connected & authenticated successfully to ${target.cleanOrg}/${target.cleanProject}! (HTTP 200 OK - ${health.durationMs || 0}ms)`,
+          details: health
+        });
+        setSyncLogs(prev => [
+          ...prev, 
+          `[${new Date().toLocaleTimeString()}] Health check passed: ${health.target?.url} verified via ${health.authMethod || 'PAT'} (${health.durationMs || 0}ms).`
+        ]);
+        handleFetchMetadata();
+      } else {
+        setTestResult({
+          success: false,
+          message: health.error || 'Health check failed. Please check your PAT token or Project permissions.',
+          details: health
+        });
+        setSyncLogs(prev => [
+          ...prev, 
+          `[${new Date().toLocaleTimeString()}] Health check failed (${health.status}): ${health.error || 'Check credentials'}`
+        ]);
+      }
+    } catch (err: any) {
       setTestResult({
-        target,
-        success: true,
-        message: `Connected successfully to Azure DevOps [${target.toUpperCase()}]: ${org}/${project} (HTTP 200 OK)`
+        success: false,
+        message: err.message || 'Network request failed'
       });
-      // Also automatically fetch iterations and areas
-      handleFetchMetadata(target);
-    } else {
-      // Graceful connected message if in local sandbox
-      setTestResult({
-        target,
-        success: true,
-        message: `Validated configuration for ${org}/${project}. Area & Iteration queries are active.`
-      });
-      handleFetchMetadata(target);
     }
   };
 
-  const handleExecuteLiveSync = async (target: 'all' | 'internal' | 'external') => {
+  const handleExecuteLiveSync = async (customWiql?: string) => {
     setIsSyncing(true);
-    setSyncTarget(target);
+    const target = parseAdoTarget(org, project);
     const now = new Date().toLocaleTimeString();
-
     const newLogs: string[] = [
-      `\n[${now}] Starting sync cycle for ${target.toUpperCase()} instance(s)...`
+      `\n[${now}] Starting Azure DevOps synchronization...`,
+      ...(customWiql ? [`[WIQL] Running custom WIQL query against Azure DevOps...`] : [])
     ];
 
     try {
-      const targetOrg = target === 'external' ? externalOrg : internalOrg;
-      const targetProject = target === 'external' ? externalProject : internalProject;
-      const targetPat = target === 'external' ? externalPat : internalPat;
-      const targetArea = target === 'external' ? externalArea : internalArea;
-      const targetIter = target === 'external' ? externalIteration : internalIteration;
+      newLogs.push(`[CONNECT] Querying live items for ${target.cleanOrg}/${target.cleanProject} (${target.fullUrl})...`);
+      setSyncLogs(prev => [...prev, ...newLogs]);
 
       const syncResult = await adoService.syncWorkItems({
-        org: targetOrg,
-        project: targetProject,
-        pat: targetPat,
-        areaPath: targetArea,
-        iterationPath: targetIter,
-        targetInstance: target
+        org: target.cleanOrg,
+        project: target.cleanProject,
+        pat,
+        areaPath,
+        iterationPath,
+        customWiql
       });
 
-      const storiesList: any[] = (syncResult.stories || []).filter((s: any) => {
-        const titleLower = (s.title || '').toLowerCase();
-        const typeLower = (s.workItemType || '').toLowerCase();
-        return !typeLower.includes('test case') && 
-               !typeLower.includes('test plan') && 
-               !typeLower.includes('test suite') && 
-               !titleLower.startsWith('[test case]') &&
-               !titleLower.startsWith('test case:');
-      });
+      const rawIncomingStories = syncResult.stories || [];
+      const storiesList: any[] = [];
+      const testCasesList: any[] = [...(syncResult.testCases || [])];
       const defectsList: any[] = syncResult.defects || [];
-      const testCasesList: any[] = syncResult.testCases || [];
       const tasksList: any[] = syncResult.tasks || [];
-      const hasItems = storiesList.length > 0 || defectsList.length > 0 || testCasesList.length > 0 || tasksList.length > 0;
 
-      if (syncResult.ok && hasItems) {
-        newLogs.push(
-          `[${target.toUpperCase()}] Connected to ADO query: Area="${targetArea || 'All'}" | Iteration="${targetIter || 'All'}"`,
-          `[${target.toUpperCase()}] Ingestion Summary: ${storiesList.length} User Stories, ${defectsList.length} Bugs/Defects, ${testCasesList.length} Test Cases, ${tasksList.length} Tasks via WIQL & Batch API.`
-        );
-
-        if (storiesList.length > 0) {
-          newLogs.push(
-            `[STORIES] Ingested Stories (${storiesList.length}):`,
-            ...storiesList.slice(0, 10).map(s => `  • #${s.adoId}: ${s.title} [State: ${s.status}] [Assigned: ${s.assigneeName || 'Unassigned'}]`)
-          );
-          if (storiesList.length > 10) {
-            newLogs.push(`  ... and ${storiesList.length - 10} more stories`);
-          }
+      rawIncomingStories.forEach((s: any) => {
+        if (isTestCaseItem(s)) {
+          const converted = convertStoryToTestCase(s);
+          const exists = testCasesList.some(tc => tc.id === converted.id || (converted.adoId && tc.adoId === converted.adoId));
+          if (!exists) testCasesList.push(converted);
+        } else if (!isDefectItem(s)) {
+          storiesList.push(s);
         }
+      });
 
-        if (defectsList.length > 0) {
-          newLogs.push(
-            `[BUGS/DEFECTS] Ingested Bugs (${defectsList.length}):`,
-            ...defectsList.slice(0, 10).map(d => `  • #${d.adoId}: ${d.title} [State: ${d.status}] [Severity: ${d.severity}] [Assigned: ${d.assigneeName || 'Unassigned'}]`)
-          );
-          if (defectsList.length > 10) {
-            newLogs.push(`  ... and ${defectsList.length - 10} more bugs`);
-          }
-        }
+      newLogs.push(`[REST API] Received ${storiesList.length} User Stories, ${testCasesList.length} Test Cases, ${defectsList.length} Defects, ${tasksList.length} Tasks from live ADO.`);
 
-        if (testCasesList.length > 0) {
-          newLogs.push(
-            `[TEST CASES] Ingested QA Test Cases (${testCasesList.length}):`,
-            ...testCasesList.slice(0, 10).map(tc => `  • #${tc.adoId}: ${tc.title} [Type: ${tc.workItemType || 'Test Case'}] [Status: ${tc.status}] [Assigned: ${tc.assigneeName || 'Unassigned'}]`)
-          );
-          if (testCasesList.length > 10) {
-            newLogs.push(`  ... and ${testCasesList.length - 10} more test cases`);
-          }
-        }
-
-        // Discover all unique iteration paths from stories, defects & test cases
-        const distinctIterPaths = Array.from(
-          new Set(
-            [
-              ...storiesList.map(s => s.iterationPath),
-              ...defectsList.map(d => d.iterationPath),
-              ...testCasesList.map(tc => tc.iterationPath),
-              targetIter
-            ].filter(Boolean) as string[]
-          )
-        );
-
-        const primaryIter = targetIter || distinctIterPaths[0] || 'Release';
-        const primaryRelId = `rel-${primaryIter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-
-        const syncedReleases: Release[] = distinctIterPaths.map(iter => {
-          const matchingStory = storiesList.find(s => s.iterationPath === iter);
-          const matchingDefect = defectsList.find(d => d.iterationPath === iter);
-          const matchingTestCase = testCasesList.find(tc => tc.iterationPath === iter);
-          const area = matchingStory?.areaPath || matchingDefect?.areaPath || matchingTestCase?.areaPath || targetArea || '';
-          return {
-            id: `rel-${iter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
-            name: iter,
-            iterationPath: iter,
-            areaPath: area,
-            releaseNumber: extractReleaseNumber(iter) || 'v1.0.0',
-            targetDate: toDateStr(new Date()),
-            status: 'Active QA',
-            description: `Ingested from Azure DevOps ${targetOrg}/${targetProject} (${iter})`,
-            createdAt: toDateStr(new Date())
-          };
-        });
-
-        // Extract team members from story/defect/test case assignees and creators
-        const peopleMap = new Map<string, { name: string; role: string; source: 'assigned_to' | 'created_by' }>();
-        
-        storiesList.forEach(s => {
-          if (s.assigneeName && s.assigneeName !== 'Unassigned') {
-            peopleMap.set(s.assigneeName.toLowerCase(), { name: s.assigneeName, role: 'Software Engineer', source: 'assigned_to' });
-          }
-          if (s.createdByName && s.createdByName !== 'Unassigned') {
-            if (!peopleMap.has(s.createdByName.toLowerCase())) {
-              peopleMap.set(s.createdByName.toLowerCase(), { name: s.createdByName, role: 'Product / ADO Creator', source: 'created_by' });
-            }
-          }
-        });
-
-        defectsList.forEach(d => {
-          if (d.assigneeName && d.assigneeName !== 'Unassigned') {
-            peopleMap.set(d.assigneeName.toLowerCase(), { name: d.assigneeName, role: 'Software Engineer', source: 'assigned_to' });
-          }
-          if (d.createdByName && d.createdByName !== 'Unassigned') {
-            if (!peopleMap.has(d.createdByName.toLowerCase())) {
-              peopleMap.set(d.createdByName.toLowerCase(), { name: d.createdByName, role: 'QA / Reporter', source: 'created_by' });
-            }
-          }
-        });
-
-        testCasesList.forEach(tc => {
-          if (tc.assigneeName && tc.assigneeName !== 'Unassigned') {
-            peopleMap.set(tc.assigneeName.toLowerCase(), { name: tc.assigneeName, role: 'QA Automation Engineer', source: 'assigned_to' });
-          }
-          if (tc.createdByName && tc.createdByName !== 'Unassigned') {
-            if (!peopleMap.has(tc.createdByName.toLowerCase())) {
-              peopleMap.set(tc.createdByName.toLowerCase(), { name: tc.createdByName, role: 'QA Test Lead', source: 'created_by' });
-            }
-          }
-        });
-
-        const assignees = Array.from(peopleMap.values());
-
-        const getPersonId = (name?: string) => {
-          if (!name || name === 'Unassigned') return undefined;
-          const found = team.find(m => m.name.toLowerCase() === name.toLowerCase());
-          if (found) return found.id;
-          return `member-${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-        };
-
-        // Map DTOs to Northstar types
-        const mappedStories: UserStory[] = storiesList.map(s => {
-          const assId = getPersonId(s.assigneeName);
-          const crtId = getPersonId(s.createdByName);
-          const storyIter = s.iterationPath || primaryIter;
-          const storyRelId = `rel-${storyIter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-          return {
-            id: s.id || `story-${s.adoId}`,
-            title: s.title,
-            status: (s.status as any) || 'Dev In Progress',
-            areaPath: s.areaPath || targetArea,
-            iterationPath: storyIter,
-            releaseId: storyRelId,
-            assigneeId: assId,
-            createdById: crtId,
-            createdByName: s.createdByName,
-            description: s.description,
-            acceptanceCriteria: s.acceptanceCriteria,
-            storyPoints: s.storyPoints || 5,
-            adoId: s.adoId,
-            adoUrl: `https://dev.azure.com/${targetOrg}/${targetProject}/_workitems/edit/${s.adoId}`,
-            sourceInstance: target === 'external' ? 'external' : 'internal',
-            createdAt: toDateStr(new Date()),
-            updatedAt: toDateStr(new Date())
-          };
-        });
-
-        const mappedDefects: Defect[] = defectsList.map(d => {
-          const assId = getPersonId(d.assigneeName);
-          const crtId = getPersonId(d.createdByName);
-          const defectIter = d.iterationPath || primaryIter;
-          const defectRelId = `rel-${defectIter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-          return {
-            id: d.id || `def-${d.adoId}`,
-            title: d.title,
-            status: (d.status as any) || 'Active',
-            severity: (d.severity as any) || 'high',
-            areaPath: d.areaPath || targetArea,
-            iterationPath: defectIter,
-            releaseId: defectRelId,
-            assigneeId: assId,
-            createdById: crtId,
-            createdByName: d.createdByName,
-            description: d.description,
-            stepsToReproduce: (d as any).stepsToReproduce || d.description,
-            environment: 'QA',
-            adoId: d.adoId,
-            adoUrl: `https://dev.azure.com/${targetOrg}/${targetProject}/_workitems/edit/${d.adoId}`,
-            sourceInstance: target === 'external' ? 'external' : 'internal',
-            createdAt: toDateStr(new Date()),
-            updatedAt: toDateStr(new Date())
-          };
-        });
-
-        // Map QA Test Cases
-        const mappedTestCases: TestCase[] = testCasesList.map(tc => {
-          const assId = getPersonId(tc.assigneeName);
-          const crtId = getPersonId(tc.createdByName);
-          const tcIter = tc.iterationPath || primaryIter;
-          const tcRelId = `rel-${tcIter.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-          
-          // Map ADO Test Case state (Design, Ready, Closed, Active, etc.)
-          let mappedTcStatus = tc.status || 'Design';
-          const stLower = (tc.status || '').toLowerCase();
-          if (stLower === 'design' || stLower.includes('design') || stLower === 'draft') {
-            mappedTcStatus = 'Design';
-          } else if (stLower === 'ready' || stLower.includes('ready')) {
-            mappedTcStatus = 'Ready';
-          } else if (stLower.includes('progress') || stLower.includes('run') || stLower.includes('executing')) {
-            mappedTcStatus = 'In Progress';
-          } else if (stLower.includes('pass')) {
-            mappedTcStatus = 'Passed';
-          } else if (stLower.includes('fail')) {
-            mappedTcStatus = 'Failed';
-          } else if (stLower.includes('block')) {
-            mappedTcStatus = 'Blocked';
-          } else if (stLower.includes('close') || stLower.includes('done')) {
-            mappedTcStatus = 'Closed';
-          }
-
-          return {
-            id: tc.id || `tc-${tc.adoId}`,
-            title: tc.title,
-            status: mappedTcStatus,
-            workItemType: tc.workItemType || 'Test Case',
-            areaPath: tc.areaPath || targetArea,
-            iterationPath: tcIter,
-            releaseId: tcRelId,
-            assigneeId: assId,
-            createdById: crtId,
-            createdByName: tc.createdByName,
-            description: tc.description,
-            automationStatus: (tc as any).automationStatus === 'Automated' ? 'Automated' : 'Not Automated',
-            tags: (tc as any).tags || [],
-            adoId: tc.adoId,
-            adoUrl: `https://dev.azure.com/${targetOrg}/${targetProject}/_workitems/edit/${tc.adoId}`,
-            sourceInstance: target === 'external' ? 'external' : 'internal',
-            createdAt: toDateStr(new Date()),
-            updatedAt: toDateStr(new Date())
-          };
-        });
-
-        // Generate Dev Tasks for the TaskBoard / Dev Backlog
-        const todayStr = toDateStr(new Date());
-        const syncedTasks: Task[] = [
-          ...mappedStories.map(story => {
-            const isDone = story.status === 'Done' || story.status === 'QA Passed';
-            const isBlocked = story.status === 'Blocked';
-            return {
-              id: `task-ado-${story.adoId || story.id}`,
-              title: `#${story.adoId ? story.adoId + ' - ' : ''}${story.title}`,
-              priority: story.status === 'Blocked' ? 'critical' : (story.storyPoints && story.storyPoints >= 8 ? 'high' : 'medium'),
-              status: isDone ? 'complete' : isBlocked ? 'blocked' : 'in_progress',
-              dateStr: todayStr,
-              assigneeIds: story.assigneeId ? [story.assigneeId] : [],
-              groupIds: [],
-              releaseId: story.releaseId,
-              userStoryId: story.id,
-              customerName: target === 'external' ? 'External ADO' : 'Internal ADO',
-              completedAt: isDone ? new Date().toISOString() : undefined,
-              createdAt: new Date().toISOString()
-            } as Task;
-          }),
-          ...mappedDefects.map(defect => {
-            const isFixed = defect.status === 'Fixed' || defect.status === 'Closed';
-            return {
-              id: `task-ado-def-${defect.adoId || defect.id}`,
-              title: `[Defect #${defect.adoId || ''}] ${defect.title}`,
-              priority: defect.severity === 'critical' ? 'critical' : 'high',
-              status: isFixed ? 'complete' : 'in_progress',
-              dateStr: todayStr,
-              assigneeIds: defect.assigneeId ? [defect.assigneeId] : [],
-              groupIds: [],
-              releaseId: defect.releaseId,
-              defectId: defect.id,
-              customerName: target === 'external' ? 'External ADO' : 'Internal ADO',
-              completedAt: isFixed ? new Date().toISOString() : undefined,
-              createdAt: new Date().toISOString()
-            } as Task;
-          })
-        ];
-
-        if (onSyncData) {
-          onSyncData({
-            stories: mappedStories,
-            testCases: mappedTestCases,
-            defects: mappedDefects,
-            releases: syncedReleases,
-            teamMembers: assignees,
-            tasks: syncedTasks,
-            selectedReleaseId: primaryRelId
-          });
-        }
-      } else {
-        newLogs.push(
-          `[${target.toUpperCase()}] Query executed for ${targetOrg}/${targetProject}. Found 0 matching items or response empty.`
-        );
-      }
-
-      // ALWAYS Save diagnostic record for the sync attempt
-      const storyMappings: FieldMappingDiff[] = (storiesList || []).map(s => ({
-        adoId: s.adoId,
-        title: s.title,
-        rawType: 'User Story',
-        mappedType: 'Story' as const,
-        rawState: s.status === 'Dev In Progress' ? 'Active' : s.status === 'QA Ready' ? 'Resolved' : 'New',
-        mappedStatus: s.status,
-        rawArea: s.areaPath || targetArea,
-        mappedArea: s.areaPath || targetArea,
-        rawIteration: s.iterationPath || targetIter,
-        mappedIteration: s.iterationPath || targetIter,
-        rawAssignee: s.assigneeName || 'Unassigned',
-        mappedAssignee: s.assigneeName || 'Unassigned'
-      }));
-
-      const defectMappings: FieldMappingDiff[] = (defectsList || []).map(d => ({
-        adoId: d.adoId,
-        title: d.title,
-        rawType: 'Bug',
-        mappedType: 'Defect' as const,
-        rawState: d.status === 'Active' ? 'Active' : d.status === 'Fixed' ? 'Resolved' : 'New',
-        mappedStatus: d.status,
-        rawArea: d.areaPath || targetArea,
-        mappedArea: d.areaPath || targetArea,
-        rawIteration: d.iterationPath || targetIter,
-        mappedIteration: d.iterationPath || targetIter,
-        rawAssignee: d.assigneeName || 'Unassigned',
-        mappedAssignee: d.assigneeName || 'Unassigned'
-      }));
-
-      const fieldMappings: FieldMappingDiff[] = [...storyMappings, ...defectMappings];
-
-      const diagRecord: AdoSyncDiagnosticRecord = {
-        id: `diag-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        targetInstance: target,
-        status: syncResult.ok ? 'success' : 'error',
-        org: targetOrg,
-        project: targetProject,
-        areaPath: targetArea,
-        iterationPath: targetIter,
-        durationMs: syncResult.durationMs || 145,
-        source: syncResult.source || 'live_ado_wiql',
-        itemsReceivedCount: storiesList.length + defectsList.length,
-        storiesCount: storiesList.length,
-        defectsCount: defectsList.length,
-        wiqlQuery: syncResult.rawPayload?.wiql?.query || `SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo], [System.WorkItemType] FROM WorkItems WHERE [System.TeamProject] = '${targetProject}' AND [System.AreaPath] UNDER '${targetArea}' AND [System.IterationPath] UNDER '${targetIter}' ORDER BY [System.Id] DESC`,
-        rawPayload: {
-          ...(syncResult.rawPayload || {}),
-          status: syncResult.ok ? '200 OK' : 'Error',
-          storiesCount: storiesList.length,
-          defectsCount: defectsList.length,
-          source: syncResult.source,
-          stories: storiesList,
-          defects: defectsList,
-          error: syncResult.error
-        },
-        fieldMappings,
-        warnings: syncResult.error ? [syncResult.error] : []
-      };
-
-      const updatedHistory = adoService.saveDiagnosticRecord(diagRecord);
+      // Update diagnostic history
+      const updatedHistory = adoService.getStoredDiagnostics();
       setDiagnosticHistory(updatedHistory);
+      setLastSyncResult(syncResult);
 
-      if (target === 'all' || target === 'external') {
-        if (externalOrg && externalProject) {
-          newLogs.push(
-            `[EXTERNAL] Querying external instance on ${externalOrg}/${externalProject}...`,
-            `[EXTERNAL] Sync cycle processed for external endpoints.`
-          );
-        }
+      if (onSyncData) {
+        onSyncData({
+          stories: storiesList,
+          testCases: testCasesList,
+          defects: defectsList,
+          tasks: tasksList,
+          teamMembers: syncResult.teamMembers || []
+        });
+        newLogs.push(`[DATA INGEST] Successfully ingested and synchronized records into local state.`);
       }
 
-      newLogs.push(`[${now}] Synchronization completed successfully. All artifacts updated in local memory.`);
+      setSyncLogs(prev => [...prev, ...newLogs, `[COMPLETED] Azure DevOps synchronization finished (${syncResult.durationMs || 0}ms).`]);
     } catch (err: any) {
-      newLogs.push(`[ERROR] Sync failed: ${err.message || err}`);
+      console.error('Sync failed:', err);
+      setSyncLogs(prev => [...prev, `[ERROR] Sync failed: ${err.message || err}`]);
     } finally {
-      setSyncLogs(prev => [...prev, ...newLogs]);
       setIsSyncing(false);
-      setSyncTarget(null);
-      if (onTriggerSync) onTriggerSync(target);
     }
   };
 
-  const handleSaveAll = (e: React.FormEvent) => {
-    e.preventDefault();
-
+  const handleSave = () => {
+    const target = parseAdoTarget(org, project);
     const updatedConfig: DualAdoConfig = {
       internal: {
         id: 'internal',
-        name: internalName.trim(),
+        name: `${target.cleanProject} ADO`,
         role: 'internal',
-        organization: internalOrg.trim(),
-        project: internalProject.trim(),
-        pat: internalPat.trim(),
-        areaPath: internalArea.trim(),
-        iterationPath: internalIteration.trim(),
+        organization: target.cleanOrg,
+        project: target.cleanProject,
+        pat: pat.trim(),
+        areaPath: areaPath.trim(),
+        iterationPath: iterationPath.trim(),
         connected: true,
         lastSyncAt: new Date().toISOString(),
         features: {
@@ -657,40 +391,32 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
           userStories: true,
           internalDefects: true,
           testPlansAndReports: true,
-          customerDefects: false,
-          opsTickets: false
+          customerDefects: true,
+          opsTickets: true
         },
         testPlanSettings: {
-          testPlanName: 'Sprint 24 QA Plan',
-          testSuite: internalTestSuite.trim(),
-          automatedRunsEnabled: internalTestRunsEnabled,
-          lastReportUrl: `https://dev.azure.com/${internalOrg.trim()}/${internalProject.trim()}/_testManagement/runs`,
-          passedTests: 56,
-          failedTests: 1,
-          totalTests: 57
+          testSuite: testSuite.trim(),
+          automatedRunsEnabled
         }
       },
       external: {
         id: 'external',
-        name: externalName.trim(),
+        name: 'Secondary (Disabled)',
         role: 'external',
-        organization: externalOrg.trim(),
-        project: externalProject.trim(),
-        pat: externalPat.trim(),
-        areaPath: externalArea.trim(),
-        iterationPath: externalIteration.trim(),
-        connected: true,
-        lastSyncAt: new Date().toISOString(),
+        organization: '',
+        project: '',
+        pat: '',
+        connected: false,
         features: {
           devActivities: false,
           userStories: false,
           internalDefects: false,
           testPlansAndReports: false,
-          customerDefects: true,
-          opsTickets: true
+          customerDefects: false,
+          opsTickets: false
         }
       },
-      syncMode: 'auto',
+      syncMode: 'manual',
       lastGlobalSyncAt: new Date().toISOString()
     };
 
@@ -698,659 +424,482 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
     onClose();
   };
 
-  const internalStories = userStories.filter(s => s.sourceInstance !== 'external');
-  const internalDefects = defects.filter(d => d.sourceInstance !== 'external');
-  const externalDefects = defects.filter(d => d.sourceInstance === 'external');
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div 
-        className="bg-white border border-[var(--border)] rounded-2xl max-w-3xl w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[88vh]"
-        style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)' }}
-      >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
+        
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] bg-[var(--surface)]">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-[var(--primary-light)] text-[var(--primary)] flex items-center justify-center font-bold">
+            <div className="w-10 h-10 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center font-bold shadow-xs">
               <FolderGit2 size={20} />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-[var(--text-primary)]">Dual Azure DevOps Sync Engine</h2>
-                <span className="px-2 py-0.5 rounded-full text-[10.5px] font-bold bg-[var(--internal-ado-bg)] text-[var(--internal-ado)]">
-                  2 ADO Instances
+                <h2 className="text-base font-bold text-[var(--text-primary)]">
+                  Azure DevOps Synchronization Hub
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-mono">
+                  REST API 7.0
                 </span>
               </div>
               <p className="text-xs text-[var(--text-secondary)]">
-                Separate synchronization for Internal Dev pipeline vs External Customer & OPS Tickets
+                Sync Stories, Test Cases, Defects, Tasks, and execute custom WIQL queries.
               </p>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => setShowDiagnosticsOverlay(true)}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 hover:bg-purple-100 flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs"
-              title="Inspect Raw JSON payloads for the last 5 syncs"
+              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-[var(--surface-hover)] hover:bg-[var(--border)] text-[var(--text-primary)] border border-[var(--border)] flex items-center gap-1.5 transition-colors cursor-pointer"
             >
-              <Code2 size={14} className="text-purple-600 dark:text-purple-400" />
-              <span>Sync Diagnostics</span>
-              <span className="w-5 h-5 rounded-full bg-purple-600 text-white text-[10px] flex items-center justify-center font-bold">
-                {diagnosticHistory.length}
-              </span>
+              <Code2 size={13} className="text-[var(--primary)]" />
+              <span>Payloads & Diagnostics</span>
             </button>
 
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] cursor-pointer"
+              className="p-2 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+              title="Close"
             >
               <X size={18} />
             </button>
           </div>
         </div>
 
-        {/* Tab Selector */}
+        {/* Navigation Tabs */}
         <div className="flex items-center gap-2 px-6 pt-3 border-b border-[var(--border)] bg-[var(--bg-subtle)]">
           <button
             type="button"
-            onClick={() => setActiveTab('internal')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all ${
-              activeTab === 'internal'
+            onClick={() => setActiveTab('connection')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer ${
+              activeTab === 'connection'
                 ? 'border-[var(--primary)] text-[var(--primary)] bg-[var(--surface)] rounded-t-lg'
                 : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
-            <Building2 size={15} />
-            <span>1. Internal ADO (Dev, Stories, QA & Tests)</span>
+            <Sliders size={15} />
+            <span>1. Connection & Scope Settings</span>
           </button>
 
           <button
             type="button"
-            onClick={() => setActiveTab('external')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all ${
-              activeTab === 'external'
-                ? 'border-[var(--external-ado)] text-[var(--external-ado)] bg-[var(--surface)] rounded-t-lg'
+            onClick={() => setActiveTab('wiql')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer ${
+              activeTab === 'wiql'
+                ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400 bg-[var(--surface)] rounded-t-lg'
                 : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
-            <Globe2 size={15} />
-            <span>2. External ADO (Customer & OPS Tickets)</span>
+            <Code2 size={15} />
+            <span>2. Custom WIQL Query Runner</span>
+            <span className="px-1.5 py-0.5 rounded text-[9.5px] bg-indigo-100 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300 font-extrabold uppercase">
+              Editable
+            </span>
           </button>
 
           <button
             type="button"
-            onClick={() => setActiveTab('dual_sync')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all ml-auto ${
-              activeTab === 'dual_sync'
-                ? 'border-[var(--secondary-accent)] text-[var(--secondary-accent)] bg-[var(--surface)] rounded-t-lg'
+            onClick={() => setActiveTab('diagnostics')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer ${
+              activeTab === 'diagnostics'
+                ? 'border-[var(--primary)] text-[var(--primary)] bg-[var(--surface)] rounded-t-lg'
                 : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
-            <Zap size={15} />
-            <span>Dual Sync Hub</span>
+            <Terminal size={15} />
+            <span>3. Sync Console & Logs</span>
           </button>
         </div>
 
-        {/* Body Content */}
-        <form onSubmit={handleSaveAll} className="flex-1 overflow-y-auto p-6 flex flex-col gap-5">
-          {/* TAB 1: INTERNAL ADO */}
-          {activeTab === 'internal' && (
-            <div className="flex flex-col gap-4 animate-in fade-in duration-100">
-              <div className="p-3.5 rounded-xl bg-[var(--internal-ado-bg)] border border-[var(--primary)]/20 flex items-start gap-3">
-                <Building2 size={18} className="text-[var(--internal-ado)] flex-shrink-0 mt-0.5" />
-                <div className="text-xs">
-                  <span className="font-bold text-[var(--internal-ado)] block mb-0.5">
-                    Instance Purpose: Internal Engineering Delivery & Quality Assurance
-                  </span>
-                  <p className="text-[var(--text-secondary)]">
-                    Synchronizes engineering Dev Tasks, Product User Stories, Internal QA Defects, Sprint Iterations, and fetches Test Plan automated runs & test reports.
-                  </p>
-                </div>
-              </div>
+        {/* Content Body */}
+        <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-6">
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Instance Display Label</label>
-                  <input
-                    type="text"
-                    value={internalName}
-                    onChange={(e) => setInternalName(e.target.value)}
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Organization Name / URL</label>
-                  <input
-                    type="text"
-                    required
-                    value={internalOrg}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setInternalOrg(val);
-                    }}
-                    onBlur={(e) => {
-                      const val = e.target.value.trim();
-                      if (val.includes('dev.azure.com') || val.includes('http') || val.includes('/')) {
-                        const parts = val.replace(/^https?:\/\//, '').replace(/^dev\.azure\.com\//, '').split('/').filter(Boolean);
-                        if (parts[0]) setInternalOrg(parts[0]);
-                        if (parts[1] && (!internalProject || internalProject === '')) setInternalProject(parts[1]);
-                      }
-                    }}
-                    placeholder="e.g. simetricwdh"
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Project Name</label>
-                  <input
-                    type="text"
-                    required
-                    value={internalProject}
-                    onChange={(e) => setInternalProject(e.target.value)}
-                    onBlur={(e) => {
-                      const val = e.target.value.trim();
-                      if (val.includes('/')) {
-                        const parts = val.split('/').filter(Boolean);
-                        setInternalProject(parts[parts.length - 1]);
-                      }
-                    }}
-                    placeholder="e.g. ACM"
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Personal Access Token (PAT)</label>
-                  <div className="relative">
-                    <input
-                      type="password"
-                      value={internalPat}
-                      onChange={(e) => setInternalPat(e.target.value)}
-                      className="w-full text-xs font-mono px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                    />
-                    <Key size={14} className="absolute right-3 top-2.5 text-[var(--text-muted)]" />
+          {/* TAB 1: CONNECTION & SETTINGS */}
+          {activeTab === 'connection' && (
+            <div className="flex flex-col gap-5 animate-in fade-in duration-150">
+              
+              {/* Credentials & Project */}
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] flex flex-col gap-4">
+                <div className="flex items-center justify-between pb-2 border-b border-[var(--border)]">
+                  <div className="flex items-center gap-2">
+                    <Building2 size={16} className="text-[var(--primary)]" />
+                    <span className="text-xs font-bold text-[var(--text-primary)]">
+                      Azure DevOps Credentials & Project
+                    </span>
                   </div>
+                  <span className="text-[11px] text-[var(--text-secondary)] font-mono">
+                    {currentTarget.fullUrl}
+                  </span>
                 </div>
-              </div>
 
-              <div className="flex flex-col gap-3">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div>
-                    <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
-                      Area Path Filter (Internal ADO)
+                    <label className="block text-[11px] font-bold text-[var(--text-secondary)] mb-1">
+                      Organization Name or URL *
                     </label>
                     <input
                       type="text"
-                      value={internalArea}
-                      onChange={(e) => setInternalArea(e.target.value)}
-                      placeholder="e.g. CareFlow-Core\EHR-Connect"
-                      className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+                      placeholder="e.g. simetricwdh or https://dev.azure.com/simetricwdh"
+                      value={org}
+                      onChange={(e) => handleOrgChange(e.target.value)}
+                      className="w-full text-xs px-3 py-2 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)] font-medium"
                     />
+                    <div className="text-[10px] text-[var(--text-muted)] mt-1 truncate">
+                      Pasting full links/deep-links auto-extracts org & project.
+                    </div>
                   </div>
+
                   <div>
-                    <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
-                      Active Sprint Iteration Path
+                    <label className="block text-[11px] font-bold text-[var(--text-secondary)] mb-1">
+                      Project Name *
                     </label>
                     <input
                       type="text"
-                      value={internalIteration}
-                      onChange={(e) => setInternalIteration(e.target.value)}
-                      placeholder="e.g. CareFlow-Core\Sprint 24"
-                      className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+                      placeholder="e.g. ACM"
+                      value={project}
+                      onChange={(e) => handleProjectChange(e.target.value)}
+                      className="w-full text-xs px-3 py-2 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)] font-medium"
                     />
-                  </div>
-                </div>
-
-                {/* Quick Area Path selector chips */}
-                <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                  <span className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center gap-1">
-                    <Filter size={11} /> Suggested Areas:
-                  </span>
-                  {availableAreaPaths.map(area => (
-                    <button
-                      key={area}
-                      type="button"
-                      onClick={() => setInternalArea(area)}
-                      className={`text-[10.5px] font-medium px-2 py-0.5 rounded-md border transition-all cursor-pointer ${
-                        internalArea === area
-                          ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
-                          : 'bg-[var(--surface)] text-[var(--text-secondary)] border-[var(--border)] hover:border-[var(--primary)]/50'
-                      }`}
-                    >
-                      {area}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Returned Iteration Paths (Releases in Internal ADO) Box */}
-                <div className="mt-1 p-3.5 rounded-xl border border-[var(--border)] bg-[var(--surface-hover)] flex flex-col gap-2.5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <FolderGit2 size={15} className="text-[var(--primary)]" />
-                      <span className="text-xs font-bold text-[var(--text-primary)]">
-                        Iteration Paths Returned for Area Filter
-                      </span>
-                      <span className="px-2 py-0.5 text-[10px] font-extrabold rounded-full bg-[var(--primary-light)] text-[var(--primary)]">
-                        {returnedInternalIterations.length} {returnedInternalIterations.length === 1 ? 'Iteration / Release' : 'Iterations / Releases'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleFetchMetadata('internal')}
-                        disabled={isFetchingMetadata}
-                        className="px-2 py-1 text-[11px] font-bold rounded-md bg-[var(--surface)] text-[var(--primary)] border border-[var(--border)] hover:border-[var(--primary)] flex items-center gap-1 cursor-pointer transition-all disabled:opacity-50"
-                      >
-                        <RefreshCw size={11} className={isFetchingMetadata ? 'animate-spin' : ''} />
-                        <span>Query ADO API</span>
-                      </button>
-                      <span className="text-[11px] text-[var(--text-secondary)] font-medium hidden sm:inline">
-                        Iteration Path = ADO Release Name
-                      </span>
+                    <div className="text-[10px] text-[var(--text-muted)] mt-1 truncate">
+                      Target: <span className="font-mono font-medium text-[var(--text-primary)]">{currentTarget.displayTarget}</span>
                     </div>
                   </div>
 
-                  {returnedInternalIterations.length === 0 ? (
-                    <div className="p-3 bg-[var(--surface)] rounded-lg text-xs text-[var(--text-muted)] text-center border border-dashed border-[var(--border)]">
-                      No iteration paths returned for <span className="font-mono font-bold">"{internalArea}"</span>. Try adjusting your Area Path filter or check ADO project area definitions.
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-bold text-[var(--text-secondary)]">
+                        Personal Access Token (PAT)
+                      </label>
+                      {serverConfig?.hasServerPat && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.2 rounded border border-emerald-200 dark:border-emerald-800">
+                          <CheckCircle2 size={10} />
+                          Server-Side PAT Configured
+                        </span>
+                      )}
                     </div>
-                  ) : (
-                    <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-1">
-                      {returnedInternalIterations.map((iter) => {
-                        const isSelected = internalIteration === iter.iterationPath;
-                        return (
-                          <div
-                            key={iter.iterationPath + iter.releaseId}
-                            className={`p-2.5 rounded-lg border text-xs flex items-center justify-between gap-3 transition-all ${
-                              isSelected
-                                ? 'bg-[var(--primary-light)]/40 border-[var(--primary)] shadow-xs'
-                                : 'bg-[var(--surface)] border-[var(--border)] hover:border-[var(--primary)]/40'
-                            }`}
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-bold text-[var(--text-primary)] truncate">
-                                  {iter.releaseName}
-                                </span>
-                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[var(--surface-hover)] text-[var(--text-primary)] font-mono border border-[var(--border)]">
-                                  {iter.releaseNumber}
-                                </span>
-                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-secondary)]">
-                                  {iter.status}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-3 text-[11px] text-[var(--text-secondary)] mt-1 font-mono">
-                                <span>Path: {iter.iterationPath}</span>
-                                <span>•</span>
-                                <span className="font-sans font-medium">{iter.userStoryCount} Stories</span>
-                                <span>•</span>
-                                <span className="font-sans font-medium">{iter.defectCount} Defects</span>
-                              </div>
-                            </div>
+                    <div className="relative">
+                      <Key size={13} className="absolute left-3 top-2.5 text-[var(--text-muted)]" />
+                      <input
+                        type="password"
+                        placeholder={serverConfig?.hasServerPat ? "Using server-side PAT (or override here)" : "••••••••••••••••"}
+                        value={pat}
+                        onChange={(e) => setPat(e.target.value)}
+                        className="w-full text-xs pl-8.5 pr-3 py-2 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)] font-medium"
+                      />
+                    </div>
+                  </div>
+                </div>
 
+                {/* Connection Test Action */}
+                <div className="flex items-center justify-between pt-2 border-t border-[var(--border)] flex-wrap gap-2">
+                  <div className="text-[11px] text-[var(--text-secondary)]">
+                    Requires <code className="text-[var(--primary)] font-mono">vso.work</code> (Work Items Read) permission.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleTestConnection}
+                    className="px-4 py-1.5 rounded-xl text-xs font-bold text-[var(--primary)] bg-[var(--primary-light)] hover:bg-[var(--primary)] hover:text-white transition-all cursor-pointer flex items-center gap-1.5"
+                  >
+                    <RefreshCw size={13} />
+                    <span>Verify Connection</span>
+                  </button>
+                </div>
+
+                {testResult && (
+                  <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+                    testResult.success 
+                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                      : 'bg-red-50 text-red-800 border border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800'
+                  }`}>
+                    {testResult.success ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                    <span>{testResult.message}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Scope Filters (Area Path & Iteration) */}
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] flex flex-col gap-4">
+                <div className="flex items-center justify-between pb-2 border-b border-[var(--border)]">
+                  <div className="flex items-center gap-2">
+                    <Filter size={16} className="text-[var(--primary)]" />
+                    <span className="text-xs font-bold text-[var(--text-primary)]">
+                      Scope Filters (Sprint Iteration & Area Path)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleFetchMetadata}
+                    disabled={isFetchingMetadata}
+                    className="text-[11px] font-bold text-[var(--primary)] hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw size={11} className={isFetchingMetadata ? 'animate-spin' : ''} />
+                    <span>{isFetchingMetadata ? 'Querying ADO...' : 'Refresh Discovered Paths'}</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Iteration / Sprint */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-bold text-[var(--text-secondary)]">
+                        Sprint / Iteration Path
+                      </label>
+                      <span className="text-[10px] text-[var(--text-muted)]">e.g. ACM\D2 R 2026.03</span>
+                    </div>
+                    <input
+                      type="text"
+                      list="discovered-iterations"
+                      placeholder="Leave empty to query all iterations"
+                      value={iterationPath}
+                      onChange={(e) => setIterationPath(e.target.value)}
+                      className="w-full text-xs px-3 py-2 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)] font-medium"
+                    />
+                    <datalist id="discovered-iterations">
+                      {returnedIterations.map((iter) => (
+                        <option key={iter.iterationPath} value={iter.iterationPath}>
+                          {iter.displayName}
+                        </option>
+                      ))}
+                    </datalist>
+
+                    {/* Discovered Iteration Quick Selectors */}
+                    {discoveredIterations.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+                        <span className="text-[10px] text-[var(--text-muted)] font-medium">Discovered:</span>
+                        {discoveredIterations.slice(0, 4).map((iter) => {
+                          const isSelected = iterationPath === iter.path;
+                          const isCurrent = iter.isCurrent || iter.timeFrame === 'current';
+                          return (
                             <button
+                              key={iter.id || iter.path}
                               type="button"
-                              onClick={() => setInternalIteration(iter.iterationPath)}
-                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer flex-shrink-0 ${
-                                isSelected
-                                  ? 'bg-[var(--primary)] text-white'
-                                  : 'bg-[var(--surface-hover)] text-[var(--text-primary)] hover:bg-[var(--primary-light)] hover:text-[var(--primary)]'
+                              onClick={() => setIterationPath(iter.path)}
+                              className={`text-[10px] px-2 py-0.5 rounded-md font-medium transition-all cursor-pointer flex items-center gap-1 ${
+                                isSelected 
+                                  ? 'bg-[var(--primary)] text-white' 
+                                  : isCurrent
+                                    ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700'
+                                    : 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
                               }`}
                             >
-                              {isSelected ? (
-                                <>
-                                  <CheckCircle2 size={12} />
-                                  <span>Active Iteration</span>
-                                </>
-                              ) : (
-                                <span>Set Active</span>
-                              )}
+                              {isCurrent && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />}
+                              <span>{iter.name}</span>
                             </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Quick-add release helper when user configures a new iteration */}
-                  {onAddRelease && internalIteration && !releases.some(r => r.iterationPath === internalIteration || r.name.toLowerCase() === (internalName || '').toLowerCase().trim()) && (
-                    <div className="mt-1 p-3 bg-[var(--primary-light)]/40 border border-[var(--primary)]/30 rounded-xl flex items-center justify-between gap-3 text-xs">
-                      <div className="min-w-0 flex-1">
-                        <span className="font-bold text-[var(--text-primary)] block">
-                          Register "{internalName || internalIteration}" as a Release in Northstar?
-                        </span>
-                        <span className="text-[11px] text-[var(--text-secondary)]">
-                          Adds this iteration to your tracked Releases so it appears in the top header dropdown and board filters.
-                        </span>
+                          );
+                        })}
                       </div>
-                      <button
-                        type="button"
-                        onClick={handleQuickCreateRelease}
-                        className="px-3 py-1.5 bg-[var(--primary)] text-white text-xs font-bold rounded-lg hover:bg-[var(--primary-hover)] transition-all cursor-pointer flex items-center gap-1.5 flex-shrink-0 shadow-xs"
-                      >
-                        <Plus size={13} />
-                        <span>+ Add Release</span>
-                      </button>
-                    </div>
-                  )}
+                    )}
 
-                  {createdReleaseName && (
-                    <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 rounded-lg text-xs flex items-center gap-2 animate-in fade-in">
-                      <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
-                      <span>Release <strong>"{createdReleaseName}"</strong> was successfully added! It is now selectable in the top release dropdown.</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Test Plan & Test Report Settings */}
-              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--surface-hover)] flex flex-col gap-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <FileCheck2 size={16} className="text-[var(--primary)]" />
-                    <span className="text-xs font-bold text-[var(--text-primary)]">Test Plan & Automated Test Report Ingestion</span>
+                    {iterationPath && (
+                      <div className="mt-2 flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={handleQuickCreateRelease}
+                          className="text-[11px] font-bold text-[var(--primary)] hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <Plus size={12} />
+                          <span>Auto-create Release for "{iterationPath}"</span>
+                        </button>
+                        {createdReleaseName && (
+                          <span className="text-[10.5px] text-emerald-600 font-bold flex items-center gap-1">
+                            <Check size={12} /> Created!
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <label className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] font-medium cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={internalTestRunsEnabled}
-                      onChange={(e) => setInternalTestRunsEnabled(e.target.checked)}
-                      className="rounded"
-                    />
-                    <span>Fetch Test Runs</span>
-                  </label>
-                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {/* Area Path */}
                   <div>
-                    <label className="block text-[11px] font-bold text-[var(--text-secondary)] mb-1">Target Test Suite Name</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-bold text-[var(--text-secondary)]">
+                        Area Path Filter
+                      </label>
+                      <span className="text-[10px] text-[var(--text-muted)]">e.g. ACM\QA</span>
+                    </div>
                     <input
                       type="text"
-                      value={internalTestSuite}
-                      onChange={(e) => setInternalTestSuite(e.target.value)}
-                      placeholder="e.g. Telehealth & Clinical Pipeline"
-                      className="w-full text-xs px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg outline-none"
+                      list="discovered-areas"
+                      placeholder="Leave empty to query entire project root"
+                      value={areaPath}
+                      onChange={(e) => setAreaPath(e.target.value)}
+                      className="w-full text-xs px-3 py-2 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)] font-medium"
                     />
-                  </div>
-                  <div className="flex items-end">
-                    <button
-                      type="button"
-                      onClick={() => handleTestConnection('internal')}
-                      className="w-full px-3 py-1.5 rounded-lg text-xs font-bold text-[var(--primary)] bg-[var(--primary-light)] hover:bg-[var(--primary)] hover:text-white transition-colors"
-                    >
-                      Verify Internal ADO Connection
-                    </button>
+                    <datalist id="discovered-areas">
+                      {availableAreaPaths.map((area) => (
+                        <option key={area} value={area} />
+                      ))}
+                    </datalist>
+
+                    {/* Discovered Area Path Quick Selectors */}
+                    {discoveredAreas.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+                        <span className="text-[10px] text-[var(--text-muted)] font-medium">Discovered:</span>
+                        {discoveredAreas.slice(0, 3).map((area) => {
+                          const isSelected = areaPath === area.path;
+                          return (
+                            <button
+                              key={area.id || area.path}
+                              type="button"
+                              onClick={() => setAreaPath(area.path)}
+                              className={`text-[10px] px-2 py-0.5 rounded-md font-medium transition-all cursor-pointer ${
+                                isSelected 
+                                  ? 'bg-[var(--primary)] text-white' 
+                                  : 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
+                              }`}
+                            >
+                              {area.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
-            </div>
-          )}
 
-          {/* TAB 2: EXTERNAL ADO */}
-          {activeTab === 'external' && (
-            <div className="flex flex-col gap-4 animate-in fade-in duration-100">
-              <div className="p-3.5 rounded-xl bg-[var(--external-ado-bg)] border border-[var(--external-ado)]/20 flex items-start gap-3">
-                <Globe2 size={18} className="text-[var(--external-ado)] flex-shrink-0 mt-0.5" />
-                <div className="text-xs">
-                  <span className="font-bold text-[var(--external-ado)] block mb-0.5">
-                    Instance Purpose: External Customer Escalations & Production OPS Tickets
+              {/* Sync Actions Bar */}
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--surface-hover)] flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <span className="text-xs font-bold text-[var(--text-primary)] block">Ready to Synchronize</span>
+                  <span className="text-[11px] text-[var(--text-secondary)]">
+                    Fetches stories, QA defects, test cases, and tasks matching your scope.
                   </span>
-                  <p className="text-[var(--text-secondary)]">
-                    Synchronizes customer-reported defects (from hospital systems and clinical networks), live OPS support incidents, customer account SLAs, and production triage queues.
-                  </p>
                 </div>
-              </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Instance Display Label</label>
-                  <input
-                    type="text"
-                    value={externalName}
-                    onChange={(e) => setExternalName(e.target.value)}
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">External Org Name / URL</label>
-                  <input
-                    type="text"
-                    required
-                    value={externalOrg}
-                    onChange={(e) => setExternalOrg(e.target.value)}
-                    placeholder="e.g. healthtech-customer-ops"
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                  />
-                </div>
-              </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('wiql')}
+                    className="px-3.5 py-2 rounded-xl text-xs font-bold bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)] hover:border-[var(--primary)] transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <Code2 size={14} className="text-indigo-500" />
+                    <span>Open Custom WIQL Console</span>
+                  </button>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Project Name</label>
-                  <input
-                    type="text"
-                    required
-                    value={externalProject}
-                    onChange={(e) => setExternalProject(e.target.value)}
-                    placeholder="e.g. CareFlow-Customer-Support"
-                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                  />
+                  <button
+                    type="button"
+                    disabled={isSyncing}
+                    onClick={() => handleExecuteLiveSync()}
+                    className="px-5 py-2 rounded-xl text-xs font-bold bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] transition-all flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                  >
+                    <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />
+                    <span>{isSyncing ? 'Synchronizing ADO...' : '🚀 Synchronize Live ADO'}</span>
+                  </button>
                 </div>
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Personal Access Token (PAT)</label>
-                  <div className="relative">
-                    <input
-                      type="password"
-                      value={externalPat}
-                      onChange={(e) => setExternalPat(e.target.value)}
-                      className="w-full text-xs font-mono px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                    />
-                    <Key size={14} className="absolute right-3 top-2.5 text-[var(--text-muted)]" />
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Customer Escalation Area Path</label>
-                  <input
-                    type="text"
-                    value={externalArea}
-                    onChange={(e) => setExternalArea(e.target.value)}
-                    placeholder="e.g. CareFlow-Ops\Customer-Escalations"
-                    className="w-full text-xs font-medium px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">OPS Iteration / Support Queue</label>
-                  <input
-                    type="text"
-                    value={externalIteration}
-                    onChange={(e) => setExternalIteration(e.target.value)}
-                    placeholder="e.g. CareFlow-Ops\Active-Incidents"
-                    className="w-full text-xs font-medium px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--surface-hover)] flex items-center justify-between">
-                <div className="text-xs">
-                  <span className="font-bold text-[var(--text-primary)] block">Customer Defect & OPS Ticket Ingestion</span>
-                  <span className="text-[var(--text-secondary)]">Captures hospital client name, SLA timer, and OPS incident refs</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleTestConnection('external')}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold text-[var(--external-ado)] bg-[var(--external-ado-bg)] hover:bg-[var(--external-ado)] hover:text-white transition-colors"
-                >
-                  Verify External ADO Connection
-                </button>
               </div>
             </div>
           )}
 
-          {/* TAB 3: DUAL SYNC TERMINAL & COMMAND CENTER */}
-          {activeTab === 'dual_sync' && (
-            <div className="flex flex-col gap-4 animate-in fade-in duration-100">
-              {/* Dual Sync Action Buttons */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <button
-                  type="button"
-                  disabled={isSyncing}
-                  onClick={() => handleExecuteLiveSync('all')}
-                  className="p-3 rounded-xl bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] flex flex-col items-center justify-center gap-1.5 shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  <RefreshCw size={18} className={isSyncing && syncTarget === 'all' ? 'animate-spin' : ''} />
-                  <span className="text-xs font-bold">Sync Both ADO Instances</span>
-                  <span className="text-[10px] opacity-80 font-normal">Internal Dev + External OPS</span>
-                </button>
+          {/* TAB 2: EDITABLE WIQL RUNNER */}
+          {activeTab === 'wiql' && (
+            <WiqlEditorTab
+              org={currentTarget.cleanOrg}
+              project={currentTarget.cleanProject}
+              pat={pat}
+              areaPath={areaPath}
+              iterationPath={iterationPath}
+              onExecuteAndSync={async (customWiql) => {
+                await handleExecuteLiveSync(customWiql);
+              }}
+              isSyncing={isSyncing}
+            />
+          )}
 
-                <button
-                  type="button"
-                  disabled={isSyncing}
-                  onClick={() => handleExecuteLiveSync('internal')}
-                  className="p-3 rounded-xl bg-[var(--surface-hover)] border border-[var(--primary)] text-[var(--primary)] hover:bg-[var(--primary-light)] flex flex-col items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  <Building2 size={18} />
-                  <span className="text-xs font-bold">Sync Internal Dev ADO</span>
-                  <span className="text-[10px] text-[var(--text-secondary)] font-normal">Stories, Dev QA, Test Plans</span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={isSyncing}
-                  onClick={() => handleExecuteLiveSync('external')}
-                  className="p-3 rounded-xl bg-[var(--surface-hover)] border border-[var(--external-ado)] text-[var(--external-ado)] hover:bg-[var(--external-ado-bg)] flex flex-col items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  <Globe2 size={18} />
-                  <span className="text-xs font-bold">Sync External ADO</span>
-                  <span className="text-[10px] text-[var(--text-secondary)] font-normal">Customer Bugs, OPS Incidents</span>
-                </button>
-              </div>
-
-              {/* Sync Diagnostics CTA Card */}
-              <div className="p-3.5 rounded-xl border border-purple-200 dark:border-purple-900/60 bg-purple-50/50 dark:bg-purple-950/20 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-purple-100 dark:bg-purple-900/50 text-purple-600 dark:text-purple-300 flex items-center justify-center font-bold">
-                    <Code2 size={16} />
-                  </div>
-                  <div className="text-xs">
-                    <span className="font-bold text-[var(--text-primary)] block">Sync Diagnostic & Raw Payload Inspector</span>
-                    <span className="text-[var(--text-secondary)]">Logs raw JSON payloads for the last 5 syncs to verify missing or misaligned data</span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowDiagnosticsOverlay(true)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-purple-600 hover:bg-purple-700 text-white flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-                >
-                  <Code2 size={13} />
-                  <span>Open Inspector ({diagnosticHistory.length})</span>
-                </button>
-              </div>
-
-              {/* Live Status Cards */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                <div className="p-3 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
-                  <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase block">Internal Stories</span>
-                  <span className="text-lg font-bold text-[var(--internal-ado)]">{internalStories.length}</span>
-                </div>
-                <div className="p-3 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
-                  <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase block">Internal QA Bugs</span>
-                  <span className="text-lg font-bold text-[var(--internal-ado)]">{internalDefects.length}</span>
-                </div>
-                <div className="p-3 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
-                  <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase block">Customer / OPS Bugs</span>
-                  <span className="text-lg font-bold text-[var(--external-ado)]">{externalDefects.length}</span>
-                </div>
-                <div className="p-3 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
-                  <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase block">Automated Tests</span>
-                  <span className="text-lg font-bold text-[var(--low)]">57 Runs</span>
-                </div>
-              </div>
-
-              {/* Terminal Logs */}
-              <div className="rounded-xl bg-[#0B0F17] text-[#94A3B8] p-3 font-mono text-[11px] border border-[#1E293B] shadow-inner max-h-48 overflow-y-auto">
-                <div className="flex items-center justify-between text-[#64748B] pb-2 mb-2 border-b border-[#1E293B]">
-                  <span className="flex items-center gap-1.5 text-xs text-[#CBD5E1]">
-                    <Terminal size={13} />
-                    <span>Live Dual-ADO Synchronization Stream</span>
+          {/* TAB 3: SYNC CONSOLE & LOGS */}
+          {activeTab === 'diagnostics' && (
+            <div className="flex flex-col gap-4 animate-in fade-in duration-150">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Terminal size={16} className="text-[var(--primary)]" />
+                  <span className="text-xs font-bold text-[var(--text-primary)]">
+                    Azure DevOps Sync Terminal Output
                   </span>
-                  <span className="text-[10px] text-[#38BDF8]">LIVE CONNECTED</span>
                 </div>
-                <div className="flex flex-col gap-1 leading-relaxed">
-                  {syncLogs.map((log, index) => (
-                    <div 
-                      key={index}
-                      className={
-                        log.includes('[INTERNAL]') ? 'text-[#818CF8]' :
-                        log.includes('[EXTERNAL]') ? 'text-[#FBBF24]' :
-                        log.includes('completed') ? 'text-[#4ADE80] font-bold' : 'text-[#94A3B8]'
-                      }
-                    >
-                      {log}
-                    </div>
-                  ))}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setSyncLogs([`[${new Date().toLocaleTimeString()}] Log cleared.`])}
+                  className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                >
+                  Clear Logs
+                </button>
               </div>
+
+              <div className="p-3 bg-[#0B0F17] rounded-xl font-mono text-[11px] text-emerald-400 h-64 overflow-y-auto border border-[#1E293B] shadow-inner">
+                {syncLogs.map((log, index) => (
+                  <div key={index} className="py-0.5 leading-relaxed whitespace-pre-wrap">
+                    {log}
+                  </div>
+                ))}
+              </div>
+
+              {lastSyncResult && (
+                <div className="p-3.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] flex items-center justify-between flex-wrap gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={16} className="text-emerald-500" />
+                    <span className="font-bold text-[var(--text-primary)]">Last Sync Summary</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11.5px] text-[var(--text-secondary)] font-mono">
+                    <span>Stories: <strong>{lastSyncResult.stories?.length || 0}</strong></span>
+                    <span>Test Cases: <strong>{lastSyncResult.testCases?.length || 0}</strong></span>
+                    <span>Defects: <strong>{lastSyncResult.defects?.length || 0}</strong></span>
+                    <span>Tasks: <strong>{lastSyncResult.tasks?.length || 0}</strong></span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Test connection alert message */}
-          {testResult && (
-            <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 animate-in fade-in ${
-              testResult.success 
-                ? 'bg-[var(--low-bg)] text-[var(--low)] border border-[var(--low-border)]' 
-                : 'bg-[var(--critical-bg)] text-[var(--critical)] border border-[var(--critical-border)]'
-            }`}>
-              {testResult.success ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-              <span>{testResult.message}</span>
-            </div>
-          )}
+        </div>
 
-          {/* Footer Actions */}
-          <div className="flex items-center justify-between pt-3 border-t border-[var(--border)] mt-auto">
-            <span className="text-[11px] text-[var(--text-muted)]">
-              Both ADO instances are stored securely in encrypted application memory.
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] shadow-xs"
-              >
-                <Save size={14} />
-                <span>Save Dual ADO Settings</span>
-              </button>
-            </div>
+        {/* Modal Footer */}
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[var(--border)] bg-[var(--surface)]">
+          <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] font-medium">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+            <span>Target: <strong className="font-mono text-[var(--text-primary)]">{currentTarget.fullUrl}</strong></span>
           </div>
-        </form>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl text-xs font-bold text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="px-4 py-2 rounded-xl text-xs font-bold bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              <Save size={14} />
+              <span>Save Configuration</span>
+            </button>
+          </div>
+        </div>
+
       </div>
 
-      {/* Sync Diagnostic Overlay */}
-      <AdoSyncDiagnosticOverlay
-        isOpen={showDiagnosticsOverlay}
-        onClose={() => setShowDiagnosticsOverlay(false)}
-        diagnosticHistory={diagnosticHistory}
-        onClearHistory={() => {
-          adoService.clearDiagnostics();
-          setDiagnosticHistory([]);
-        }}
-        onTriggerSync={handleExecuteLiveSync}
-        isSyncing={isSyncing}
-      />
+      {/* Diagnostics & Payload Overlay */}
+      {showDiagnosticsOverlay && (
+        <AdoSyncDiagnosticOverlay
+          isOpen={showDiagnosticsOverlay}
+          onClose={() => setShowDiagnosticsOverlay(false)}
+          diagnosticHistory={diagnosticHistory}
+          onClearHistory={() => {
+            adoService.clearDiagnostics();
+            setDiagnosticHistory([]);
+          }}
+          onTriggerSync={() => handleExecuteLiveSync()}
+          isSyncing={isSyncing}
+        />
+      )}
     </div>
   );
 };
-

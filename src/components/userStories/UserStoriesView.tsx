@@ -28,9 +28,14 @@ import {
   Rocket,
   X
 } from 'lucide-react';
+import { getWorkItemAssignee, matchesAssigneeFilter } from '../../utils/assigneeUtils';
 import { generateId, toDateStr } from '../../utils/date';
-import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber } from '../../utils/adoPaths';
+import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber, matchesReleaseOrIteration, formatReleaseDisplayName } from '../../utils/adoPaths';
 import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
+import { FilterBar, FilterDropdownConfig } from '../common/FilterBar';
+import { useWorkItemFilters } from '../../utils/useWorkItemFilters';
+import { isTestCaseItem, filterPureUserStories } from '../../utils/itemClassification';
+import { HighlightText } from '../common/HighlightText';
 
 interface UserStoriesViewProps {
   userStories: UserStory[];
@@ -40,6 +45,7 @@ interface UserStoriesViewProps {
   tasks: Task[];
   defects: Defect[];
   selectedReleaseId: string | null;
+  onSelectRelease?: (releaseId: string | null) => void;
   onAddStory: (story: UserStory) => void;
   onUpdateStory: (story: UserStory) => void;
   onDeleteStory: (storyId: string) => void;
@@ -64,45 +70,52 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
   tasks,
   defects,
   selectedReleaseId,
+  onSelectRelease,
   onAddStory,
   onUpdateStory,
   onDeleteStory
 }) => {
-  const [filterAreaPath, setFilterAreaPath] = useState<string>('');
-  const [filterRelease, setFilterRelease] = useState<string>(selectedReleaseId || '');
-  const [filterAssignee, setFilterAssignee] = useState<string>('');
-  const [filterStatus, setFilterStatus] = useState<string>('');
-  const [search, setSearch] = useState<string>('');
+  // Pure genuine User Stories only — strictly filter out any Test Cases, Test Plans, or Test Suites
+  const pureStories = useMemo(() => {
+    return filterPureUserStories(userStories);
+  }, [userStories]);
+
+  const {
+    search,
+    setSearch,
+    filterRelease,
+    handleReleaseChange,
+    filterAssignee,
+    setFilterAssignee,
+    filterStatus,
+    setFilterStatus,
+    activeFiltersCount,
+    handleClearFilters
+  } = useWorkItemFilters({
+    selectedReleaseId,
+    onSelectRelease
+  });
+
   const [modalOpen, setModalOpen] = useState(false);
   const [editingStory, setEditingStory] = useState<UserStory | null>(null);
   const [expandedCriteria, setExpandedCriteria] = useState<Set<string>>(new Set());
-
-  // Discover all distinct Area Paths in the project
-  const availableAreaPaths = getAllAreaPaths(releases, userStories, defects, tasks);
 
   // Form state for new / edit story
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<UserStoryStatus>('To Do');
   const [storyPoints, setStoryPoints] = useState<number>(5);
-  const [areaPath, setAreaPath] = useState<string>(filterAreaPath || availableAreaPaths[0] || '');
+  const [areaPath, setAreaPath] = useState<string>('ACM');
   const [releaseId, setReleaseId] = useState<string>(selectedReleaseId || '');
   const [assigneeId, setAssigneeId] = useState<string>('');
   const [iterationPath, setIterationPath] = useState<string>('');
   const [criteriaText, setCriteriaText] = useState<string>('');
 
-  // Keep filter release in sync if user changes global selected release
-  React.useEffect(() => {
-    if (selectedReleaseId !== undefined) {
-      setFilterRelease(selectedReleaseId || '');
-    }
-  }, [selectedReleaseId]);
+  // Core Requirement: Iterations for ACM
+  const returnedIterationPaths = getIterationPathsForArea('ACM', releases, pureStories, defects);
 
-  // Core Requirement: Based on the Area Path filter, all matching Iteration Paths are returned
-  const returnedIterationPaths = getIterationPathsForArea(filterAreaPath, releases, userStories, defects);
-
-  // Modal's returned Iteration Paths based on the modal's selected Area Path
-  const modalReturnedIterations = getIterationPathsForArea(areaPath, releases, userStories, defects);
+  // Modal's returned Iteration Paths for ACM
+  const modalReturnedIterations = getIterationPathsForArea('ACM', releases, pureStories, defects);
 
   const openAddModal = () => {
     setEditingStory(null);
@@ -110,9 +123,9 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     setDescription('');
     setStatus('To Do');
     setStoryPoints(5);
-    const defaultArea = filterAreaPath || availableAreaPaths[0] || '';
+    const defaultArea = 'ACM';
     setAreaPath(defaultArea);
-    const iters = getIterationPathsForArea(defaultArea, releases, userStories, defects);
+    const iters = getIterationPathsForArea(defaultArea, releases, pureStories, defects);
     const firstIter = iters[0];
     setReleaseId(firstIter ? firstIter.releaseId : (selectedReleaseId || releases[0]?.id || ''));
     setIterationPath(firstIter ? firstIter.iterationPath : (releases[0]?.iterationPath || ''));
@@ -127,7 +140,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     setDescription(story.description || '');
     setStatus(story.status);
     setStoryPoints(story.storyPoints || 0);
-    const storyArea = story.areaPath || releases.find(r => r.id === story.releaseId)?.areaPath || filterAreaPath || availableAreaPaths[0] || '';
+    const storyArea = story.areaPath || releases.find(r => r.id === story.releaseId)?.areaPath || 'ACM';
     setAreaPath(storyArea);
     setReleaseId(story.releaseId || '');
     setAssigneeId(story.assigneeId || '');
@@ -154,7 +167,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
         description: description.trim(),
         status,
         storyPoints: Number(storyPoints) || 0,
-        areaPath: areaPath.trim(),
+        areaPath: 'ACM',
         releaseId: releaseId || null,
         assigneeId: assigneeId || null,
         iterationPath: iterationPath.trim(),
@@ -168,7 +181,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
         description: description.trim(),
         status,
         storyPoints: Number(storyPoints) || 0,
-        areaPath: areaPath.trim(),
+        areaPath: 'ACM',
         releaseId: releaseId || null,
         assigneeId: assigneeId || null,
         iterationPath: iterationPath.trim(),
@@ -190,49 +203,17 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     });
   };
 
-  // Filter stories based on Area Path, Iteration Path, Assignee, Status, and exclude Test Cases
+  // Filter stories based on Iteration Path, Assignee, Status, and search query
   const filteredStories = useMemo(() => {
-    return userStories.filter(s => {
-      // Exclude Test Cases mapped mistakenly as User Story
-      const titleLower = (s.title || '').toLowerCase();
-      const isTestCase = titleLower.startsWith('[test case]') || 
-                         titleLower.startsWith('test case:') || 
-                         (s as any).workItemType === 'Test Case' ||
-                         (s as any).workItemType === 'Test Plan' ||
-                         (s as any).workItemType === 'Test Suite';
-      if (isTestCase) return false;
-
+    return pureStories.filter(s => {
       // Assignee Filter
       if (filterAssignee) {
-        if (filterAssignee === 'unassigned') {
-          if (s.assigneeId) return false;
-        } else if (s.assigneeId !== filterAssignee) {
-          return false;
-        }
-      }
-
-      // Area Path Filter
-      if (filterAreaPath) {
-        const sArea = (s.areaPath || releases.find(r => r.id === s.releaseId)?.areaPath || '').toLowerCase();
-        const targetArea = filterAreaPath.toLowerCase();
-        const matchesAreaDirectly = sArea === targetArea || sArea.includes(targetArea) || targetArea.includes(sArea);
-        const matchesReturnedIteration = returnedIterationPaths.some(
-          iter => iter.releaseId === s.releaseId || iter.iterationPath === s.iterationPath
-        );
-        if (!matchesAreaDirectly && !matchesReturnedIteration) return false;
+        if (!matchesAssigneeFilter(s, filterAssignee, team)) return false;
       }
 
       // Iteration / Release Filter
-      if (filterRelease) {
-        const matchesRelId = s.releaseId === filterRelease;
-        const matchesIterPath = s.iterationPath === filterRelease;
-        const matchedRelease = releases.find(r => r.id === filterRelease);
-        const matchesReleaseIteration = matchedRelease && (
-          matchedRelease.iterationPath === s.iterationPath ||
-          matchedRelease.name === s.iterationPath ||
-          (s.iterationPath && matchedRelease.name.includes(s.iterationPath))
-        );
-        if (!matchesRelId && !matchesIterPath && !matchesReleaseIteration) return false;
+      if (filterRelease && filterRelease !== 'all') {
+        if (!matchesReleaseOrIteration(s, filterRelease, releases)) return false;
       }
 
       // Status Filter
@@ -246,45 +227,32 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
         const matchAdo = s.adoId ? String(s.adoId).includes(q) : false;
         const matchArea = (s.areaPath || '').toLowerCase().includes(q);
         const matchIter = (s.iterationPath || '').toLowerCase().includes(q);
-        const memberName = s.assigneeId ? (team.find(t => t.id === s.assigneeId)?.name || '') : '';
-        const matchAssignee = memberName ? memberName.toLowerCase().includes(q) : false;
+        const resolved = getWorkItemAssignee(s, team);
+        const matchAssignee = resolved ? (resolved.name.toLowerCase().includes(q) || (resolved.email && resolved.email.toLowerCase().includes(q))) : false;
         if (!matchTitle && !matchDesc && !matchAdo && !matchArea && !matchIter && !matchAssignee) return false;
       }
 
       return true;
     });
-  }, [userStories, releases, returnedIterationPaths, filterAssignee, filterAreaPath, filterRelease, filterStatus, search]);
-
-  // Options for Searchable Area Path
-  const areaOptions: SelectOption[] = useMemo(() => {
-    return availableAreaPaths.map(area => {
-      const count = userStories.filter(s => (s.areaPath || '').toLowerCase() === area.toLowerCase()).length;
-      return {
-        value: area,
-        label: area,
-        badge: `${count} stories`,
-        icon: <FolderGit2 size={13} className="text-[var(--primary)]" />
-      };
-    });
-  }, [availableAreaPaths, userStories]);
+  }, [pureStories, releases, filterAssignee, filterRelease, filterStatus, search, team]);
 
   // Options for Searchable Iteration / Release
   const iterationOptions: SelectOption[] = useMemo(() => {
     return returnedIterationPaths.map(iter => {
-      const count = userStories.filter(s => s.releaseId === iter.releaseId || s.iterationPath === iter.iterationPath).length;
+      const count = pureStories.filter(s => s.releaseId === iter.releaseId || s.iterationPath === iter.iterationPath).length;
       return {
         value: iter.releaseId || iter.iterationPath,
-        label: `${iter.releaseName} (${iter.releaseNumber || 'v1.0.0'})`,
-        sublabel: iter.iterationPath,
+        label: formatReleaseDisplayName(iter.releaseName, iter.releaseNumber),
+        sublabel: iter.iterationPath !== iter.releaseName ? iter.iterationPath : undefined,
         badge: `${count} stories`,
         icon: <Rocket size={13} className="text-[var(--primary)]" />
       };
     });
-  }, [returnedIterationPaths, userStories]);
+  }, [returnedIterationPaths, pureStories]);
 
   // Options for Searchable Assignee Filter
   const assigneeOptions: SelectOption[] = useMemo(() => {
-    const unassignedCount = userStories.filter(s => !s.assigneeId).length;
+    const unassignedCount = pureStories.filter(s => !getWorkItemAssignee(s, team)).length;
     const list: SelectOption[] = [
       {
         value: 'unassigned',
@@ -295,7 +263,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     ];
 
     team.forEach(m => {
-      const count = userStories.filter(s => s.assigneeId === m.id).length;
+      const count = pureStories.filter(s => matchesAssigneeFilter(s, m.id, team)).length;
       list.push({
         value: m.id,
         label: m.name,
@@ -307,19 +275,19 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     });
 
     return list;
-  }, [team, userStories]);
+  }, [team, pureStories]);
 
   // Options for Status Filter
   const statusOptions: SelectOption[] = useMemo(() => {
     return STATUS_OPTIONS.map(st => {
-      const count = userStories.filter(s => s.status === st).length;
+      const count = pureStories.filter(s => s.status === st).length;
       return {
         value: st,
         label: st,
         badge: `${count}`
       };
     });
-  }, [userStories]);
+  }, [pureStories]);
 
   // Modal Assignee Options
   const modalAssigneeOptions: SelectOption[] = useMemo(() => {
@@ -348,8 +316,8 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
       { value: '', label: 'No Release' },
       ...source.map(iter => ({
         value: iter.releaseId,
-        label: `${iter.releaseName} (${iter.releaseNumber || 'v1.0.0'})`,
-        sublabel: iter.iterationPath
+        label: formatReleaseDisplayName(iter.releaseName, iter.releaseNumber),
+        sublabel: iter.iterationPath !== iter.releaseName ? iter.iterationPath : undefined
       }))
     ];
   }, [modalReturnedIterations, releases]);
@@ -358,15 +326,37 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
   const totalPoints = filteredStories.reduce((sum, s) => sum + (s.storyPoints || 0), 0);
   const passedStories = filteredStories.filter(s => s.status === 'QA Passed' || s.status === 'Done').length;
   const blockedStories = filteredStories.filter(s => s.status === 'Blocked').length;
-  const activeFiltersCount = (filterAreaPath ? 1 : 0) + (filterRelease ? 1 : 0) + (filterAssignee ? 1 : 0) + (filterStatus ? 1 : 0) + (search ? 1 : 0);
 
-  const handleClearFilters = () => {
-    setFilterAreaPath('');
-    setFilterRelease('');
-    setFilterAssignee('');
-    setFilterStatus('');
-    setSearch('');
-  };
+  const filterConfigs: FilterDropdownConfig[] = useMemo(() => [
+    {
+      id: 'assignee',
+      label: 'Assignee',
+      placeholder: 'All Assignees',
+      allOptionLabel: 'All Assignees',
+      icon: <Users size={14} />,
+      options: assigneeOptions,
+      value: filterAssignee,
+      onChange: setFilterAssignee,
+      minWidth: '170px'
+    },
+    {
+      id: 'status',
+      label: 'Status',
+      placeholder: 'All Statuses',
+      allOptionLabel: 'All Statuses',
+      options: statusOptions,
+      value: filterStatus,
+      onChange: setFilterStatus,
+      minWidth: '140px'
+    }
+  ], [
+    assigneeOptions,
+    filterAssignee,
+    setFilterAssignee,
+    statusOptions,
+    filterStatus,
+    setFilterStatus
+  ]);
 
   const getStatusBadgeClass = (st: UserStoryStatus) => {
     switch (st) {
@@ -417,124 +407,19 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
           </div>
         </div>
 
-        {/* Filter Controls Bar - Searchable Dropdowns with Latest UI */}
-        <div className="flex flex-wrap items-center gap-3 mt-4 pt-4 border-t border-[var(--border)]">
-          {/* Quick Search */}
-          <div className="flex-1 min-w-[200px] relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
-            <input
-              type="text"
-              placeholder="Search stories, Area Path, Iteration Path, or ADO #..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl pl-9 pr-8 py-2 text-xs text-[var(--text-primary)] outline-none focus:bg-[var(--surface)] focus:border-[var(--primary)] transition-all"
-            />
-            {search && (
-              <button 
-                onClick={() => setSearch('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] p-0.5 rounded cursor-pointer"
-              >
-                <X size={13} />
-              </button>
-            )}
-          </div>
-
-          {/* SEARCHABLE ASSIGNEE FILTER */}
-          <div className="min-w-[180px]">
-            <SearchableSelect
-              options={assigneeOptions}
-              value={filterAssignee}
-              onChange={setFilterAssignee}
-              placeholder="All Assignees"
-              label="Assignee"
-              icon={<Users size={14} />}
-            />
-          </div>
-
-          {/* SEARCHABLE AREA PATH FILTER */}
-          <div className="min-w-[180px]">
-            <SearchableSelect
-              options={areaOptions}
-              value={filterAreaPath}
-              onChange={(val) => {
-                setFilterAreaPath(val);
-                setFilterRelease(''); // reset iteration filter when area changes
-              }}
-              placeholder="All Area Paths"
-              label="Area Path"
-              icon={<FolderGit2 size={14} />}
-            />
-          </div>
-
-          {/* SEARCHABLE ITERATION PATH FILTER */}
-          <div className="min-w-[190px]">
-            <SearchableSelect
-              options={iterationOptions}
-              value={filterRelease}
-              onChange={setFilterRelease}
-              placeholder={filterAreaPath ? `Iterations in Area (${returnedIterationPaths.length})` : 'All Iteration Paths'}
-              label="Iteration"
-              icon={<Rocket size={14} />}
-            />
-          </div>
-
-          {/* SEARCHABLE STATUS FILTER */}
-          <div className="min-w-[150px]">
-            <SearchableSelect
-              options={statusOptions}
-              value={filterStatus}
-              onChange={setFilterStatus}
-              placeholder="All Statuses"
-              label="Status"
-            />
-          </div>
-
-          {activeFiltersCount > 0 && (
-            <button
-              onClick={handleClearFilters}
-              className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl transition-all cursor-pointer"
-              title="Reset all filters"
-            >
-              <X size={13} />
-              <span>Reset</span>
-            </button>
-          )}
+        {/* Filter Controls Bar - Standardized Reusable FilterBar */}
+        <div className="mt-4 pt-4 border-t border-[var(--border)]">
+          <FilterBar
+            search={{
+              value: search,
+              onChange: setSearch,
+              placeholder: 'Search stories, Area Path, Iteration Path, or ADO #...'
+            }}
+            filters={filterConfigs}
+            onReset={handleClearFilters}
+            activeFiltersCount={activeFiltersCount}
+          />
         </div>
-
-        {/* Informative Area Path returned Iterations bar when filter is active */}
-        {filterAreaPath && (
-          <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--text-secondary)]">
-            <span className="font-bold text-[var(--primary)] flex items-center gap-1">
-              <FolderGit2 size={13} />
-              Iterations returned for "{filterAreaPath}":
-            </span>
-            {returnedIterationPaths.length === 0 ? (
-              <span className="italic text-[var(--text-muted)]">No iterations found for this area</span>
-            ) : (
-              returnedIterationPaths.map(iter => (
-                <button
-                  key={iter.iterationPath + iter.releaseId}
-                  onClick={() => setFilterRelease(filterRelease === (iter.releaseId || iter.iterationPath) ? '' : (iter.releaseId || iter.iterationPath))}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer ${
-                    filterRelease === (iter.releaseId || iter.iterationPath)
-                      ? 'bg-[var(--primary)] text-white border-[var(--primary)] shadow-xs'
-                      : 'bg-[var(--surface-hover)] text-[var(--text-primary)] border-[var(--border)] hover:border-[var(--primary)]/50'
-                  }`}
-                >
-                  {iter.releaseName} <span className="font-mono text-[10px] opacity-80">[{iter.releaseNumber}]</span>
-                </button>
-              ))
-            )}
-            {filterRelease && (
-              <button
-                onClick={() => setFilterRelease('')}
-                className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] underline cursor-pointer ml-auto"
-              >
-                Clear Iteration Filter
-              </button>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Stories List */}
@@ -542,7 +427,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
         {filteredStories.length > 0 ? (
           filteredStories.map(story => {
             const release = releases.find(r => r.id === story.releaseId);
-            const assignee = team.find(m => m.id === story.assigneeId);
+            const assignee = getWorkItemAssignee(story, team);
             const isCriteriaExpanded = expandedCriteria.has(story.id);
             const isPassed = story.status === 'QA Passed' || story.status === 'Done';
             const isBlocked = story.status === 'Blocked';
@@ -612,12 +497,12 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                       </div>
 
                       <h3 className="text-sm font-bold text-[var(--text-primary)] leading-snug">
-                        {story.title}
+                        <HighlightText text={story.title} query={search} />
                       </h3>
 
                       {story.description && (
                         <p className="text-xs text-[var(--text-secondary)] mt-1.5 leading-relaxed">
-                          {story.description}
+                          <HighlightText text={story.description} query={search} />
                         </p>
                       )}
 
@@ -638,7 +523,9 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                               {story.acceptanceCriteria.map((c, i) => (
                                 <div key={i} className="flex items-start gap-2">
                                   <CheckCircle2 size={13} className="text-[var(--low)] mt-0.5 flex-shrink-0" />
-                                  <span>{c}</span>
+                                  <span className="flex-1">
+                                    <HighlightText text={c} query={search} />
+                                  </span>
                                 </div>
                               ))}
                             </div>
@@ -700,9 +587,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
             <BookOpen size={36} className="mx-auto text-[var(--text-muted)] mb-3 opacity-40" />
             <h3 className="text-sm font-bold text-[var(--text-primary)]">No user stories found</h3>
             <p className="text-xs text-[var(--text-secondary)] mt-1 max-w-sm mx-auto">
-              {filterAreaPath 
-                ? `No stories found under Area Path "${filterAreaPath}". Try switching Area or creating a story in this Area.`
-                : 'Get started by creating a new deliverable or sync stories from Internal Azure DevOps.'}
+              Get started by creating a new deliverable or sync stories from Internal Azure DevOps.
             </p>
             <button
               onClick={openAddModal}
@@ -749,46 +634,13 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
 
               {/* AREA PATH FIELD */}
               <div>
-                <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
-                  Area Path (Internal ADO Module)
+                <label className="block text-xs font-bold text-[var(--text-primary)] mb-1 flex items-center justify-between">
+                  <span>Area Path</span>
+                  <span className="text-[10px] text-[var(--primary)] font-semibold">Fixed ADO Project</span>
                 </label>
-                <input
-                  type="text"
-                  placeholder="e.g. CareFlow-Core\EHR-Connect"
-                  value={areaPath}
-                  onChange={(e) => {
-                    const newArea = e.target.value;
-                    setAreaPath(newArea);
-                    const iters = getIterationPathsForArea(newArea, releases, userStories, defects);
-                    if (iters[0]) {
-                      setReleaseId(iters[0].releaseId);
-                      setIterationPath(iters[0].iterationPath);
-                    }
-                  }}
-                  className="w-full text-xs font-medium px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)] mb-1.5"
-                />
-                <div className="flex flex-wrap gap-1">
-                  {availableAreaPaths.map(area => (
-                    <button
-                      key={area}
-                      type="button"
-                      onClick={() => {
-                        setAreaPath(area);
-                        const iters = getIterationPathsForArea(area, releases, userStories, defects);
-                        if (iters[0]) {
-                          setReleaseId(iters[0].releaseId);
-                          setIterationPath(iters[0].iterationPath);
-                        }
-                      }}
-                      className={`text-[10px] font-medium px-2 py-0.5 rounded-md border transition-all cursor-pointer ${
-                        areaPath === area 
-                          ? 'bg-[var(--primary)] text-white border-[var(--primary)]' 
-                          : 'bg-[var(--surface-hover)] text-[var(--text-secondary)] border-[var(--border)] hover:border-[var(--primary)]/40'
-                      }`}
-                    >
-                      {area}
-                    </button>
-                  ))}
+                <div className="w-full text-xs px-3 py-2 bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl text-[var(--text-primary)] font-mono font-bold flex items-center gap-1.5">
+                  <FolderGit2 size={13} className="text-[var(--primary)]" />
+                  <span>ACM</span>
                 </div>
               </div>
 
@@ -815,11 +667,11 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                 </div>
               </div>
 
-              {/* DYNAMIC ITERATION PATH / RELEASE SELECTOR BASED ON AREA PATH */}
+              {/* RELEASE / ITERATION SELECTOR */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
-                    Release & Iteration Path
+                    Release / Iteration (ACM)
                   </label>
                   <SearchableSelect
                     options={modalReleaseOptions}
@@ -851,7 +703,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. CareFlow-Core\Sprint 24"
+                  placeholder="e.g. ACM\D5 R 2026.09"
                   value={iterationPath}
                   onChange={(e) => setIterationPath(e.target.value)}
                   className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none font-mono text-[var(--text-primary)]"

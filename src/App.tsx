@@ -4,6 +4,7 @@ import {
   NavView, 
   Task, 
   UserStory, 
+  TestCase,
   Defect, 
   Release, 
   StandupEntry, 
@@ -12,30 +13,42 @@ import {
   PeopleReviewNote, 
   BlueprintItem, 
   AdoConfig,
-  DualAdoConfig 
+  DualAdoConfig,
+  AppUser
 } from './types';
 import { loadStoredState, saveStoredState, resetToDemoState, loadFromIndexedDB } from './utils/storage';
 import { toDateStr, shiftDate, generateId } from './utils/date';
+import { isTestCaseItem, isDefectItem, convertStoryToTestCase, filterPureUserStories } from './utils/itemClassification';
+import { matchesReleaseOrIteration } from './utils/adoPaths';
+import { syncAuthSession } from './utils/authClient';
+import { sanitizeAndLinkWorkItems } from './utils/assigneeUtils';
 
 // Layout Components
-import { Sidebar } from './components/layout/Sidebar';
-import { Header } from './components/layout/Header';
+import { ModernPortalHeader } from './components/layout/ModernPortalHeader';
+import { PortalSummaryStrip } from './components/layout/PortalSummaryStrip';
+import { CommandPaletteModal } from './components/layout/CommandPaletteModal';
 
 // View Modules
 import { TaskBoard } from './components/board/TaskBoard';
 import { NewTaskModal } from './components/board/NewTaskModal';
 import { UserStoriesView } from './components/userStories/UserStoriesView';
+import { TestCasesView } from './components/testCases/TestCasesView';
 import { DefectsView } from './components/defects/DefectsView';
 import { DefectsDashboard } from './components/defects/DefectsDashboard';
 import { ReleasesView } from './components/releases/ReleasesView';
 import { StandupView } from './components/standup/StandupView';
+import { RetrospectiveView } from './components/retrospective/RetrospectiveView';
 import { PeopleReviewView } from './components/people/PeopleReviewView';
 import { BlueprintView } from './components/blueprint/BlueprintView';
 import { SettingsView } from './components/settings/SettingsView';
+import { ApiAutomationView } from './components/apiAutomation/ApiAutomationView';
+import { ApiAutomationCollection, ApiEnvironment, ApiTestExecutionRun } from './types/apiAutomation';
 
 // Modals
 import { AdoSyncModal } from './components/ado/AdoSyncModal';
 import { EmailBroadcastModal } from './components/email/EmailBroadcastModal';
+import { AiDuplicateScannerModal } from './components/common/AiDuplicateScannerModal';
+import { AbsenceRecord, TeamRoastRecord } from './types';
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppState>(loadStoredState);
@@ -48,7 +61,32 @@ export const App: React.FC = () => {
   const [newTaskModalOpen, setNewTaskModalOpen] = useState<boolean>(false);
   const [adoModalOpen, setAdoModalOpen] = useState<boolean>(false);
   const [emailModalOpen, setEmailModalOpen] = useState<boolean>(false);
+  const [duplicateScannerOpen, setDuplicateScannerOpen] = useState<boolean>(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
   const [emailInitialTab, setEmailInitialTab] = useState<'standup' | 'qa' | 'dashboard'>('standup');
+
+  // Global Command Palette Shortcut (⌘K / Ctrl+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setCommandPaletteOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Theme updater
+  const handleUpdateTheme = (theme: any) => {
+    setState(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        theme
+      }
+    }));
+  };
 
   // Hydrate full state from IndexedDB on initial mount if available
   useEffect(() => {
@@ -59,9 +97,17 @@ export const App: React.FC = () => {
           // If IndexedDB has more/equal data, merge cleanly
           if ((idbState.userStories?.length || 0) >= (prev.userStories?.length || 0) &&
               (idbState.defects?.length || 0) >= (prev.defects?.length || 0)) {
+            const sanitized = sanitizeAndLinkWorkItems({
+              userStories: idbState.userStories,
+              testCases: idbState.testCases,
+              defects: idbState.defects,
+              tasks: idbState.tasks,
+              team: idbState.team
+            });
             return {
               ...prev,
               ...idbState,
+              ...sanitized,
               settings: { ...prev.settings, ...(idbState.settings || {}) }
             };
           }
@@ -79,19 +125,32 @@ export const App: React.FC = () => {
     saveStoredState(state);
   }, [state]);
 
-  // Apply theme to document
+  // Synchronize authenticated session with backend proxy when active user changes
+  useEffect(() => {
+    const activeUser = (state.users || []).find(u => u.id === state.currentUserId) || (state.users || [])[0];
+    if (activeUser) {
+      syncAuthSession(activeUser);
+    }
+  }, [state.currentUserId, state.users]);
+
+  // Apply theme, density, and application title to document
   useEffect(() => {
     const currentTheme = state.settings?.theme || 'executive_slate';
     document.documentElement.setAttribute('data-theme', currentTheme);
-  }, [state.settings?.theme]);
+    const currentDensity = state.settings?.density || 'comfortable';
+    document.documentElement.setAttribute('data-density', currentDensity);
+    const appName = state.settings?.appName || 'ACM (AT&T Connection Manager) Delivery';
+    document.title = appName;
+  }, [state.settings?.theme, state.settings?.density, state.settings?.appName]);
 
   // Quick stats counts for sidebar
   const pendingTasksCount = state.tasks.filter(
     t => t.dateStr === currentDateStr && t.status !== 'complete'
   ).length;
   const activeStoriesCount = state.userStories.filter(
-    s => s.status !== 'Done' && s.status !== 'QA Passed'
+    s => !isTestCaseItem(s) && s.status !== 'Done' && s.status !== 'QA Passed'
   ).length;
+  const testCasesCount = (state.testCases || []).length;
   const openDefectsCount = state.defects.filter(
     d => d.status !== 'Closed'
   ).length;
@@ -286,6 +345,28 @@ export const App: React.FC = () => {
     }));
   };
 
+  // Test Case Operations
+  const handleAddTestCase = (testCase: TestCase) => {
+    setState(prev => ({
+      ...prev,
+      testCases: [testCase, ...(prev.testCases || [])]
+    }));
+  };
+
+  const handleUpdateTestCase = (updatedTestCase: TestCase) => {
+    setState(prev => ({
+      ...prev,
+      testCases: (prev.testCases || []).map(tc => tc.id === updatedTestCase.id ? updatedTestCase : tc)
+    }));
+  };
+
+  const handleDeleteTestCase = (testCaseId: string) => {
+    setState(prev => ({
+      ...prev,
+      testCases: (prev.testCases || []).filter(tc => tc.id !== testCaseId)
+    }));
+  };
+
   // Defect Operations
   const handleAddDefect = (defect: Defect) => {
     setState(prev => ({
@@ -436,6 +517,76 @@ export const App: React.FC = () => {
     }));
   };
 
+  // User & Access Control Operations
+  const handleAddUser = (user: AppUser) => {
+    setState(prev => ({
+      ...prev,
+      users: [...(prev.users || []), user]
+    }));
+  };
+
+  const handleUpdateUser = (updatedUser: AppUser) => {
+    setState(prev => ({
+      ...prev,
+      users: (prev.users || []).map(u => u.id === updatedUser.id ? updatedUser : u)
+    }));
+  };
+
+  const handleDeleteUser = (userId: string) => {
+    setState(prev => ({
+      ...prev,
+      users: (prev.users || []).filter(u => u.id !== userId)
+    }));
+  };
+
+  const handleSetCurrentUser = (userId: string) => {
+    setState(prev => ({
+      ...prev,
+      currentUserId: userId
+    }));
+  };
+
+  const handleBatchAddUsers = (newUsers: AppUser[]) => {
+    setState(prev => {
+      const existingEmails = new Set((prev.users || []).map(u => u.email.toLowerCase()));
+      const filtered = newUsers.filter(u => !existingEmails.has(u.email.toLowerCase()));
+      return {
+        ...prev,
+        users: [...(prev.users || []), ...filtered]
+      };
+    });
+  };
+
+  // Absence & Permissions Operations
+  const handleAddAbsence = (record: AbsenceRecord) => {
+    setState(prev => ({
+      ...prev,
+      absences: [record, ...(prev.absences || [])]
+    }));
+  };
+
+  const handleUpdateAbsence = (updated: AbsenceRecord) => {
+    setState(prev => ({
+      ...prev,
+      absences: (prev.absences || []).map(a => a.id === updated.id ? updated : a)
+    }));
+  };
+
+  const handleDeleteAbsence = (recordId: string) => {
+    setState(prev => ({
+      ...prev,
+      absences: (prev.absences || []).filter(a => a.id !== recordId)
+    }));
+  };
+
+  // Team Roast Operations
+  const handleSaveRoast = (roast: TeamRoastRecord) => {
+    setState(prev => ({
+      ...prev,
+      roasts: [roast, ...(prev.roasts || [])]
+    }));
+  };
+
   // Blueprint Operations
   const handleUpdateBlueprint = (schedule: BlueprintItem[]) => {
     setState(prev => ({
@@ -454,28 +605,129 @@ export const App: React.FC = () => {
 
   const handleSyncAdoData = (synced: {
     stories: UserStory[];
+    testCases?: TestCase[];
     defects: Defect[];
     releases?: Release[];
     teamMembers?: Array<{ name: string; role?: string }>;
     tasks?: Task[];
     selectedReleaseId?: string;
+    releaseIteration?: string;
   }) => {
     setState(prev => {
-      // 1. Merge Stories: update existing or prepend new
-      const storyMap = new Map(prev.userStories.map(s => [s.adoId ? `ado-${s.adoId}` : s.id, s]));
-      synced.stories.forEach(s => {
-        storyMap.set(s.adoId ? `ado-${s.adoId}` : s.id, s);
-      });
-      const updatedStories = Array.from(storyMap.values());
+      const targetReleaseId = synced.selectedReleaseId || 
+        (synced.releases && synced.releases.length > 0 ? synced.releases[0].id : prev.selectedReleaseId);
 
-      // 2. Merge Defects: update existing or prepend new
-      const defectMap = new Map(prev.defects.map(d => [d.adoId ? `ado-${d.adoId}` : d.id, d]));
-      synced.defects.forEach(d => {
-        defectMap.set(d.adoId ? `ado-${d.adoId}` : d.id, d);
-      });
-      const updatedDefects = Array.from(defectMap.values());
+      const targetRelease = targetReleaseId ? prev.releases.find(r => r.id === targetReleaseId) : null;
 
-      // 3. Merge Releases
+      // 1. Separate incoming stories vs test cases
+      const rawSyncedStories = synced.stories || [];
+      const incomingStories: UserStory[] = [];
+      const incomingTestCases: TestCase[] = [...(synced.testCases || [])];
+
+      rawSyncedStories.forEach((s: any) => {
+        const itemWithRel = {
+          ...s,
+          releaseId: s.releaseId || targetReleaseId || null,
+          iterationPath: s.iterationPath || targetRelease?.iterationPath || s.iterationPath || ''
+        };
+        if (isTestCaseItem(itemWithRel)) {
+          const converted = convertStoryToTestCase(itemWithRel);
+          const exists = incomingTestCases.some(tc => tc.id === converted.id || (converted.adoId && tc.adoId === converted.adoId));
+          if (!exists) incomingTestCases.push(converted);
+        } else if (!isDefectItem(itemWithRel)) {
+          incomingStories.push(itemWithRel);
+        }
+      });
+
+      const incomingDefects = (synced.defects || []).map(d => ({
+        ...d,
+        releaseId: d.releaseId || targetReleaseId || null,
+        iterationPath: d.iterationPath || targetRelease?.iterationPath || d.iterationPath || ''
+      }));
+
+      const incomingTasks = (synced.tasks || []).map(t => ({
+        ...t,
+        releaseId: t.releaseId || targetReleaseId || null,
+        iterationPath: t.iterationPath || targetRelease?.iterationPath || t.iterationPath || ''
+      }));
+
+      const incomingTestCasesWithRel = incomingTestCases.map(tc => ({
+        ...tc,
+        releaseId: tc.releaseId || targetReleaseId || null,
+        iterationPath: tc.iterationPath || targetRelease?.iterationPath || tc.iterationPath || ''
+      }));
+
+      let updatedStories: UserStory[];
+      let updatedDefects: Defect[];
+      let updatedTasks: Task[];
+      let updatedTestCases: TestCase[];
+
+      if (synced.selectedReleaseId && targetReleaseId) {
+        // Targeted release sync: purge previous mock/stale items for this release and replace with fresh live data
+        const otherStories = filterPureUserStories(prev.userStories).filter(
+          s => s.releaseId !== targetReleaseId && !matchesReleaseOrIteration(s, targetReleaseId, prev.releases)
+        );
+        const storyMap = new Map(otherStories.map(s => [s.adoId ? `ado-${s.adoId}` : s.id, s]));
+        incomingStories.forEach(s => {
+          storyMap.set(s.adoId ? `ado-${s.adoId}` : s.id, s);
+        });
+        updatedStories = Array.from(storyMap.values());
+
+        const otherDefects = prev.defects.filter(
+          d => d.releaseId !== targetReleaseId && !matchesReleaseOrIteration(d, targetReleaseId, prev.releases)
+        );
+        const defectMap = new Map(otherDefects.map(d => [d.adoId ? `ado-${d.adoId}` : d.id, d]));
+        incomingDefects.forEach(d => {
+          defectMap.set(d.adoId ? `ado-${d.adoId}` : d.id, d);
+        });
+        updatedDefects = Array.from(defectMap.values());
+
+        const otherTasks = prev.tasks.filter(
+          t => t.releaseId !== targetReleaseId && !matchesReleaseOrIteration(t, targetReleaseId, prev.releases)
+        );
+        const taskMap = new Map(otherTasks.map(t => [t.adoId ? `ado-${t.adoId}` : t.id, t]));
+        incomingTasks.forEach(t => {
+          taskMap.set(t.adoId ? `ado-${t.adoId}` : t.id, t);
+        });
+        updatedTasks = Array.from(taskMap.values());
+
+        const otherTestCases = (prev.testCases || []).filter(
+          tc => tc.releaseId !== targetReleaseId && !matchesReleaseOrIteration(tc, targetReleaseId, prev.releases)
+        );
+        const testCaseMap = new Map(otherTestCases.map(tc => [tc.adoId ? `ado-${tc.adoId}` : tc.id, tc]));
+        incomingTestCasesWithRel.forEach(tc => {
+          testCaseMap.set(tc.adoId ? `ado-${tc.adoId}` : tc.id, tc);
+        });
+        updatedTestCases = Array.from(testCaseMap.values());
+      } else {
+        // Global project-wide sync: merge into existing
+        const cleanPrevStories = filterPureUserStories(prev.userStories);
+        const storyMap = new Map(cleanPrevStories.map(s => [s.adoId ? `ado-${s.adoId}` : s.id, s]));
+        incomingStories.forEach(s => {
+          storyMap.set(s.adoId ? `ado-${s.adoId}` : s.id, s);
+        });
+        updatedStories = Array.from(storyMap.values());
+
+        const testCaseMap = new Map((prev.testCases || []).map(tc => [tc.adoId ? `ado-${tc.adoId}` : tc.id, tc]));
+        incomingTestCasesWithRel.forEach(tc => {
+          testCaseMap.set(tc.adoId ? `ado-${tc.adoId}` : tc.id, tc);
+        });
+        updatedTestCases = Array.from(testCaseMap.values());
+
+        const defectMap = new Map(prev.defects.map(d => [d.adoId ? `ado-${d.adoId}` : d.id, d]));
+        incomingDefects.forEach(d => {
+          defectMap.set(d.adoId ? `ado-${d.adoId}` : d.id, d);
+        });
+        updatedDefects = Array.from(defectMap.values());
+
+        const taskMap = new Map(prev.tasks.map(t => [t.adoId ? `ado-${t.adoId}` : t.id, t]));
+        incomingTasks.forEach(t => {
+          taskMap.set(t.adoId ? `ado-${t.adoId}` : t.id, t);
+        });
+        updatedTasks = Array.from(taskMap.values());
+      }
+
+      // 4. Merge Releases
       const releaseMap = new Map(prev.releases.map(r => [r.id, r]));
       if (synced.releases) {
         synced.releases.forEach(r => {
@@ -484,7 +736,7 @@ export const App: React.FC = () => {
       }
       const updatedReleases = Array.from(releaseMap.values());
 
-      // 4. Merge Team Members
+      // 5. Merge Team Members
       const existingMemberNames = new Set(prev.team.map(m => m.name.toLowerCase()));
       const newMembers = [...prev.team];
       const avatarColors = ['#0284c7', '#7c3aed', '#059669', '#d97706', '#dc2626', '#4f46e5'];
@@ -509,26 +761,22 @@ export const App: React.FC = () => {
         });
       }
 
-      // 5. Merge Tasks (Dev Backlog)
-      const taskMap = new Map(prev.tasks.map(t => [t.id, t]));
-      if (synced.tasks) {
-        synced.tasks.forEach(t => {
-          taskMap.set(t.id, t);
-        });
-      }
-      const updatedTasks = Array.from(taskMap.values());
-
-      // 6. Selected Release
-      const targetReleaseId = synced.selectedReleaseId || 
-        (synced.releases && synced.releases.length > 0 ? synced.releases[0].id : prev.selectedReleaseId);
+      const sanitized = sanitizeAndLinkWorkItems({
+        userStories: updatedStories,
+        testCases: updatedTestCases,
+        defects: updatedDefects,
+        tasks: updatedTasks,
+        team: newMembers
+      });
 
       return {
         ...prev,
-        userStories: updatedStories,
-        defects: updatedDefects,
+        userStories: sanitized.userStories,
+        testCases: sanitized.testCases,
+        defects: sanitized.defects,
+        tasks: sanitized.tasks,
+        team: sanitized.team,
         releases: updatedReleases,
-        team: newMembers,
-        tasks: updatedTasks,
         selectedReleaseId: targetReleaseId
       };
     });
@@ -540,6 +788,35 @@ export const App: React.FC = () => {
     setState(fresh);
   };
 
+  // API Automation State Handlers
+  const handleUpdateApiCollections = (apiCollections: ApiAutomationCollection[]) => {
+    setState(prev => ({
+      ...prev,
+      apiCollections
+    }));
+  };
+
+  const handleUpdateApiEnvironments = (apiEnvironments: ApiEnvironment[]) => {
+    setState(prev => ({
+      ...prev,
+      apiEnvironments
+    }));
+  };
+
+  const handleSaveApiExecutionRun = (run: ApiTestExecutionRun) => {
+    setState(prev => ({
+      ...prev,
+      apiExecutionRuns: [run, ...(prev.apiExecutionRuns || [])]
+    }));
+  };
+
+  const handleSelectApiEnvironment = (activeApiEnvironmentId: string) => {
+    setState(prev => ({
+      ...prev,
+      activeApiEnvironmentId
+    }));
+  };
+
   // Email helper triggers
   const handleOpenEmailModal = (tab: 'standup' | 'qa' | 'dashboard' = 'standup') => {
     setEmailInitialTab(tab);
@@ -547,41 +824,41 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen w-full bg-[var(--bg)] text-[var(--text-primary)] overflow-hidden">
-      {/* Structural Sidebar */}
-      <Sidebar
+    <div className="flex flex-col min-h-screen w-full bg-[var(--bg)] text-[var(--text-primary)] transition-colors">
+      {/* Modern Top Portal Header & Navigation Ribbon */}
+      <ModernPortalHeader
         activeView={activeView}
         onNavigate={setActiveView}
-        pendingTasksCount={pendingTasksCount}
-        activeStoriesCount={activeStoriesCount}
-        openDefectsCount={openDefectsCount}
-        standupCount={standupCount}
+        currentDateStr={currentDateStr}
+        onDateChange={setCurrentDateStr}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        releases={state.releases}
+        selectedReleaseId={selectedReleaseId}
+        onSelectRelease={setSelectedReleaseId}
+        onOpenNewTaskModal={() => setNewTaskModalOpen(true)}
         onOpenAdoModal={() => setAdoModalOpen(true)}
+        onOpenEmailModal={(tab) => handleOpenEmailModal(tab || 'standup')}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+        dualAdoConfig={state.dualAdoConfig}
+        state={state}
+        onUpdateTheme={handleUpdateTheme}
       />
 
-      {/* Main View Area */}
-      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
-        {/* Universal Header */}
-        <Header
-          appName={state.settings.appName || 'Northstar Delivery Hub'}
-          currentDateStr={currentDateStr}
-          onDateChange={setCurrentDateStr}
-          onPrevDay={() => setCurrentDateStr(shiftDate(currentDateStr, -1))}
-          onNextDay={() => setCurrentDateStr(shiftDate(currentDateStr, 1))}
-          onToday={() => setCurrentDateStr(toDateStr(new Date()))}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          releases={state.releases}
-          selectedReleaseId={selectedReleaseId}
-          onSelectRelease={setSelectedReleaseId}
-          onOpenNewTaskModal={() => setNewTaskModalOpen(true)}
-          onOpenEmailModal={() => handleOpenEmailModal('standup')}
-          onOpenAdoModal={() => setAdoModalOpen(true)}
-        />
+      {/* Contextual Telemetry & Horizon Summary Strip */}
+      <PortalSummaryStrip
+        activeView={activeView}
+        state={state}
+        currentDateStr={currentDateStr}
+        searchQuery={searchQuery}
+        onClearSearch={() => setSearchQuery('')}
+        selectedReleaseId={selectedReleaseId}
+        onClearReleaseFilter={() => setSelectedReleaseId(null)}
+      />
 
-        {/* Scrollable View Content */}
-        <main className="flex-1 overflow-y-auto px-6 py-6">
-          {activeView === 'board' && (
+      {/* Main Full-Width Portal Workspace */}
+      <main className="flex-1 w-full max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {activeView === 'board' && (
             <TaskBoard
               tasks={state.tasks}
               dateStr={currentDateStr}
@@ -593,6 +870,8 @@ export const App: React.FC = () => {
               selectedReleaseId={selectedReleaseId}
               searchQuery={searchQuery}
               blueprintSchedule={state.blueprintSchedule}
+              standup={state.standup}
+              state={state}
               onToggleStatus={handleToggleTaskStatus}
               onUpdateTask={handleUpdateTask}
               onDeleteTask={handleDeleteTask}
@@ -601,6 +880,9 @@ export const App: React.FC = () => {
               onApplyBlueprint={handleApplyBlueprint}
               onReorderTasks={handleReorderTasks}
               onMoveTask={handleMoveTask}
+              onSelectRelease={setSelectedReleaseId}
+              onUpdateStandupEntry={handleUpdateStandupEntry}
+              onUpdateState={setState}
             />
           )}
 
@@ -613,9 +895,25 @@ export const App: React.FC = () => {
               tasks={state.tasks}
               defects={state.defects}
               selectedReleaseId={selectedReleaseId}
+              onSelectRelease={setSelectedReleaseId}
               onAddStory={handleAddStory}
               onUpdateStory={handleUpdateStory}
               onDeleteStory={handleDeleteStory}
+            />
+          )}
+
+          {activeView === 'testCases' && (
+            <TestCasesView
+              testCases={state.testCases || []}
+              releases={state.releases}
+              userStories={state.userStories}
+              defects={state.defects}
+              team={state.team}
+              selectedReleaseId={selectedReleaseId}
+              onSelectRelease={setSelectedReleaseId}
+              onAddTestCase={handleAddTestCase}
+              onUpdateTestCase={handleUpdateTestCase}
+              onDeleteTestCase={handleDeleteTestCase}
             />
           )}
 
@@ -626,6 +924,11 @@ export const App: React.FC = () => {
               userStories={state.userStories}
               team={state.team}
               selectedReleaseId={selectedReleaseId}
+              dualAdoConfig={state.dualAdoConfig}
+              adoConfig={state.adoConfig}
+              currentUserId={state.currentUserId}
+              users={state.users}
+              onSelectRelease={setSelectedReleaseId}
               onAddDefect={handleAddDefect}
               onUpdateDefect={handleUpdateDefect}
               onDeleteDefect={handleDeleteDefect}
@@ -637,9 +940,24 @@ export const App: React.FC = () => {
               defects={state.defects}
               releases={state.releases}
               userStories={state.userStories}
+              testCases={state.testCases}
               team={state.team}
               state={state}
+              selectedReleaseId={selectedReleaseId}
               onOpenQaStatusEmail={() => handleOpenEmailModal('qa')}
+            />
+          )}
+
+          {activeView === 'apiAutomation' && (
+            <ApiAutomationView
+              collections={state.apiCollections || []}
+              environments={state.apiEnvironments || []}
+              executionRuns={state.apiExecutionRuns || []}
+              activeEnvironmentId={state.activeApiEnvironmentId || 'env-local'}
+              onUpdateCollections={handleUpdateApiCollections}
+              onUpdateEnvironments={handleUpdateApiEnvironments}
+              onSaveExecutionRun={handleSaveApiExecutionRun}
+              onSelectEnvironment={handleSelectApiEnvironment}
             />
           )}
 
@@ -649,9 +967,14 @@ export const App: React.FC = () => {
               userStories={state.userStories}
               defects={state.defects}
               tasks={state.tasks}
+              testCases={state.testCases}
+              dualAdoConfig={state.dualAdoConfig}
+              adoConfig={state.adoConfig}
               onAddRelease={handleAddRelease}
               onUpdateRelease={handleUpdateRelease}
               onDeleteRelease={handleDeleteRelease}
+              onSyncData={handleSyncAdoData}
+              onOpenAdoModal={() => setAdoModalOpen(true)}
             />
           )}
 
@@ -666,6 +989,13 @@ export const App: React.FC = () => {
             />
           )}
 
+          {activeView === 'retrospective' && (
+            <RetrospectiveView
+              state={state}
+              onUpdateState={setState}
+            />
+          )}
+
           {activeView === 'people' && (
             <PeopleReviewView
               team={state.team}
@@ -674,11 +1004,26 @@ export const App: React.FC = () => {
               userStories={state.userStories}
               defects={state.defects}
               peopleReviews={state.peopleReviews}
+              users={state.users || []}
+              currentUserId={state.currentUserId}
+              dualAdoConfig={state.dualAdoConfig}
+              adoConfig={state.adoConfig}
+              absences={state.absences || []}
+              roasts={state.roasts || []}
               onAddMember={handleAddMember}
               onUpdateMember={handleUpdateMember}
               onDeleteMember={handleDeleteMember}
               onAddGroup={handleAddGroup}
               onAddReviewNote={handleAddReviewNote}
+              onAddUser={handleAddUser}
+              onUpdateUser={handleUpdateUser}
+              onDeleteUser={handleDeleteUser}
+              onSetCurrentUser={handleSetCurrentUser}
+              onBatchAddUsers={handleBatchAddUsers}
+              onAddAbsence={handleAddAbsence}
+              onUpdateAbsence={handleUpdateAbsence}
+              onDeleteAbsence={handleDeleteAbsence}
+              onSaveRoast={handleSaveRoast}
             />
           )}
 
@@ -695,12 +1040,22 @@ export const App: React.FC = () => {
               state={state}
               onUpdateState={setState}
               onResetData={handleResetData}
+              onOpenAdoModal={() => setAdoModalOpen(true)}
             />
           )}
         </main>
-      </div>
 
       {/* Global Modals */}
+      <CommandPaletteModal
+        isOpen={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onNavigate={setActiveView}
+        onOpenNewTask={() => setNewTaskModalOpen(true)}
+        onOpenAdoModal={() => setAdoModalOpen(true)}
+        onOpenEmailModal={() => handleOpenEmailModal('standup')}
+        state={state}
+      />
+
       <NewTaskModal
         isOpen={newTaskModalOpen}
         onClose={() => setNewTaskModalOpen(false)}
@@ -734,6 +1089,16 @@ export const App: React.FC = () => {
         onClose={() => setEmailModalOpen(false)}
         state={state}
         initialTab={emailInitialTab}
+      />
+
+      <AiDuplicateScannerModal
+        isOpen={duplicateScannerOpen}
+        onClose={() => setDuplicateScannerOpen(false)}
+        userStories={state.userStories}
+        defects={state.defects}
+        tasks={state.tasks}
+        releases={state.releases}
+        selectedReleaseId={selectedReleaseId}
       />
     </div>
   );

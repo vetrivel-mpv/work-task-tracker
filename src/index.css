@@ -23,8 +23,6 @@
 
   --internal-ado: #4F46E5;
   --internal-ado-bg: #EEF2FF;
-  --external-ado: #D97706;
-  --external-ado-bg: #FEF3C7;
 
   --critical: #DC2626;
   --critical-bg: #FEF2F2;
@@ -69,8 +67,6 @@
 
   --internal-ado: #818CF8;
   --internal-ado-bg: #1E1B4B;
-  --external-ado: #FBBF24;
-  --external-ado-bg: #451A03;
 
   --critical: #F87171;
   --critical-bg: #450A0A;
@@ -115,8 +111,6 @@
 
   --internal-ado: #2563EB;
   --internal-ado-bg: #EFF6FF;
-  --external-ado: #D97706;
-  --external-ado-bg: #FEF3C7;
 
   --critical: #DC2626;
   --critical-bg: #FEF2F2;
@@ -161,8 +155,6 @@
 
   --internal-ado: #60A5FA;
   --internal-ado-bg: #172554;
-  --external-ado: #F87171;
-  --external-ado-bg: #450A0A;
 
   --critical: #EF4444;
   --critical-bg: #450A0A;
@@ -259,5 +251,106 @@ a:focus-visible {
 
 .drop-indicator-pulse {
   animation: dropLinePulse 1.2s ease-in-out infinite;
+}
+
+/* Hide scrollbar for clean horizontal ribbon */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Modern card and glass surface */
+.modern-glass-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--card-shadow);
+  border-radius: 1rem;
+}
+
+.glow-beacon-pulse {
+  animation: beaconGlow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes beaconGlow {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.15);
+  }
+}
+
+/* ==========================================================================
+   Layout Density Spacing Engine (Comfortable vs Compact)
+   ========================================================================== */
+
+:root, [data-density="comfortable"] {
+  --density-card-padding: 0.875rem;
+  --density-card-gap: 0.625rem;
+  --density-card-border-radius: 0.75rem;
+  --density-table-py: 0.75rem;
+  --density-table-px: 0.875rem;
+  --density-table-font-size: 0.75rem;
+}
+
+[data-density="compact"] {
+  --density-card-padding: 0.5rem 0.65rem;
+  --density-card-gap: 0.375rem;
+  --density-card-border-radius: 0.5rem;
+  --density-table-py: 0.35rem;
+  --density-table-px: 0.55rem;
+  --density-table-font-size: 0.6875rem;
+}
+
+/* Compact Task Cards Spacing */
+[data-density="compact"] .task-card-item {
+  padding: 0.5rem 0.65rem !important;
+  border-radius: 0.625rem !important;
+}
+
+[data-density="compact"] .task-card-item .task-title-text {
+  font-size: 12.5px !important;
+  line-height: 1.25 !important;
+}
+
+[data-density="compact"] .task-card-item .task-badge-row {
+  margin-top: 0.375rem !important;
+  gap: 0.25rem !important;
+}
+
+[data-density="compact"] .task-card-item .task-bottom-bar {
+  margin-top: 0.375rem !important;
+  padding-top: 0.375rem !important;
+}
+
+[data-density="compact"] .task-card-item .task-alert-banner {
+  margin-bottom: 0.375rem !important;
+  padding: 0.25rem 0.5rem !important;
+}
+
+/* Compact Tables Spacing */
+[data-density="compact"] table th {
+  padding-top: 0.35rem !important;
+  padding-bottom: 0.35rem !important;
+  padding-left: 0.55rem !important;
+  padding-right: 0.55rem !important;
+  font-size: 11px !important;
+}
+
+[data-density="compact"] table td {
+  padding-top: 0.35rem !important;
+  padding-bottom: 0.35rem !important;
+  padding-left: 0.55rem !important;
+  padding-right: 0.55rem !important;
+  font-size: 11px !important;
+}
+
+[data-density="compact"] .table-row-compact {
+  height: 28px !important;
 }
 

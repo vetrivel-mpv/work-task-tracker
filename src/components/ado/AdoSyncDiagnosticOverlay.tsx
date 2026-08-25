@@ -29,7 +29,7 @@ interface AdoSyncDiagnosticOverlayProps {
   onClose: () => void;
   diagnosticHistory: AdoSyncDiagnosticRecord[];
   onClearHistory: () => void;
-  onTriggerSync?: (target: 'all' | 'internal' | 'external') => void;
+  onTriggerSync?: (target?: 'all' | 'internal' | 'external' | string) => void;
   isSyncing?: boolean;
 }
 
@@ -515,7 +515,7 @@ export const AdoSyncDiagnosticOverlay: React.FC<AdoSyncDiagnosticOverlayProps> =
                     <div>
                       <strong className="block font-bold">Field-to-Model Alignment Verifier</strong>
                       <span>
-                        Validates how Azure DevOps raw fields (<code className="font-mono text-[11px]">System.State</code>, <code className="font-mono text-[11px]">System.AreaPath</code>, <code className="font-mono text-[11px]">System.IterationPath</code>, <code className="font-mono text-[11px]">System.AssignedTo</code>) are mapped into Northstar User Story and Defect attributes.
+                        Validates how Azure DevOps raw fields (<code className="font-mono text-[11px]">System.State</code>, <code className="font-mono text-[11px]">System.AreaPath</code>, <code className="font-mono text-[11px]">System.IterationPath</code>, <code className="font-mono text-[11px]">System.AssignedTo</code>) are mapped into Delivery Portal User Story and Defect attributes.
                       </span>
                     </div>
                   </div>
@@ -668,7 +668,7 @@ export const AdoSyncDiagnosticOverlay: React.FC<AdoSyncDiagnosticOverlayProps> =
                       <span>Data Missing or Mapping Incorrectly? Root Cause Diagnosis</span>
                     </div>
                     <p className="text-[11.5px] leading-relaxed">
-                      Use the checklist below to pinpoint why specific User Stories, Bugs, or Sprint Iterations may not be appearing in Northstar.
+                      Use the checklist below to pinpoint why specific User Stories, Bugs, or Sprint Iterations may not be appearing in the portal.
                     </p>
                   </div>
 
@@ -682,7 +682,7 @@ export const AdoSyncDiagnosticOverlay: React.FC<AdoSyncDiagnosticOverlayProps> =
                         Azure DevOps iteration paths often contain sub-paths (e.g. <code className="font-mono text-[11px] bg-[var(--surface-hover)] px-1 py-0.5 rounded">ACM\D5 R 2026.09</code> instead of simply <code className="font-mono text-[11px] bg-[var(--surface-hover)] px-1 py-0.5 rounded">D5 R 2026.09</code>).
                       </p>
                       <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
-                        ✓ Solution: Northstar automatically prepends the project name and matches via the <code className="font-mono">UNDER</code> operator.
+                        ✓ Solution: The portal automatically prepends the project name and matches via the <code className="font-mono">UNDER</code> operator.
                       </span>
                     </div>
 
@@ -723,7 +723,7 @@ export const AdoSyncDiagnosticOverlay: React.FC<AdoSyncDiagnosticOverlayProps> =
                         Different Azure DevOps process templates (Agile, Scrum, CMMI, Basic) use different state names like <code className="font-mono text-[10.5px]">Committed</code>, <code className="font-mono text-[10.5px]">In Progress</code>, or <code className="font-mono text-[10.5px]">Resolved</code>.
                       </p>
                       <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
-                        ✓ Solution: Northstar maps Active/In Progress to "Dev In Progress" and Resolved/Fixed to "QA Ready".
+                        ✓ Solution: The portal maps Active/In Progress to "Dev In Progress" and Resolved/Fixed to "QA Ready".
                       </span>
                     </div>
                   </div>

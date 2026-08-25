@@ -1,5 +1,9 @@
-import { AppState, AppSettings, TestCase, UserStory } from '../types';
+import { AppState, AppSettings, TestCase, UserStory, AppUser } from '../types';
 import { toDateStr } from './date';
+import { isTestCaseItem, convertStoryToTestCase, filterPureUserStories } from './itemClassification';
+import { parseAdoTarget } from './adoPaths';
+import { ensureUsersAndRoles } from './userManagement';
+import { sanitizeAndLinkWorkItems } from './assigneeUtils';
 import {
   INITIAL_BLUEPRINT,
   INITIAL_TEAM,
@@ -10,8 +14,15 @@ import {
   INITIAL_DEFECTS,
   INITIAL_SETTINGS,
   INITIAL_DUAL_ADO_CONFIG,
+  INITIAL_RETRO_ITEMS,
+  INITIAL_RETRO_SESSIONS,
   getInitialTasks
 } from './demoData';
+import {
+  INITIAL_API_COLLECTIONS,
+  INITIAL_API_ENVIRONMENTS,
+  INITIAL_API_EXECUTION_RUNS
+} from './apiAutomationDemoData';
 
 const STORAGE_KEY_PREFIX = 'northstar:';
 const STATE_STORAGE_KEY = `${STORAGE_KEY_PREFIX}state:v4`;
@@ -111,6 +122,13 @@ function cleanupLegacyStorageKeys(): void {
 
 export function getFreshDemoState(): AppState {
   const todayStr = toDateStr(new Date());
+  const partialState: Partial<AppState> = {
+    team: INITIAL_TEAM,
+    settings: INITIAL_SETTINGS,
+    dualAdoConfig: INITIAL_DUAL_ADO_CONFIG
+  };
+  const { users, currentUserId } = ensureUsersAndRoles(partialState);
+
   return {
     dateStr: todayStr,
     tasks: getInitialTasks(todayStr),
@@ -123,11 +141,23 @@ export function getFreshDemoState(): AppState {
     standup: {},
     standupHistory: {},
     peopleReviews: [],
+    absences: [],
+    roasts: [],
+    retroItems: INITIAL_RETRO_ITEMS,
+    retroActionItems: [],
+    retroSessions: INITIAL_RETRO_SESSIONS,
+    activeRetroSessionId: 'retro-session-current',
+    apiCollections: INITIAL_API_COLLECTIONS,
+    apiEnvironments: INITIAL_API_ENVIRONMENTS,
+    apiExecutionRuns: INITIAL_API_EXECUTION_RUNS,
+    activeApiEnvironmentId: 'env-local',
     blueprintSchedule: INITIAL_BLUEPRINT,
     settings: INITIAL_SETTINGS,
     activeView: 'board',
     selectedReleaseId: null,
-    dualAdoConfig: INITIAL_DUAL_ADO_CONFIG
+    dualAdoConfig: INITIAL_DUAL_ADO_CONFIG,
+    users,
+    currentUserId
   };
 }
 
@@ -140,7 +170,18 @@ export function loadStoredState(): AppState {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
-        const dualAdoConfig = parsed.dualAdoConfig || INITIAL_DUAL_ADO_CONFIG;
+        let dualAdoConfig = parsed.dualAdoConfig || INITIAL_DUAL_ADO_CONFIG;
+        if (dualAdoConfig?.internal) {
+          const parsedTarget = parseAdoTarget(dualAdoConfig.internal.organization, dualAdoConfig.internal.project);
+          dualAdoConfig = {
+            ...dualAdoConfig,
+            internal: {
+              ...dualAdoConfig.internal,
+              organization: parsedTarget.cleanOrg,
+              project: parsedTarget.cleanProject
+            }
+          };
+        }
 
         const rawStories: any[] = Array.isArray(parsed.userStories) ? parsed.userStories : [];
         const rawTestCases: any[] = Array.isArray(parsed.testCases) ? parsed.testCases : [];
@@ -150,31 +191,15 @@ export function loadStoredState(): AppState {
         const extractedTestCases: TestCase[] = [...rawTestCases];
 
         rawStories.forEach((s: any) => {
-          const titleLower = (s.title || '').toLowerCase();
-          const isMisclassifiedTestCase = 
-            titleLower.startsWith('[test case]') || 
-            titleLower.startsWith('test case:') ||
-            (s.status && s.status.toLowerCase() === 'design');
-
-          if (isMisclassifiedTestCase) {
-            extractedTestCases.push({
-              id: s.id.startsWith('tc-') ? s.id : `tc-${s.adoId || s.id}`,
-              title: s.title.replace(/^\[Test Case\]\s*/i, ''),
-              status: s.status === 'Design' ? 'Design' : 'Ready',
-              description: s.description,
-              areaPath: s.areaPath,
-              iterationPath: s.iterationPath,
-              releaseId: s.releaseId,
-              assigneeId: s.assigneeId,
-              createdById: s.createdById,
-              createdByName: s.createdByName,
-              adoId: s.adoId,
-              adoUrl: s.adoUrl,
-              workItemType: 'Test Case',
-              sourceInstance: s.sourceInstance || 'internal',
-              createdAt: s.createdAt || todayStr,
-              updatedAt: s.updatedAt || todayStr
-            });
+          if (isTestCaseItem(s)) {
+            const converted = convertStoryToTestCase(s, todayStr);
+            const exists = extractedTestCases.some(tc => 
+              tc.id === converted.id || 
+              (converted.adoId && tc.adoId === converted.adoId)
+            );
+            if (!exists) {
+              extractedTestCases.push(converted);
+            }
           } else {
             sanitizedStories.push(s);
           }
@@ -186,23 +211,54 @@ export function loadStoredState(): AppState {
           testCaseMap.set(tc.id, tc);
         });
 
-        const state: AppState = {
-          dateStr: parsed.dateStr || todayStr,
-          tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+        const intermediateState: Partial<AppState> = {
           team: Array.isArray(parsed.team) ? parsed.team : [],
-          groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+          users: Array.isArray(parsed.users) ? parsed.users : undefined,
+          currentUserId: parsed.currentUserId,
+          settings: { ...INITIAL_SETTINGS, ...(parsed.settings || {}) },
+          dualAdoConfig,
+          adoConfig: parsed.adoConfig
+        };
+
+        const { users, currentUserId } = ensureUsersAndRoles(intermediateState);
+
+        const linked = sanitizeAndLinkWorkItems({
           userStories: sanitizedStories,
           testCases: Array.from(testCaseMap.values()),
           defects: Array.isArray(parsed.defects) ? parsed.defects : [],
+          tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+          team: Array.isArray(parsed.team) ? parsed.team : []
+        });
+
+        const state: AppState = {
+          dateStr: parsed.dateStr || todayStr,
+          tasks: linked.tasks,
+          team: linked.team,
+          groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+          userStories: linked.userStories,
+          testCases: linked.testCases,
+          defects: linked.defects,
           releases: Array.isArray(parsed.releases) ? parsed.releases : [],
           standup: parsed.standup || {},
           standupHistory: parsed.standupHistory || {},
           peopleReviews: Array.isArray(parsed.peopleReviews) ? parsed.peopleReviews : [],
+          absences: Array.isArray(parsed.absences) ? parsed.absences : [],
+          roasts: Array.isArray(parsed.roasts) ? parsed.roasts : [],
+          retroItems: Array.isArray(parsed.retroItems) ? parsed.retroItems : INITIAL_RETRO_ITEMS,
+          retroActionItems: Array.isArray(parsed.retroActionItems) ? parsed.retroActionItems : [],
+          retroSessions: Array.isArray(parsed.retroSessions) ? parsed.retroSessions : INITIAL_RETRO_SESSIONS,
+          activeRetroSessionId: parsed.activeRetroSessionId || 'retro-session-current',
+          apiCollections: Array.isArray(parsed.apiCollections) ? parsed.apiCollections : INITIAL_API_COLLECTIONS,
+          apiEnvironments: Array.isArray(parsed.apiEnvironments) ? parsed.apiEnvironments : INITIAL_API_ENVIRONMENTS,
+          apiExecutionRuns: Array.isArray(parsed.apiExecutionRuns) ? parsed.apiExecutionRuns : INITIAL_API_EXECUTION_RUNS,
+          activeApiEnvironmentId: parsed.activeApiEnvironmentId || 'env-local',
           blueprintSchedule: Array.isArray(parsed.blueprintSchedule) ? parsed.blueprintSchedule : [],
           settings: { ...INITIAL_SETTINGS, ...(parsed.settings || {}) },
           activeView: parsed.activeView || 'board',
           selectedReleaseId: parsed.selectedReleaseId || null,
-          dualAdoConfig
+          dualAdoConfig,
+          users,
+          currentUserId
         };
 
         return state;
@@ -290,8 +346,10 @@ export function resetToDemoState(): AppState {
 }
 
 export function exportBackupJSON(state: AppState): void {
+  const appName = state.settings?.appName || 'ACM (AT&T Connection Manager) Delivery';
+  const slug = appName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'delivery';
   const exportPayload = {
-    app: 'Northstar Delivery Hub',
+    app: appName,
     version: '4.0.0',
     exportedAt: new Date().toISOString(),
     data: state
@@ -301,7 +359,7 @@ export function exportBackupJSON(state: AppState): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `northstar-delivery-backup-${toDateStr(new Date())}.json`;
+  a.download = `${slug}-backup-${toDateStr(new Date())}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -313,19 +371,41 @@ export function importBackupJSON(jsonString: string): AppState | null {
     const parsed = JSON.parse(jsonString);
     const data = parsed.data || parsed;
     if (!data || typeof data !== 'object') {
-      throw new Error('Invalid Northstar Delivery backup structure.');
+      throw new Error('Invalid project delivery backup structure.');
     }
+    const rawStories = Array.isArray(data.userStories) ? data.userStories : [];
+    const rawTestCases = Array.isArray(data.testCases) ? data.testCases : [];
+    const sanitizedStories: UserStory[] = [];
+    const extractedTestCases: TestCase[] = [...rawTestCases];
+
+    rawStories.forEach((s: any) => {
+      if (isTestCaseItem(s)) {
+        const converted = convertStoryToTestCase(s, data.dateStr || toDateStr(new Date()));
+        const exists = extractedTestCases.some(tc => tc.id === converted.id || (converted.adoId && tc.adoId === converted.adoId));
+        if (!exists) extractedTestCases.push(converted);
+      } else {
+        sanitizedStories.push(s);
+      }
+    });
+
     const cleanState: AppState = {
       dateStr: data.dateStr || toDateStr(new Date()),
       tasks: Array.isArray(data.tasks) ? data.tasks : [],
       team: Array.isArray(data.team) ? data.team : [],
       groups: Array.isArray(data.groups) ? data.groups : [],
-      userStories: Array.isArray(data.userStories) ? data.userStories : [],
+      userStories: sanitizedStories,
+      testCases: extractedTestCases,
       defects: Array.isArray(data.defects) ? data.defects : [],
       releases: Array.isArray(data.releases) ? data.releases : [],
       standup: data.standup || {},
       standupHistory: data.standupHistory || {},
       peopleReviews: Array.isArray(data.peopleReviews) ? data.peopleReviews : [],
+      absences: Array.isArray(data.absences) ? data.absences : [],
+      roasts: Array.isArray(data.roasts) ? data.roasts : [],
+      retroItems: Array.isArray(data.retroItems) ? data.retroItems : INITIAL_RETRO_ITEMS,
+      retroActionItems: Array.isArray(data.retroActionItems) ? data.retroActionItems : [],
+      retroSessions: Array.isArray(data.retroSessions) ? data.retroSessions : INITIAL_RETRO_SESSIONS,
+      activeRetroSessionId: data.activeRetroSessionId || 'retro-session-current',
       blueprintSchedule: Array.isArray(data.blueprintSchedule) ? data.blueprintSchedule : [],
       settings: {
         ...INITIAL_SETTINGS,
