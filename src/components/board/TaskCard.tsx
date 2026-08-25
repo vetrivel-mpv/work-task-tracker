@@ -22,7 +22,6 @@ import {
   Minus,
   AlertCircle,
   Building2,
-  Globe2,
   GripVertical,
   ArrowUp,
   ArrowDown,
@@ -41,8 +40,11 @@ import {
   shiftDate 
 } from '../../utils/date';
 import { HighlightText } from '../common/HighlightText';
+import { cleanAdoHtml } from '../../utils/formatAdoHtml';
 import { getTaskBlockedStatus } from '../../utils/taskDependencies';
+import { getWorkItemAssignees } from '../../utils/assigneeUtils';
 import { TaskDependencyModal } from './TaskDependencyModal';
+import { TaskEditModal } from './TaskEditModal';
 
 interface TaskCardProps {
   task: Task;
@@ -52,6 +54,7 @@ interface TaskCardProps {
   userStories: UserStory[];
   defects: Defect[];
   releases: Release[];
+  standup?: Record<string, any>;
   currentDateStr?: string;
   searchQuery?: string;
   isDragging?: boolean;
@@ -61,6 +64,7 @@ interface TaskCardProps {
   onUpdateTask: (task: Task) => void;
   onDeleteTask: (taskId: string) => void;
   onAddComment: (taskId: string, text: string) => void;
+  onPushToStandup?: (task: Task) => void;
   onDragStart?: (e: React.DragEvent, taskId: string) => void;
   onDragEnd?: (e: React.DragEvent) => void;
   onDragOverCard?: (e: React.DragEvent, taskId: string) => void;
@@ -80,6 +84,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   userStories,
   defects,
   releases,
+  standup,
   currentDateStr,
   searchQuery = '',
   isDragging = false,
@@ -89,6 +94,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onUpdateTask,
   onDeleteTask,
   onAddComment,
+  onPushToStandup,
   onDragStart,
   onDragEnd,
   onDragOverCard,
@@ -99,16 +105,13 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onMoveToPriority,
   onMoveToGroup
 }) => {
-  const [isEditing, setIsEditing] = useState(false);
-  const [editedTitle, setEditedTitle] = useState(task.title);
-  const [editedTime, setEditedTime] = useState(task.time || '');
-  const [editedDueDate, setEditedDueDate] = useState(task.dueDate || '');
+  const [editModalOpen, setEditModalOpen] = useState(false);
   const [showComments, setShowComments] = useState(false);
   const [dependencyModalOpen, setDependencyModalOpen] = useState(false);
   const [newCommentText, setNewCommentText] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const assignees = team.filter(m => task.assigneeIds.includes(m.id));
+  const assignees = getWorkItemAssignees(task, team);
   const taskGroups = groups.filter(g => task.groupIds.includes(g.id));
   const linkedStory = userStories.find(s => s.id === task.userStoryId);
   const linkedDefect = defects.find(d => d.id === task.defectId);
@@ -122,17 +125,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const isOverdue = isTaskOverdue(task.dueDate, task.status, currentDateStr);
   const dueBadge = task.dueDate ? formatDueDateBadge(task.dueDate, currentDateStr) : null;
   const isDueToday = Boolean(task.dueDate && task.status !== 'complete' && task.dueDate === (currentDateStr || toDateStr(new Date())));
-
-  const handleSaveEdit = () => {
-    if (!editedTitle.trim()) return;
-    onUpdateTask({
-      ...task,
-      title: editedTitle.trim(),
-      time: editedTime.trim() || undefined,
-      dueDate: editedDueDate.trim() || undefined
-    });
-    setIsEditing(false);
-  };
 
   const handleSetQuickDueDate = (newDueDate?: string) => {
     onUpdateTask({
@@ -158,13 +150,54 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
   const commentsCount = task.comments?.length || 0;
 
+  // Standup mention detection
+  const standupMention = React.useMemo(() => {
+    if (!standup) return null;
+    const taskTitleLower = task.title.toLowerCase();
+    const idStr = task.adoId ? `#${task.adoId}` : task.id.slice(-4).toLowerCase();
+
+    for (const [memberId, entry] of Object.entries(standup)) {
+      if (!entry) continue;
+      const member = team.find(m => m.id === memberId);
+      const memberName = member ? member.name : 'Teammate';
+
+      // Check blockers
+      if (entry.blockers && entry.blockers.toLowerCase() !== 'none') {
+        const bLower = entry.blockers.toLowerCase();
+        if (bLower.includes(taskTitleLower) || bLower.includes(idStr) || (task.title.length > 8 && bLower.includes(task.title.toLowerCase().slice(0, 15)))) {
+          return { type: 'blocker' as const, memberName, text: entry.blockers };
+        }
+      }
+
+      // Check today
+      if (entry.today) {
+        const tLower = entry.today.toLowerCase();
+        if (tLower.includes(taskTitleLower) || tLower.includes(idStr) || (task.title.length > 8 && tLower.includes(task.title.toLowerCase().slice(0, 15)))) {
+          return { type: 'today' as const, memberName, text: entry.today };
+        }
+      }
+
+      // Check yesterday
+      if (entry.yesterday) {
+        const yLower = entry.yesterday.toLowerCase();
+        if (yLower.includes(taskTitleLower) || yLower.includes(idStr) || (task.title.length > 8 && yLower.includes(task.title.toLowerCase().slice(0, 15)))) {
+          return { type: 'yesterday' as const, memberName, text: entry.yesterday };
+        }
+      }
+    }
+    return null;
+  }, [standup, task, team]);
+
   // Search match detection for supplemental info
   const trimmedSearch = searchQuery.trim().toLowerCase();
   const matchingAssignees = trimmedSearch 
     ? assignees.filter(m => m.name.toLowerCase().includes(trimmedSearch))
     : [];
   const matchingComment = trimmedSearch && task.comments
-    ? task.comments.find(c => c.text.toLowerCase().includes(trimmedSearch) || c.author.toLowerCase().includes(trimmedSearch))
+    ? task.comments.find(c => {
+        const cleaned = cleanAdoHtml(c.text).toLowerCase();
+        return cleaned.includes(trimmedSearch) || c.author.toLowerCase().includes(trimmedSearch);
+      })
     : null;
 
   return (
@@ -179,12 +212,8 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
       {/* Main Task Card */}
       <div
-        draggable={!isEditing}
+        draggable={true}
         onDragStart={(e) => {
-          if (isEditing) {
-            e.preventDefault();
-            return;
-          }
           if (onDragStart) onDragStart(e, task.id);
         }}
         onDragEnd={(e) => {
@@ -199,9 +228,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         onDrop={(e) => {
           if (onDropOnCard) onDropOnCard(e, task.id);
         }}
-        className={`bg-[var(--surface)] border rounded-xl p-3.5 select-none relative group task-card-item ${
-          isEditing ? 'is-editing cursor-default' : 'cursor-grab active:cursor-grabbing'
-        } ${
+        className={`bg-[var(--surface)] border rounded-xl p-3.5 select-none relative group task-card-item cursor-grab active:cursor-grabbing ${
           isDragging
             ? 'opacity-40 scale-[0.98] -rotate-1 border-dashed border-2 border-[var(--primary)] shadow-2xl ring-2 ring-[var(--primary)]/30 bg-[var(--primary-light)]/30 is-dragging'
             : isDragOver
@@ -233,7 +260,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         {isBlocked && task.status !== 'complete' && (
           <div 
             onClick={() => setDependencyModalOpen(true)}
-            className="flex items-center justify-between gap-2 px-2.5 py-1 mb-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-300 text-[11px] font-bold cursor-pointer hover:bg-red-500/15 transition-colors"
+            className="task-alert-banner flex items-center justify-between gap-2 px-2.5 py-1 mb-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-300 text-[11px] font-bold cursor-pointer hover:bg-red-500/15 transition-colors"
             title={`Blocked by: ${blockingTasks.map(t => t.title).join(', ')}. Click to inspect.`}
           >
             <div className="flex items-center gap-1.5 min-w-0">
@@ -250,7 +277,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
         {/* Overdue Warning Alert Bar on Card */}
         {isOverdue && (
-          <div className="flex items-center justify-between gap-2 px-2.5 py-1 mb-2.5 rounded-lg bg-[var(--critical-bg)] border border-[var(--critical-border)] text-[var(--critical)] text-[11px] font-bold">
+          <div className="task-alert-banner flex items-center justify-between gap-2 px-2.5 py-1 mb-2.5 rounded-lg bg-[var(--critical-bg)] border border-[var(--critical-border)] text-[var(--critical)] text-[11px] font-bold">
             <div className="flex items-center gap-1.5 min-w-0">
               <AlertTriangle size={13} className="flex-shrink-0 animate-pulse" />
               <span className="truncate">Overdue Warning: Due date passed ({dueBadge?.label})</span>
@@ -294,89 +321,50 @@ export const TaskCard: React.FC<TaskCardProps> = ({
 
           {/* Task Body */}
           <div className="flex-1 min-w-0">
-            {isEditing ? (
-              <div className="flex flex-col gap-2 mb-2">
-                <div>
-                  <label className="text-[10px] font-bold text-[var(--text-secondary)] mb-0.5 block">Title</label>
-                  <input
-                    type="text"
-                    value={editedTitle}
-                    onChange={(e) => setEditedTitle(e.target.value)}
-                    className="w-full text-xs font-semibold px-2 py-1 bg-[var(--surface)] border border-[var(--primary)] rounded-md outline-none text-[var(--text-primary)]"
-                    autoFocus
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[10px] font-bold text-[var(--text-secondary)] mb-0.5 block">Time Block</label>
-                    <input
-                      type="time"
-                      value={editedTime}
-                      onChange={(e) => setEditedTime(e.target.value)}
-                      className="w-full text-xs px-2 py-1 bg-[var(--surface)] border border-[var(--border)] rounded-md outline-none text-[var(--text-primary)]"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-[var(--text-secondary)] mb-0.5 block">Due Date</label>
-                    <input
-                      type="date"
-                      value={editedDueDate}
-                      onChange={(e) => setEditedDueDate(e.target.value)}
-                      className="w-full text-xs px-2 py-1 bg-[var(--surface)] border border-[var(--border)] rounded-md outline-none text-[var(--text-primary)]"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 mt-1">
-                  <button
-                    onClick={handleSaveEdit}
-                    className="px-2.5 py-1 bg-[var(--primary)] text-white text-xs font-bold rounded-md cursor-pointer hover:bg-[var(--primary-hover)]"
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDependencyModalOpen(true)}
-                    className="px-2.5 py-1 text-xs font-semibold rounded-md border border-[var(--border)] hover:bg-[var(--surface-hover)] text-[var(--text-secondary)] flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Lock size={12} className={isBlocked ? 'text-red-500' : 'text-[var(--primary)]'} />
-                    <span>Prerequisites ({totalPrerequisites})</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setEditedTitle(task.title);
-                      setEditedTime(task.time || '');
-                      setEditedDueDate(task.dueDate || '');
-                      setIsEditing(false);
-                    }}
-                    className="px-2.5 py-1 text-[var(--text-muted)] text-xs hover:text-[var(--text-primary)] cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-baseline justify-between gap-2">
-                <p
-                  onClick={() => setIsEditing(true)}
-                  className={`text-[13.5px] font-semibold leading-snug cursor-pointer hover:text-[var(--primary)] transition-colors break-words ${
-                    task.status === 'complete' ? 'line-through text-[var(--text-muted)]' : 'text-[var(--text-primary)]'
-                  }`}
+            <div className="flex items-start justify-between gap-2 group/title">
+              <p
+                onClick={() => setEditModalOpen(true)}
+                className={`task-title-text text-[13.5px] font-semibold leading-snug cursor-pointer hover:text-[var(--primary)] transition-colors break-words flex-1 ${
+                  task.status === 'complete' ? 'line-through text-[var(--text-muted)]' : 'text-[var(--text-primary)]'
+                }`}
+                title="Click to open task editor popup"
+              >
+                <HighlightText text={task.title} query={searchQuery} />
+              </p>
+
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {/* Quick Edit Popup Button (visible on card hover) */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditModalOpen(true);
+                  }}
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--primary)] hover:bg-[var(--primary-light)] opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                  title="Open task editor popup"
                 >
-                  <HighlightText text={task.title} query={searchQuery} />
-                </p>
+                  <Edit3 size={13} />
+                </button>
 
                 {/* Time block badge */}
                 {task.time && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--primary)] bg-[var(--primary-light)] px-2 py-0.5 rounded-md flex-shrink-0">
+                  <span 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--primary)] bg-[var(--primary-light)] px-2 py-0.5 rounded-md flex-shrink-0 cursor-pointer hover:opacity-80"
+                    title="Click to edit time block"
+                  >
                     <Clock size={11} />
                     <HighlightText text={formatTime12(task.time)} query={searchQuery} />
                   </span>
                 )}
               </div>
-            )}
+            </div>
 
             {/* Badges: Due Date / Blocked Status / ADO Instance / Story / Defect / Release / Groups */}
-            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+            <div className="task-badge-row flex flex-wrap items-center gap-1.5 mt-2">
               {/* Blocked Status Badge */}
               {isBlocked && task.status !== 'complete' && (
                 <button
@@ -445,16 +433,11 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                 </span>
               )}
 
-              {/* ADO Source Badge */}
-              {task.sourceInstance === 'external' ? (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[var(--external-ado)] bg-[var(--external-ado-bg)] px-2 py-0.5 rounded-md border border-[var(--external-ado)]/20">
-                  <Globe2 size={10} />
-                  <span>External OPS ADO</span>
-                </span>
-              ) : (
+              {/* ADO Linked Work Item Badge */}
+              {task.adoId && (
                 <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[var(--internal-ado)] bg-[var(--internal-ado-bg)] px-2 py-0.5 rounded-md border border-[var(--internal-ado)]/20">
                   <Building2 size={10} />
-                  <span>Internal Dev ADO</span>
+                  <span>ADO #{task.adoId}</span>
                 </span>
               )}
 
@@ -500,6 +483,30 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                   <HighlightText text={g.name} query={searchQuery} />
                 </span>
               ))}
+
+              {/* Standup Discussion Indicator Badge */}
+              {standupMention && (
+                <span
+                  className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                    standupMention.type === 'blocker'
+                      ? 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-300'
+                      : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-600 dark:text-indigo-300'
+                  }`}
+                  title={`Discussed in today's standup by ${standupMention.memberName}: "${standupMention.text}"`}
+                >
+                  {standupMention.type === 'blocker' ? (
+                    <>
+                      <AlertTriangle size={10} className="animate-pulse" />
+                      <span>Standup Blocker ({standupMention.memberName.split(' ')[0]})</span>
+                    </>
+                  ) : (
+                    <>
+                      <Users size={10} />
+                      <span>In Standup ({standupMention.memberName.split(' ')[0]})</span>
+                    </>
+                  )}
+                </span>
+              )}
             </div>
 
             {/* If assignee or comments matched search query, show visual context cue */}
@@ -530,7 +537,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             )}
 
             {/* Bottom Bar: Assignees & Actions */}
-            <div className="flex items-center justify-between mt-3 pt-2 border-t border-[var(--border)]">
+            <div className="task-bottom-bar flex items-center justify-between mt-3 pt-2 border-t border-[var(--border)]">
               {/* Assignee Avatar Stack */}
               <div className="flex items-center -space-x-1.5 overflow-hidden">
                 {assignees.length > 0 ? (
@@ -756,16 +763,34 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                         )}
                       </button>
 
+                      {/* Push to Standup */}
+                      {onPushToStandup && (
+                        <>
+                          <div className="my-1 border-t border-[var(--border)]" />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onPushToStandup(task);
+                              setMenuOpen(false);
+                            }}
+                            className="w-full text-left px-3 py-1.5 text-xs text-[var(--primary)] hover:bg-[var(--primary-light)] font-bold flex items-center gap-2 cursor-pointer transition-colors"
+                          >
+                            <Users size={12} />
+                            <span>Add to Today's Standup</span>
+                          </button>
+                        </>
+                      )}
+
                       <div className="my-1 border-t border-[var(--border)]" />
 
                       <button
                         onClick={() => {
-                          setIsEditing(true);
+                          setEditModalOpen(true);
                           setMenuOpen(false);
                         }}
                         className="w-full text-left px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[var(--surface-hover)] flex items-center gap-2 font-medium cursor-pointer"
                       >
-                        <Edit3 size={12} /> Edit Task
+                        <Edit3 size={12} /> Edit Task in Popup
                       </button>
                       <button
                         onClick={() => {
@@ -825,6 +850,23 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Task Full Edit Popup Modal */}
+      <TaskEditModal
+        isOpen={editModalOpen}
+        onClose={() => setEditModalOpen(false)}
+        task={task}
+        allTasks={allTasks}
+        team={team}
+        groups={groups}
+        userStories={userStories}
+        defects={defects}
+        releases={releases}
+        currentDateStr={currentDateStr}
+        onUpdateTask={onUpdateTask}
+        onDeleteTask={onDeleteTask}
+        onAddComment={onAddComment}
+      />
 
       {/* Task Dependency Management Modal */}
       <TaskDependencyModal

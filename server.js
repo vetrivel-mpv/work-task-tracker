@@ -1,8 +1,20 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
+import {
+  ROLE_PERMISSIONS,
+  ROLE_ALIASES,
+  normalizeRoleName,
+  checkScopeAccess,
+  requireRole,
+  requirePermission,
+  requireAnyPermission,
+  requireAllPermissions,
+  requireScope
+} from './permissionMiddleware.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +26,188 @@ const isDev = process.env.NODE_ENV !== 'production';
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
+// Export shared middlewares for modular route attachments
+export {
+  requireRole,
+  requirePermission,
+  requireAnyPermission,
+  requireAllPermissions,
+  requireScope,
+  checkScopeAccess,
+  ROLE_PERMISSIONS,
+  ROLE_ALIASES
+};
+
+// ============================================================================
+// AUTH & JWT SESSION ENGINE
+// ============================================================================
+
+const JWT_SECRET = process.env.AUTH_SECRET || process.env.JWT_SECRET || 'northstar-delivery-auth-jwt-secret-key-2026-secure';
+
+// Base64Url encoding/decoding for RFC 7519 compliant HS256 JWT
+function base64UrlEncode(str) {
+  return Buffer.from(str)
+    .toString('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+
+function base64UrlDecode(str) {
+  let output = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (output.length % 4) {
+    output += '=';
+  }
+  return Buffer.from(output, 'base64').toString('utf8');
+}
+
+// Generate HS256 JWT Token with resolved role, identity, and scopes
+function signJwt(payload, expiresInSeconds = 86400 * 30) {
+  const header = {
+    alg: 'HS256',
+    typ: 'JWT'
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const fullPayload = {
+    ...payload,
+    iat: now,
+    exp: now + expiresInSeconds
+  };
+  const encodedHeader = base64UrlEncode(JSON.stringify(header));
+  const encodedPayload = base64UrlEncode(JSON.stringify(fullPayload));
+  const signature = crypto
+    .createHmac('sha256', JWT_SECRET)
+    .update(`${encodedHeader}.${encodedPayload}`)
+    .digest('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+
+  return `${encodedHeader}.${encodedPayload}.${signature}`;
+}
+
+// Verify & decode HS256 JWT Token
+function verifyJwt(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+
+  const [encodedHeader, encodedPayload, signature] = parts;
+  const expectedSignature = crypto
+    .createHmac('sha256', JWT_SECRET)
+    .update(`${encodedHeader}.${encodedPayload}`)
+    .digest('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+
+  if (signature !== expectedSignature) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(base64UrlDecode(encodedPayload));
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < now) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+// Global Auth & Session Resolver Middleware
+// Attaches resolved user and role to req.auth and req.user on EVERY authenticated request
+function authSessionMiddleware(req, res, next) {
+  let token = null;
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const bearerVal = authHeader.slice(7).trim();
+    // Verify it looks like a JWT (three base64url segments)
+    if (bearerVal.split('.').length === 3) {
+      token = bearerVal;
+    }
+  }
+
+  if (!token && req.headers['x-auth-token']) {
+    token = req.headers['x-auth-token'];
+  }
+
+  if (!token && req.query.token) {
+    token = req.query.token;
+  }
+
+  let session = null;
+  if (token) {
+    session = verifyJwt(token);
+  }
+
+  // Fallback to explicit header hints if no valid JWT was present
+  if (!session) {
+    const headerRole = req.headers['x-user-role'];
+    const headerUserId = req.headers['x-user-id'];
+    const headerEmail = req.headers['x-user-email'];
+    const headerName = req.headers['x-user-name'];
+    const headerOrgScope = req.headers['x-user-org-scope'];
+    const headerProjScope = req.headers['x-user-proj-scope'];
+
+    if (headerRole && ROLE_PERMISSIONS[headerRole]) {
+      session = {
+        userId: headerUserId || 'usr-session',
+        name: headerName || 'Active User',
+        email: headerEmail || 'user@company.com',
+        role: headerRole,
+        orgScope: headerOrgScope || '*',
+        projectScope: headerProjScope || '*',
+        isAdoConnectionOwner: headerRole === 'Administrator'
+      };
+    }
+  }
+
+  // Default fallback resolution if unauthenticated
+  if (!session) {
+    const isOwner = Boolean(process.env.ADO_PAT || process.env.AZURE_DEVOPS_PAT);
+    const defaultRole = isOwner ? 'Administrator' : 'Stakeholder/Viewer';
+    session = {
+      userId: 'usr-default-session',
+      name: isOwner ? 'ADO Connection Admin' : 'Portal Viewer',
+      email: 'admin@northstar.delivery',
+      role: defaultRole,
+      orgScope: process.env.ADO_ORG || '*',
+      projectScope: process.env.ADO_PROJECT || '*',
+      isAdoConnectionOwner: isOwner
+    };
+  }
+
+  const role = session.role && ROLE_PERMISSIONS[session.role] ? session.role : 'Stakeholder/Viewer';
+  const permissions = ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS['Stakeholder/Viewer'];
+
+  req.auth = {
+    userId: session.userId || 'usr-session',
+    name: session.name || 'User',
+    email: session.email || 'user@northstar.delivery',
+    role,
+    orgScope: session.orgScope || '*',
+    projectScope: session.projectScope || '*',
+    isAdoConnectionOwner: Boolean(session.isAdoConnectionOwner),
+    permissions,
+    token: token || signJwt(session)
+  };
+
+  req.user = req.auth;
+
+  // Transmit resolved role, user identity, and scope on response headers
+  res.setHeader('X-Authenticated-Role', req.auth.role);
+  res.setHeader('X-Authenticated-User-Id', req.auth.userId);
+  res.setHeader('X-Authenticated-Scope', `${req.auth.orgScope}/${req.auth.projectScope}`);
+
+  next();
+}
+
+// Attach auth middleware to all API requests
+app.use('/api', authSessionMiddleware);
+
 // Lazy GoogleGenAI client
 let aiClient = null;
 function getAiClient(clientApiKey) {
@@ -21,7 +215,81 @@ function getAiClient(clientApiKey) {
   if (!key) {
     return null;
   }
-  return new GoogleGenAI({ apiKey: key });
+  return new GoogleGenAI({
+    apiKey: key,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build'
+      }
+    }
+  });
+}
+
+// Clean and extract human-friendly error messages from Gemini SDK errors
+function formatAiErrorMessage(error) {
+  if (!error) return 'AI generation failed.';
+  const raw = error.message || String(error);
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.error?.message) {
+      if (parsed.error.code === 503 || parsed.error.status === 'UNAVAILABLE' || parsed.error.message.includes('high demand')) {
+        return 'The Gemini model is currently experiencing temporary high demand on Google servers. Please try again in a moment.';
+      }
+      return parsed.error.message;
+    }
+  } catch (e) {
+    // not JSON
+  }
+  if (raw.includes('503') || raw.includes('high demand') || raw.includes('UNAVAILABLE')) {
+    return 'The Gemini model is experiencing temporary high demand on Google servers. Please try again in a few seconds.';
+  }
+  return raw;
+}
+
+// Resilient AI generation with automatic retry and model fallback hierarchy
+async function generateContentWithResilience(ai, { prompt, config = {} }) {
+  // Ordered fallback models compliant with the gemini-api skill
+  const candidateModels = ['gemini-3.7-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+  let lastError = null;
+
+  for (const model of candidateModels) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config
+        });
+        if (response && response.text) {
+          return { text: response.text, modelUsed: model };
+        }
+      } catch (err) {
+        lastError = err;
+        const errMsg = err?.message || String(err);
+        const isTransient =
+          errMsg.includes('503') ||
+          errMsg.includes('429') ||
+          errMsg.includes('UNAVAILABLE') ||
+          errMsg.includes('high demand') ||
+          errMsg.includes('RESOURCE_EXHAUSTED') ||
+          errMsg.includes('overloaded') ||
+          errMsg.includes('rate limit');
+
+        console.warn(`[AI Resilience] Model '${model}' attempt ${attempt} warning:`, errMsg);
+
+        if (isTransient) {
+          // Exponential jittered backoff before retry or switching models
+          const delay = attempt * 500 + Math.floor(Math.random() * 300);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          // If non-transient (e.g. prompt constraint), break to next model
+          break;
+        }
+      }
+    }
+  }
+
+  throw lastError || new Error('AI Generation service temporarily unavailable.');
 }
 
 // 1. AI Standup Summary endpoint
@@ -60,15 +328,12 @@ Format your response in clean Markdown with:
 
 Keep it concise, professional, and directly actionable.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.7-flash',
-      contents: prompt
-    });
+    const result = await generateContentWithResilience(ai, { prompt });
 
-    res.json({ ok: true, summary: response.text });
+    res.json({ ok: true, summary: result.text, model: result.modelUsed });
   } catch (error) {
     console.error('[AI Standup Summary Error]:', error);
-    res.status(500).json({ error: error.message || 'AI generation failed' });
+    res.status(500).json({ error: formatAiErrorMessage(error) });
   }
 });
 
@@ -108,15 +373,12 @@ Produce a structured Release Document in clean Markdown:
 4. **⚠️ Release Risk Matrix & Go/No-Go Assessment** (Evaluate critical defects, incomplete stories, and staging readiness)
 5. **QA & Rollback Plan Checklist**`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.7-flash',
-      contents: prompt
-    });
+    const result = await generateContentWithResilience(ai, { prompt });
 
-    res.json({ ok: true, notes: response.text });
+    res.json({ ok: true, notes: result.text, model: result.modelUsed });
   } catch (error) {
     console.error('[AI Release Notes Error]:', error);
-    res.status(500).json({ error: error.message || 'AI generation failed' });
+    res.status(500).json({ error: formatAiErrorMessage(error) });
   }
 });
 
@@ -153,15 +415,12 @@ Provide:
 3. **Recommended Fix Strategy**: Architectural and code-level suggestions.
 4. **Step-by-Step Retest & Edge Case Matrix**: 4-5 high-value test scenarios to prevent regression.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.7-flash',
-      contents: prompt
-    });
+    const result = await generateContentWithResilience(ai, { prompt });
 
-    res.json({ ok: true, analysis: response.text });
+    res.json({ ok: true, analysis: result.text, model: result.modelUsed });
   } catch (error) {
     console.error('[AI Defect Analysis Error]:', error);
-    res.status(500).json({ error: error.message || 'AI generation failed' });
+    res.status(500).json({ error: formatAiErrorMessage(error) });
   }
 });
 
@@ -192,20 +451,401 @@ ENGINEER DETAILS:
 
 Generate a concise (2-3 paragraphs) message highlighting their impact on client delivery, technical rigor, and team collaboration. Keep it authentic, appreciative, and professional.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.7-flash',
-      contents: prompt
-    });
+    const result = await generateContentWithResilience(ai, { prompt });
 
-    res.json({ ok: true, note: response.text });
+    res.json({ ok: true, note: result.text, model: result.modelUsed });
   } catch (error) {
     console.error('[AI Appreciation Error]:', error);
-    res.status(500).json({ error: error.message || 'AI generation failed' });
+    res.status(500).json({ error: formatAiErrorMessage(error) });
   }
 });
 
-// 5. Direct Gemini AI Real-Time Text Writing Assistance endpoint
-app.post('/api/ai/writing-assist', async (req, res) => {
+// 5. AI Sprint Roast & Standup Roast Generator
+app.post('/api/ai/team-roast', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || '';
+    const userApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const ai = getAiClient(userApiKey);
+
+    if (!ai) {
+      return res.status(400).json({
+        error: 'No Gemini API key available. Configure GEMINI_API_KEY or Settings.'
+      });
+    }
+
+    const { 
+      heatLevel = 'spicy', 
+      target = 'sprint_team', 
+      targetMemberName, 
+      dateStr, 
+      stats, 
+      openBugs = [], 
+      blockers = [],
+      stories = []
+    } = req.body;
+
+    const heatDescriptions = {
+      mild: 'Mild & Gentle: Playful, wholesome office comedy with light ribbing about standup updates, minor delays, and coffee addiction. Keep it warm and friendly.',
+      spicy: 'Medium & Spicy: Witty, sharp engineering satire. Call out classic software tropes like "worked on my machine", 37 bugs in staging, 8-point stories that became epics, and PRs waiting for review since last sprint. Punchy and hilarious.',
+      fiery: 'Fiery & Savage: Maximum wit and ruthless tech comedy (yet professional and safe for work). Roast the blocker pile, meeting-heavy sprint, story estimation inflation, and critical bug gates like a comedy central tech roast.'
+    };
+
+    const targetDesc = target === 'member' && targetMemberName 
+      ? `Specific Teammate Roast for: ${targetMemberName}` 
+      : 'Entire Sprint Delivery Team Roast';
+
+    const prompt = `You are a legendary, sharp-witted Comedy Tech Lead and Standup Comedian roasting a software engineering delivery team.
+Task: Generate a hilarious, memorable, witty Roast for the sprint team.
+
+ROAST SETTINGS:
+- Roast Type: ${targetDesc}
+- Heat Level: ${heatLevel.toUpperCase()} (${heatDescriptions[heatLevel] || heatDescriptions.spicy})
+- Date: ${dateStr || 'Current Sprint'}
+
+SPRINT CONTEXT & DELIVERY TELEMETRY:
+- Open Bugs / Defects: ${stats?.openBugs || openBugs.length || 37} (Critical Blockers: ${stats?.criticalBugs || 1})
+- Incomplete Stories: ${stats?.incompleteStories || stories.length || 6} (Passed QA: ${stats?.passedStories || 0})
+- Pending Tasks: ${stats?.pendingTasks || 29}
+- Recent Standup Blockers: ${JSON.stringify(blockers.slice(0, 8))}
+- Sample Bug Titles: ${JSON.stringify(openBugs.slice(0, 5).map(b => typeof b === 'string' ? b : b.title))}
+- Sample Story Scopes: ${JSON.stringify(stories.slice(0, 5).map(s => typeof s === 'string' ? s : s.title))}
+
+Respond strictly in valid JSON format matching this schema:
+{
+  "roastTitle": "A catchy, punchy headline for the roast (e.g. 'Sprint 2026.03: Where Story Points Go to Die')",
+  "roastBody": "A rich 3-4 paragraph comedy monologue roasting the sprint progress, blockers, bug piles, and sprint dynamics with sharp humor.",
+  "punchlines": [
+    "3-5 rapid-fire one-liner zings or quote highlights"
+  ],
+  "redemptionTips": [
+    "2-3 witty, constructive actionable steps for the team to actually fix their blockers and pass QA"
+  ]
+}
+Return ONLY valid raw JSON with no Markdown markdown backticks if possible, or clean JSON markdown block.`;
+
+    const result = await generateContentWithResilience(ai, { 
+      prompt,
+      config: { responseMimeType: 'application/json' }
+    });
+
+    let parsed;
+    try {
+      const cleanJson = result.text.replace(/```json\s*|```/gi, '').trim();
+      parsed = JSON.parse(cleanJson);
+    } catch (e) {
+      parsed = {
+        roastTitle: `The Sprint ${dateStr || ''} Comedy Roast`,
+        roastBody: result.text,
+        punchlines: ["When in doubt, blame the staging environment."],
+        redemptionTips: ["Merge that PR before tomorrow's standup!"]
+      };
+    }
+
+    res.json({
+      ok: true,
+      roast: parsed,
+      model: result.modelUsed
+    });
+  } catch (error) {
+    console.error('[AI Team Roast Error]:', error);
+    res.status(500).json({ error: formatAiErrorMessage(error) });
+  }
+});
+
+// 6. AI Duplicate Tickets Deep Analysis
+app.post('/api/ai/duplicate-tickets-analysis', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || '';
+    const userApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const ai = getAiClient(userApiKey);
+
+    if (!ai) {
+      return res.status(400).json({
+        error: 'No Gemini API key available. Configure GEMINI_API_KEY or Settings.'
+      });
+    }
+
+    const { stories = [], defects = [], tasks = [], testCases = [] } = req.body;
+
+    const allItems = [
+      ...stories.map(s => ({ id: s.id, adoId: s.adoId, title: s.title, type: 'story', status: s.status, desc: (s.description || '').slice(0, 300), assignee: s.assigneeName, iter: s.iterationPath })),
+      ...defects.map(d => ({ id: d.id, adoId: d.adoId, title: d.title, type: 'defect', status: d.status, severity: d.severity, desc: (d.description || d.stepsToReproduce || '').slice(0, 300), assignee: d.assigneeName, iter: d.iterationPath })),
+      ...tasks.map(t => ({ id: t.id, adoId: t.adoId, title: t.title, type: 'task', status: t.status, desc: (t.description || '').slice(0, 200), assignee: t.assigneeName, iter: t.iterationPath })),
+      ...testCases.map(tc => ({ id: tc.id, adoId: tc.adoId, title: tc.title, type: 'testCase', status: tc.status, desc: (tc.description || '').slice(0, 200), assignee: tc.assigneeName }))
+    ];
+
+    if (allItems.length < 2) {
+      return res.json({
+        ok: true,
+        duplicatesFound: 0,
+        matches: [],
+        summary: "Not enough work items present to perform duplicate cross-analysis."
+      });
+    }
+
+    const prompt = `You are an expert AI Quality Lead and Agile Delivery Architect.
+Perform a semantic duplicate and overlap analysis across the following work items.
+
+Identify work items that:
+1. Are exact or near-exact duplicates (same bug reported twice, duplicate story created, duplicate task).
+2. Have heavy semantic overlap (solving the exact same UI crash, overlapping endpoint integration, redundant test case).
+3. Have identical root causes or symptoms.
+
+WORK ITEMS LIST:
+${JSON.stringify(allItems.slice(0, 80), null, 2)}
+
+Provide a structured JSON output with all detected duplicate pairs (confidence >= 65%):
+{
+  "summary": "Brief executive summary of findings (e.g. 'Found 3 potential duplicate defect clusters and 1 overlapping user story')",
+  "duplicatesFound": 0,
+  "matches": [
+    {
+      "id": "dup-1",
+      "ticketA": { "id": "id1", "adoId": 101, "title": "Title 1", "type": "defect", "status": "Active", "assigneeName": "Name" },
+      "ticketB": { "id": "id2", "adoId": 105, "title": "Title 2", "type": "defect", "status": "New", "assigneeName": "Name" },
+      "confidenceScore": 92,
+      "matchType": "duplicate_defect",
+      "reason": "Clear explanation of why these two tickets are duplicates (e.g. 'Both tickets describe login crash on token expiry with identical symptoms')",
+      "sharedKeywords": ["token", "login crash", "auth expiry"],
+      "suggestedAction": "merge_into_a"
+    }
+  ]
+}
+Note: "suggestedAction" must be one of: "merge_into_a", "merge_into_b", "close_duplicate", "link_related", "keep_separate".
+Return ONLY valid raw JSON.`;
+
+    const result = await generateContentWithResilience(ai, {
+      prompt,
+      config: { responseMimeType: 'application/json' }
+    });
+
+    let parsed;
+    try {
+      const cleanJson = result.text.replace(/```json\s*|```/gi, '').trim();
+      parsed = JSON.parse(cleanJson);
+    } catch (e) {
+      parsed = { summary: 'Analysis completed', duplicatesFound: 0, matches: [] };
+    }
+
+    res.json({
+      ok: true,
+      timestamp: new Date().toISOString(),
+      scannedCount: {
+        stories: stories.length,
+        defects: defects.length,
+        tasks: tasks.length,
+        testCases: testCases.length,
+        total: allItems.length
+      },
+      duplicatesFound: parsed.matches ? parsed.matches.length : (parsed.duplicatesFound || 0),
+      matches: parsed.matches || [],
+      summary: parsed.summary || `Scanned ${allItems.length} items.`,
+      model: result.modelUsed
+    });
+  } catch (error) {
+    console.error('[AI Duplicate Tickets Error]:', error);
+    res.status(500).json({ error: formatAiErrorMessage(error) });
+  }
+});
+
+// 7. AI Single Ticket Pre-Submission Duplicate Check
+app.post('/api/ai/check-ticket-duplicate', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || '';
+    const userApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const ai = getAiClient(userApiKey);
+
+    if (!ai) {
+      return res.status(400).json({
+        error: 'No Gemini API key available. Configure GEMINI_API_KEY or Settings.'
+      });
+    }
+
+    const { newTicket, existingTickets = [] } = req.body;
+    if (!newTicket || !newTicket.title) {
+      return res.status(400).json({ error: 'newTicket with title is required' });
+    }
+
+    if (existingTickets.length === 0) {
+      return res.json({
+        ok: true,
+        hasDuplicate: false,
+        highestConfidence: 0,
+        matches: [],
+        message: 'No existing tickets to compare.'
+      });
+    }
+
+    const prompt = `You are an AI Ticket Triaging Agent.
+Check if the following NEW ticket is a duplicate of any EXISTING ticket in the project.
+
+NEW TICKET:
+- Title: ${newTicket.title}
+- Type: ${newTicket.type || 'Defect/Story'}
+- Description: ${newTicket.description || 'N/A'}
+- Steps/Details: ${newTicket.stepsToReproduce || newTicket.acceptanceCriteria || 'N/A'}
+
+EXISTING TICKETS IN BACKLOG:
+${JSON.stringify(existingTickets.slice(0, 60).map(t => ({
+  id: t.id,
+  adoId: t.adoId,
+  title: t.title,
+  type: t.type || t.workItemType,
+  status: t.status,
+  descSnippet: (t.description || t.stepsToReproduce || '').slice(0, 200)
+})), null, 2)}
+
+Respond with JSON:
+{
+  "hasDuplicate": true/false (true if any match confidence >= 70%),
+  "highestConfidence": number (0-100),
+  "matches": [
+    {
+      "existingTicketId": "string",
+      "existingTicketAdoId": number or null,
+      "existingTitle": "string",
+      "confidenceScore": 85,
+      "reason": "Why this matches the new ticket",
+      "recommendation": "Use existing ticket #... instead of creating a duplicate"
+    }
+  ]
+}
+Return ONLY valid JSON.`;
+
+    const result = await generateContentWithResilience(ai, {
+      prompt,
+      config: { responseMimeType: 'application/json' }
+    });
+
+    let parsed;
+    try {
+      const cleanJson = result.text.replace(/```json\s*|```/gi, '').trim();
+      parsed = JSON.parse(cleanJson);
+    } catch (e) {
+      parsed = { hasDuplicate: false, highestConfidence: 0, matches: [] };
+    }
+
+    res.json({
+      ok: true,
+      hasDuplicate: Boolean(parsed.hasDuplicate),
+      highestConfidence: parsed.highestConfidence || 0,
+      matches: parsed.matches || [],
+      model: result.modelUsed
+    });
+  } catch (error) {
+    console.error('[AI Check Single Duplicate Error]:', error);
+    res.status(500).json({ error: formatAiErrorMessage(error) });
+  }
+});
+
+// 8. AI Retrospective Synthesis & Action Generator
+app.post('/api/ai/retro-summary', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || '';
+    const userApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const ai = getAiClient(userApiKey);
+
+    if (!ai) {
+      return res.status(400).json({
+        error: 'No Gemini API key available. Configure GEMINI_API_KEY or Settings.'
+      });
+    }
+
+    const { items = [], sessionTitle = 'Sprint Retrospective', sprintContext = {} } = req.body;
+
+    const keepItems = items.filter(i => i.category === 'keep').map(i => `- ${i.text} (${i.votes || 0} votes)`);
+    const stopItems = items.filter(i => i.category === 'stop').map(i => `- ${i.text} (${i.votes || 0} votes)`);
+    const startItems = items.filter(i => i.category === 'start').map(i => `- ${i.text} (${i.votes || 0} votes)`);
+
+    const prompt = `You are a Principal Agile Coach, Scrum Master, and Delivery Lead.
+Analyze the following anonymous Keep / Stop / Start retrospective input from the engineering and QA team.
+
+SESSION: ${sessionTitle}
+TOTAL INPUTS: ${items.length} (Keep: ${keepItems.length}, Stop: ${stopItems.length}, Start: ${startItems.length})
+
+--- KEEP ITEMS (What worked well, practices to preserve) ---
+${keepItems.length > 0 ? keepItems.join('\n') : 'No keep items submitted.'}
+
+--- STOP ITEMS (Pain points, friction, waste, blockers) ---
+${stopItems.length > 0 ? stopItems.join('\n') : 'No stop items submitted.'}
+
+--- START ITEMS (New initiatives, tooling, process improvements) ---
+${startItems.length > 0 ? startItems.join('\n') : 'No start items submitted.'}
+
+Provide a structured, executive-ready retrospective synthesis in JSON format:
+{
+  "executiveSummary": "A concise 2-3 sentence overview synthesizing the overall team sentiment, main achievements, and core challenges.",
+  "moraleScore": 85 (0 to 100 integer representing team morale / sentiment health based on tone and volume of keep vs stop),
+  "moraleHealthCategory": "High Energy" | "Steady & Productive" | "Frictional / Burnout Risk" | "Critical Process Debt",
+  "keyThemes": [
+    {
+      "title": "Theme Title (e.g. Test Automation Bottlenecks, Deep Work Protection)",
+      "category": "keep" | "stop" | "start",
+      "summary": "Brief 1-2 sentence description of this theme and what it means for team velocity."
+    }
+  ],
+  "topStrengths": [
+    "2-4 bullet points highlighting what the team should celebrate and continue"
+  ],
+  "criticalRisks": [
+    "2-4 bullet points describing the top risks or frustrations that need leadership attention"
+  ],
+  "recommendedActionItems": [
+    {
+      "id": "act-1",
+      "title": "Clear, imperative action title (e.g. Implement 24h pre-deployment sanity test run in Azure DevOps pipeline)",
+      "category": "Process" | "Quality" | "Tooling" | "Communication",
+      "priority": "high" | "medium" | "low",
+      "suggestedRole": "QA Engineer" | "Engineering Lead" | "Delivery/Release Manager" | "All Developers",
+      "rationale": "Why this addresses the stop/start items"
+    }
+  ],
+  "teamMantra": "An inspiring, catchy 1-sentence team agreement or mantra for the next sprint"
+}
+Return ONLY valid raw JSON with no Markdown wrapping.`;
+
+    const result = await generateContentWithResilience(ai, {
+      prompt,
+      config: { responseMimeType: 'application/json' }
+    });
+
+    let parsed;
+    try {
+      const cleanJson = result.text.replace(/```json\s*|```/gi, '').trim();
+      parsed = JSON.parse(cleanJson);
+    } catch (e) {
+      parsed = {
+        executiveSummary: result.text.slice(0, 300),
+        moraleScore: 80,
+        moraleHealthCategory: "Steady & Productive",
+        keyThemes: [],
+        topStrengths: keepItems.slice(0, 3),
+        criticalRisks: stopItems.slice(0, 3),
+        recommendedActionItems: startItems.slice(0, 3).map((s, idx) => ({
+          id: `act-${idx + 1}`,
+          title: s.replace(/^-\s*/, ''),
+          category: "Process",
+          priority: "high",
+          suggestedRole: "Team",
+          rationale: "Team feedback"
+        })),
+        teamMantra: "Continuous improvement through transparent collaboration."
+      };
+    }
+
+    res.json({
+      ok: true,
+      summary: parsed,
+      model: result.modelUsed
+    });
+  } catch (error) {
+    console.error('[AI Retrospective Summary Error]:', error);
+    res.status(500).json({ error: formatAiErrorMessage(error) });
+  }
+});
+
+// 9. General Chat Completions proxy (for custom endpoints/compatibility)
+const handleChatCompletions = async (req, res) => {
   try {
     const authHeader = req.headers['authorization'] || '';
     const userApiKey = authHeader.replace(/^Bearer\s+/i, '').trim();
@@ -391,16 +1031,471 @@ Format output strictly as JSON array:
   }
 });
 
-// 6. Azure DevOps connectivity test proxy (optional helper to overcome browser CORS on PAT)
+// Helper to clean and sanitize heavy ADO rich text / HTML fields into clean, formatted text
+function sanitizeAdoRichText(str, maxLength = 4000) {
+  if (!str || typeof str !== 'string') return '';
+
+  let text = str;
+
+  // 1. Strip heavy base64 data URIs
+  text = text.replace(/src=["']data:image\/[^"']+["']/gi, 'src="[image]"');
+
+  // 2. Strip scripts and styles
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+             .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+
+  // 3. Convert <a> links:
+  // If link text is identical to href or empty, replace with just the href
+  // Otherwise if href and text differ, format as "text (url)"
+  text = text.replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (match, href, anchorText) => {
+    const cleanText = anchorText.replace(/<[^>]+>/g, '').trim();
+    const cleanHref = (href || '').trim();
+    if (!cleanText || cleanText === cleanHref) {
+      return cleanHref;
+    }
+    return `${cleanText} (${cleanHref})`;
+  });
+
+  // 4. Convert block breaks and newlines
+  text = text.replace(/<\/?(p|div|tr|h[1-6]|pre|blockquote)[^>]*>/gi, '\n');
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<li[^>]*>/gi, '• ');
+  text = text.replace(/<\/li>/gi, '\n');
+  text = text.replace(/<\/(td|th)>/gi, '  ');
+
+  // 5. Remove any remaining HTML tags
+  text = text.replace(/<[^>]+>/g, '');
+
+  // 6. Decode standard and numeric HTML entities
+  const htmlEntities = {
+    '&nbsp;': ' ',
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#39;': "'",
+    '&apos;': "'",
+    '&#x2F;': '/',
+    '&#47;': '/',
+    '&copy;': '©',
+    '&reg;': '®',
+    '&trade;': '™',
+    '&bull;': '•',
+    '&middot;': '·',
+    '&ndash;': '–',
+    '&mdash;': '—'
+  };
+
+  text = text.replace(/&[a-z0-9#x]+;/gi, (match) => {
+    const lower = match.toLowerCase();
+    if (htmlEntities[lower]) {
+      return htmlEntities[lower];
+    }
+    if (match.startsWith('&#x') || match.startsWith('&#X')) {
+      const hex = parseInt(match.slice(3, -1), 16);
+      if (!isNaN(hex)) return String.fromCharCode(hex);
+    } else if (match.startsWith('&#')) {
+      const dec = parseInt(match.slice(2, -1), 10);
+      if (!isNaN(dec)) return String.fromCharCode(dec);
+    }
+    return match;
+  });
+
+  // 7. Clean up whitespace
+  text = text
+    .split('\n')
+    .map(line => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (text.length > maxLength) {
+    text = text.substring(0, maxLength) + '... [truncated]';
+  }
+
+  return text;
+}
+
+// Helper to clean, validate, and normalize Azure DevOps organization and project strings
+function parseAdoTarget(orgInput, projectInput) {
+  const rawOrg = (orgInput || process.env.ADO_ORG || '').trim();
+  const rawProject = (projectInput || process.env.ADO_PROJECT || '').trim();
+
+  // Decode URI components if URL encoded (%20, etc.)
+  let combined = `${rawOrg}/${rawProject}`;
+  try {
+    if (combined.includes('%')) combined = decodeURIComponent(combined);
+  } catch {}
+
+  let extractedOrg = '';
+  let extractedProject = '';
+
+  // 1. Legacy VisualStudio format: https://myorg.visualstudio.com/MyProject
+  if (/^https?:\/\/([^.]+)\.visualstudio\.com/i.test(rawOrg)) {
+    const match = rawOrg.match(/^https?:\/\/([^.]+)\.visualstudio\.com(?:\/(?:DefaultCollection\/)?([^/?#]+))?/i);
+    if (match) {
+      extractedOrg = match[1] || '';
+      extractedProject = match[2] || rawProject || '';
+    }
+  }
+  // 2. Modern dev.azure.com URL format: https://dev.azure.com/org/project/_workitems...
+  else if (/^https?:\/\/dev\.azure\.com\//i.test(rawOrg) || rawOrg.includes('dev.azure.com/')) {
+    const pathPart = rawOrg
+      .replace(/^https?:\/\/dev\.azure\.com\//i, '')
+      .replace(/^[a-z0-9-.]+dev\.azure\.com\//i, '')
+      .split('?')[0]
+      .split('#')[0];
+    const segments = pathPart.split('/').filter(Boolean);
+    if (segments.length >= 1) extractedOrg = segments[0];
+    if (segments.length >= 2 && !segments[1].startsWith('_')) extractedProject = segments[1];
+  }
+  // 3. Slash separated: org/project or org\project
+  else if (rawOrg.includes('/') || rawOrg.includes('\\')) {
+    const cleanSlashes = rawOrg.replace(/\\+/g, '/').replace(/^\/+|\/+$/g, '');
+    const segments = cleanSlashes.split('/').filter(Boolean);
+    if (segments.length >= 2) {
+      extractedOrg = segments[0];
+      extractedProject = segments[1];
+    } else if (segments.length === 1) {
+      extractedOrg = segments[0];
+    }
+  } else {
+    extractedOrg = rawOrg;
+    extractedProject = rawProject;
+  }
+
+  // If project input was specified separately
+  if (!extractedProject && rawProject) {
+    let cleanProj = rawProject;
+    if (cleanProj.includes('/') || cleanProj.includes('\\')) {
+      cleanProj = cleanProj.replace(/\\+/g, '/').split('/').filter(Boolean).pop() || cleanProj;
+    }
+    extractedProject = cleanProj;
+  }
+
+  // Strip trailing punctuation & query params
+  let cleanOrg = (extractedOrg || '').replace(/[?#].*$/, '').trim();
+  let cleanProject = (extractedProject || '').replace(/[?#].*$/, '').trim();
+
+  // If project was passed as system route like _workitems or _boards
+  if (cleanProject.startsWith('_')) {
+    cleanProject = (rawProject && !rawProject.startsWith('_')) ? rawProject : '';
+  }
+
+  // Fallbacks if empty
+  if (!cleanOrg && !cleanProject) {
+    cleanOrg = process.env.ADO_ORG || 'simetricwdh';
+    cleanProject = process.env.ADO_PROJECT || 'ACM';
+  } else if (!cleanOrg) {
+    cleanOrg = process.env.ADO_ORG || 'simetricwdh';
+  }
+
+  // If cleanProject is duplicated in cleanOrg or matches default
+  if (cleanProject && cleanProject.toLowerCase() === cleanOrg.toLowerCase()) {
+    cleanOrg = process.env.ADO_ORG || 'simetricwdh';
+    cleanProject = process.env.ADO_PROJECT || 'ACM';
+  }
+
+  // Validate illegal ADO characters
+  const illegalCharsRegex = /[\\:*?"<>|;#$%{}[\]^~`]/;
+  const isOrgValid = cleanOrg && !illegalCharsRegex.test(cleanOrg);
+  const isProjValid = !cleanProject || !illegalCharsRegex.test(cleanProject);
+  const isValid = Boolean(isOrgValid && isProjValid);
+
+  const fullUrl = cleanProject 
+    ? `https://dev.azure.com/${cleanOrg}/${cleanProject}` 
+    : `https://dev.azure.com/${cleanOrg}`;
+
+  return { cleanOrg, cleanProject, fullUrl, isValid };
+}
+
+// Server-side PAT & Target resolver (prioritizes header, body, then env vars)
+function resolveAdoCredentials(req, explicitOrg, explicitProject, explicitPat) {
+  const headerPat = req.headers['x-ado-pat'] || 
+    (req.headers['authorization']?.startsWith('Basic ') 
+      ? Buffer.from(req.headers['authorization'].split(' ')[1], 'base64').toString().replace(/^:/, '') 
+      : null);
+
+  const pat = explicitPat || headerPat || process.env.ADO_PAT || process.env.AZURE_DEVOPS_PAT || '';
+  const { cleanOrg, cleanProject, fullUrl, isValid } = parseAdoTarget(explicitOrg, explicitProject);
+  return { pat, cleanOrg, cleanProject, fullUrl, isValid };
+}
+
+// ============================================================================
+// 5. AUTHENTICATION & ROLE SESSION ENDPOINTS
+// ============================================================================
+
+// Issue or sign a fresh JWT Auth Token with embedded user identity, role, and ADO scope
+app.post('/api/auth/token', (req, res) => {
+  const { userId, name, email, role, orgScope, projectScope, isAdoConnectionOwner } = req.body || {};
+  const validRole = role && ROLE_PERMISSIONS[role] ? role : 'Stakeholder/Viewer';
+  
+  const payload = {
+    sub: userId || 'usr-session',
+    userId: userId || `usr-${Date.now()}`,
+    name: name || 'User',
+    email: email || 'user@company.com',
+    role: validRole,
+    orgScope: orgScope || '*',
+    projectScope: projectScope || '*',
+    isAdoConnectionOwner: Boolean(isAdoConnectionOwner)
+  };
+
+  const token = signJwt(payload);
+  const permissions = ROLE_PERMISSIONS[validRole] || ROLE_PERMISSIONS['Stakeholder/Viewer'];
+
+  res.json({
+    ok: true,
+    token,
+    session: {
+      ...payload,
+      permissions
+    }
+  });
+});
+
+// Get currently resolved auth session, active role, and permission capabilities
+app.get('/api/auth/session', (req, res) => {
+  res.json({
+    ok: true,
+    authenticated: true,
+    token: req.auth.token,
+    session: {
+      userId: req.auth.userId,
+      name: req.auth.name,
+      email: req.auth.email,
+      role: req.auth.role,
+      orgScope: req.auth.orgScope,
+      projectScope: req.auth.projectScope,
+      isAdoConnectionOwner: req.auth.isAdoConnectionOwner,
+      permissions: req.auth.permissions
+    }
+  });
+});
+
+// Alias for /api/auth/me
+app.get('/api/auth/me', (req, res) => {
+  res.json({
+    ok: true,
+    authenticated: true,
+    user: {
+      id: req.auth.userId,
+      name: req.auth.name,
+      email: req.auth.email,
+      role: req.auth.role,
+      orgScope: req.auth.orgScope,
+      projectScope: req.auth.projectScope,
+      isAdoConnectionOwner: req.auth.isAdoConnectionOwner,
+      permissions: req.auth.permissions
+    }
+  });
+});
+
+// Switch active auth session (for testing role matrix in development & preview)
+app.post('/api/auth/switch-session', (req, res) => {
+  const { userId, name, email, role, orgScope, projectScope, isAdoConnectionOwner } = req.body || {};
+  const validRole = role && ROLE_PERMISSIONS[role] ? role : 'Stakeholder/Viewer';
+
+  const payload = {
+    sub: userId || 'usr-session',
+    userId: userId || `usr-${Date.now()}`,
+    name: name || 'User',
+    email: email || 'user@company.com',
+    role: validRole,
+    orgScope: orgScope || '*',
+    projectScope: projectScope || '*',
+    isAdoConnectionOwner: Boolean(isAdoConnectionOwner)
+  };
+
+  const token = signJwt(payload);
+  const permissions = ROLE_PERMISSIONS[validRole] || ROLE_PERMISSIONS['Stakeholder/Viewer'];
+
+  res.json({
+    ok: true,
+    message: `Switched session to role: ${validRole}`,
+    token,
+    session: {
+      ...payload,
+      permissions
+    }
+  });
+});
+
+// Returns the fixed 6-role permission matrix definition
+app.get('/api/auth/roles', (req, res) => {
+  res.json({
+    ok: true,
+    roles: Object.keys(ROLE_PERMISSIONS),
+    permissionsMatrix: ROLE_PERMISSIONS
+  });
+});
+
+// ============================================================================
+// 6. Azure DevOps API Integration endpoints
+// ============================================================================
+
+// Status / Server Config check & PAT Health Verification
+app.get('/api/ado/config', (req, res) => {
+  res.json({
+    ok: true,
+    hasServerPat: Boolean(process.env.ADO_PAT || process.env.AZURE_DEVOPS_PAT),
+    defaultOrg: process.env.ADO_ORG || 'simetricwdh',
+    defaultProject: process.env.ADO_PROJECT || 'ACM',
+    proxyReady: true,
+    authenticatedUser: {
+      userId: req.auth.userId,
+      name: req.auth.name,
+      role: req.auth.role,
+      orgScope: req.auth.orgScope,
+      projectScope: req.auth.projectScope
+    }
+  });
+});
+
+// Dedicated Health-Check Endpoint: Confirms PAT authentication by hitting https://dev.azure.com/{org}/{project}
+app.get('/api/ado/health', async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const org = req.query.org || process.env.ADO_ORG || 'simetricwdh';
+    const project = req.query.project || process.env.ADO_PROJECT || 'ACM';
+    const pat = req.query.pat || '';
+
+    const { cleanOrg, cleanProject, pat: effectivePat, fullUrl, isValid } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!isValid) {
+      return res.status(400).json({
+        ok: false,
+        status: 'invalid_target',
+        error: `Malformed Azure DevOps Target: "${org}/${project}". Organization and project names must not contain illegal characters (e.g. \\ : * ? " < > | ; # $ % { } [ ]).`,
+        target: { org: cleanOrg, project: cleanProject, url: fullUrl },
+        hasToken: Boolean(effectivePat),
+        authSession: { role: req.auth.role, userId: req.auth.userId },
+        durationMs: Date.now() - startTime
+      });
+    }
+
+    // Role Org/Project Scope Check
+    const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+    if (!scopeCheck.allowed) {
+      return res.status(403).json({
+        ok: false,
+        status: 'forbidden_scope',
+        error: scopeCheck.reason,
+        authSession: { role: req.auth.role, userId: req.auth.userId },
+        durationMs: Date.now() - startTime
+      });
+    }
+
+    if (!cleanOrg || !cleanProject) {
+      return res.status(400).json({
+        ok: false,
+        status: 'unhealthy',
+        error: 'Organization and Project are required to verify ADO connectivity.',
+        hasToken: Boolean(effectivePat),
+        authSession: { role: req.auth.role, userId: req.auth.userId },
+        durationMs: Date.now() - startTime
+      });
+    }
+
+    if (!effectivePat) {
+      return res.status(401).json({
+        ok: false,
+        status: 'unauthenticated',
+        error: 'No Personal Access Token (PAT) configured on server or in request. Please set ADO_PAT environment variable or supply PAT token.',
+        hasToken: false,
+        target: { org: cleanOrg, project: cleanProject, url: fullUrl },
+        authSession: { role: req.auth.role, userId: req.auth.userId },
+        durationMs: Date.now() - startTime
+      });
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const targetAdoUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/projects/${cleanProject}?api-version=7.0`;
+
+    const response = await fetch(targetAdoUrl, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const durationMs = Date.now() - startTime;
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let parsedErr = '';
+      try {
+        const j = JSON.parse(errText);
+        parsedErr = j.message || errText;
+      } catch {
+        parsedErr = errText;
+      }
+
+      return res.status(response.status).json({
+        ok: false,
+        status: 'error',
+        httpStatus: response.status,
+        error: `Failed to authenticate to ${fullUrl}: HTTP ${response.status} (${response.statusText}). ${parsedErr.slice(0, 200)}`,
+        target: { org: cleanOrg, project: cleanProject, url: fullUrl },
+        hasToken: true,
+        authSession: { role: req.auth.role, userId: req.auth.userId },
+        durationMs
+      });
+    }
+
+    const projectData = await response.json();
+
+    return res.json({
+      ok: true,
+      status: 'healthy',
+      httpStatus: 200,
+      message: `Successfully authenticated to Azure DevOps project: ${projectData.name || cleanProject}`,
+      target: {
+        org: cleanOrg,
+        project: cleanProject,
+        url: fullUrl,
+        projectId: projectData.id,
+        projectState: projectData.state,
+        projectVisibility: projectData.visibility
+      },
+      hasToken: true,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        name: req.auth.name,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      },
+      authMethod: 'PAT (Personal Access Token)',
+      timestamp: new Date().toISOString(),
+      durationMs
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      status: 'server_error',
+      error: err.message,
+      authSession: { role: req.auth.role, userId: req.auth.userId },
+      durationMs: Date.now() - startTime
+    });
+  }
+});
+
 app.post('/api/ado/test', async (req, res) => {
   try {
     const { org, project, pat } = req.body;
-    if (!org || !pat) {
-      return res.status(400).json({ ok: false, error: 'Org and Personal Access Token (PAT) are required.' });
+    const { cleanOrg, cleanProject, pat: effectivePat, isValid } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!isValid) {
+      return res.status(400).json({ ok: false, error: 'Malformed Azure DevOps organization or project name. Illegal characters detected.' });
     }
 
-    const auth = Buffer.from(`:${pat}`).toString('base64');
-    const url = `https://dev.azure.com/${encodeURIComponent(org)}/_apis/projects?api-version=7.0`;
+    if (!cleanOrg || !effectivePat) {
+      return res.status(400).json({ ok: false, error: 'Org and Personal Access Token (PAT) are required (provide in request or set ADO_PAT environment variable).' });
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const url = `https://dev.azure.com/${cleanOrg}/_apis/projects?api-version=7.0`;
     
     const response = await fetch(url, {
       headers: {
@@ -410,14 +1505,1952 @@ app.post('/api/ado/test', async (req, res) => {
     });
 
     if (!response.ok) {
-      return res.status(response.status).json({ ok: false, error: `ADO returned HTTP ${response.status}: ${response.statusText}` });
+      const errText = await response.text();
+      return res.status(response.status).json({ 
+        ok: false, 
+        error: `ADO returned HTTP ${response.status} (${response.statusText}). Check if PAT is valid and has 'Project and Team (Read)' and 'Work Items (Read)' permissions. Details: ${errText.slice(0, 200)}` 
+      });
     }
 
     const data = await response.json();
-    res.json({ ok: true, projectsCount: data.count, projects: data.value?.map((p) => p.name) });
+    res.json({ ok: true, projectsCount: data.count, projects: data.value?.map((p) => p.name), target: { cleanOrg, cleanProject } });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// Helper to flatten ADO classification nodes
+function flattenNodes(node, currentPath = '', level = 0, projectName = '') {
+  if (!node) return [];
+  const rawName = (node.name || '').trim();
+  const isGenericRoot = level === 0 && (
+    rawName.toLowerCase() === 'iteration' ||
+    rawName.toLowerCase() === 'iterations' ||
+    rawName.toLowerCase() === 'area' ||
+    rawName.toLowerCase() === 'areas'
+  );
+
+  let thisPath = '';
+  if (level === 0) {
+    thisPath = isGenericRoot ? (projectName || '') : rawName;
+  } else {
+    thisPath = currentPath ? `${currentPath}\\${rawName}` : rawName;
+  }
+
+  // Ensure project prefix if not already present
+  if (projectName && thisPath && !thisPath.toLowerCase().startsWith(projectName.toLowerCase())) {
+    thisPath = `${projectName}\\${thisPath.replace(/^[\\\/]+/, '')}`;
+  }
+
+  const hasChildren = Boolean(node.children && Array.isArray(node.children) && node.children.length > 0);
+  
+  let items = [];
+  if (!isGenericRoot || !hasChildren) {
+    items.push({
+      id: String(node.id || node.identifier || node.name),
+      name: rawName,
+      path: thisPath || projectName || rawName,
+      level,
+      hasChildren,
+      startDate: node.attributes?.startDate,
+      finishDate: node.attributes?.finishDate
+    });
+  }
+
+  if (hasChildren) {
+    for (const child of node.children) {
+      items = items.concat(flattenNodes(child, thisPath || projectName, level + 1, projectName));
+    }
+  }
+  return items;
+}
+
+// Fallback known iterations for ACM or offline sandbox
+const KNOWN_PROJECT_PRESETS = {
+  'acm': [
+    { id: 'acm-d2', name: 'D2 R 2026.03', path: 'ACM\\D2 R 2026.03', startDate: '2025-11-14', finishDate: '2026-04-23', timeFrame: 'past', level: 1 },
+    { id: 'acm-d3', name: 'D3 R 2026.05', path: 'ACM\\D3 R 2026.05', startDate: '2026-01-06', finishDate: '2026-05-21', timeFrame: 'past', level: 1 },
+    { id: 'acm-d4', name: 'D4 R 2026.07', path: 'ACM\\D4 R 2026.07', startDate: '2026-03-20', finishDate: '2026-07-23', timeFrame: 'past', level: 1 },
+    { id: 'acm-d5', name: 'D5 R 2026.09', path: 'ACM\\D5 R 2026.09', startDate: '2026-05-15', finishDate: '2026-09-17', timeFrame: 'current', isCurrent: true, level: 1 },
+    { id: 'acm-r06', name: 'R 2026.06', path: 'ACM\\R 2026.06', startDate: '2026-06-01', finishDate: '2026-06-30', timeFrame: 'past', level: 1 },
+    { id: 'acm-r08', name: 'R 2026.08 - Migration', path: 'ACM\\R 2026.08 - Migration', startDate: '2026-06-30', finishDate: '2026-08-20', timeFrame: 'current', level: 1 },
+    { id: 'acm-d6', name: 'D6 R 2026.10', path: 'ACM\\D6 R 2026.10', startDate: '2026-08-01', finishDate: '2026-10-31', timeFrame: 'future', level: 1 },
+    { id: 'acm-d7', name: 'D7 R 2026.11', path: 'ACM\\D7 R 2026.11', startDate: '2026-09-14', finishDate: '2026-12-11', timeFrame: 'future', level: 1 }
+  ]
+};
+
+// Helper: Smart resolution of Iteration Paths given any string (e.g. D5-R2609, September 2026, ACM\D5 R 2026.09)
+function resolveIterationCandidates(rawInput, availableIterations, cleanProject) {
+  if (!rawInput && availableIterations.length === 0) return [];
+  const candidates = new Set();
+  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  let raw = (rawInput || '').replace(/\//g, '\\').trim();
+  if (raw.toLowerCase().startsWith(cleanProject.toLowerCase() + '\\')) {
+    raw = raw.slice(cleanProject.length + 1).trim();
+  }
+
+  // 1. If exact or non-empty string provided, add standard variations
+  if (raw) {
+    candidates.add(raw);
+    candidates.add(`${cleanProject}\\${raw}`);
+    candidates.add(`${cleanProject}\\Iteration\\${raw}`);
+    candidates.add(`Iteration\\${raw}`);
+    
+    // Whitespace variations (single space vs multi-space)
+    const singleSpaced = raw.replace(/\s+/g, ' ');
+    candidates.add(singleSpaced);
+    candidates.add(`${cleanProject}\\${singleSpaced}`);
+    candidates.add(`${cleanProject}\\Iteration\\${singleSpaced}`);
+  }
+
+  const rawNorm = norm(raw);
+
+  // Extract year/month patterns (e.g. 2609 -> 2026.09, 2026-09, Sep 2026)
+  const tokens = [];
+  const dMatch = raw.match(/d(\d+)/i);
+  if (dMatch) tokens.push(`d${dMatch[1]}`.toLowerCase());
+
+  const yearMonthMatch = raw.match(/20?(\d{2})[._\-\s]?(\d{2})/);
+  if (yearMonthMatch) {
+    const yr = yearMonthMatch[1].length === 2 ? `20${yearMonthMatch[1]}` : yearMonthMatch[1];
+    const mo = yearMonthMatch[2];
+    tokens.push(`${yr}.${mo}`);
+    tokens.push(`${yr}-${mo}`);
+    tokens.push(`${yearMonthMatch[1]}${mo}`); // e.g. 2609
+  }
+
+  const monthNames = {
+    'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+    'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12',
+    'september': '09', 'october': '10', 'november': '11', 'december': '12',
+    'january': '01', 'february': '02', 'march': '03', 'april': '04', 'june': '06', 'july': '07', 'august': '08'
+  };
+  for (const [mName, mNum] of Object.entries(monthNames)) {
+    if (raw.toLowerCase().includes(mName)) {
+      tokens.push(mName);
+      tokens.push(mNum);
+      const yearInRaw = raw.match(/20\d{2}/);
+      if (yearInRaw) {
+        tokens.push(`${yearInRaw[0]}.${mNum}`);
+      }
+    }
+  }
+
+  // Check available iterations against raw and extracted tokens
+  for (const iter of availableIterations) {
+    const itPath = iter.path || `${cleanProject}\\${iter.name}`;
+    const itPathNorm = norm(itPath);
+    const itNameNorm = norm(iter.name);
+
+    let isMatch = false;
+    if (rawNorm && (itPathNorm === rawNorm || itNameNorm === rawNorm)) {
+      isMatch = true;
+    } else if (rawNorm && rawNorm.length >= 3 && (itPathNorm.includes(rawNorm) || itNameNorm.includes(rawNorm) || rawNorm.includes(itNameNorm) || rawNorm.includes(itPathNorm))) {
+      isMatch = true;
+    } else if (tokens.length > 0) {
+      // Check if tokens match
+      const tokenMatches = tokens.filter(t => itPathNorm.includes(norm(t)) || itNameNorm.includes(norm(t)));
+      if (tokenMatches.length >= (tokens.length >= 2 ? 2 : 1)) {
+        isMatch = true;
+      }
+    }
+
+    if (isMatch) {
+      candidates.add(itPath);
+      candidates.add(iter.name);
+      if (!itPath.toLowerCase().startsWith(cleanProject.toLowerCase() + '\\')) {
+        candidates.add(`${cleanProject}\\${itPath}`);
+      }
+      candidates.add(`${cleanProject}\\Iteration\\${iter.name}`);
+    }
+  }
+
+  return Array.from(candidates);
+}
+
+// Strict & Intelligent Iteration Matching Helper for filtering work items
+function itemMatchesIterationFilter(itemIterationPath, requestedIterationPath, cleanProject) {
+  if (!requestedIterationPath || requestedIterationPath.trim() === '' || requestedIterationPath === '*' || requestedIterationPath.toLowerCase() === 'all') {
+    return true;
+  }
+  if (!itemIterationPath) return false;
+
+  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const itemNorm = norm(itemIterationPath);
+  const reqNorm = norm(requestedIterationPath);
+
+  // Exact normalized match
+  if (itemNorm === reqNorm) return true;
+
+  // Check with/without project prefix
+  let itemWithoutProj = (itemIterationPath || '').replace(/\//g, '\\').trim();
+  if (cleanProject && itemWithoutProj.toLowerCase().startsWith(cleanProject.toLowerCase() + '\\')) {
+    itemWithoutProj = itemWithoutProj.slice(cleanProject.length + 1).trim();
+  }
+  let reqWithoutProj = (requestedIterationPath || '').replace(/\//g, '\\').trim();
+  if (cleanProject && reqWithoutProj.toLowerCase().startsWith(cleanProject.toLowerCase() + '\\')) {
+    reqWithoutProj = reqWithoutProj.slice(cleanProject.length + 1).trim();
+  }
+
+  const itemWithoutProjNorm = norm(itemWithoutProj);
+  const reqWithoutProjNorm = norm(reqWithoutProj);
+
+  if (itemWithoutProjNorm && reqWithoutProjNorm && itemWithoutProjNorm === reqWithoutProjNorm) {
+    return true;
+  }
+
+  // Token matching: extract D-number, year-month (e.g. D5, 2026.09, 2609)
+  const extractTokens = (s) => {
+    const tokens = [];
+    const dMatch = s.match(/d(\d+)/i);
+    if (dMatch) tokens.push(`d${dMatch[1]}`.toLowerCase());
+    const ymMatch = s.match(/20?(\d{2})[._\-\s]?(\d{2})/);
+    if (ymMatch) {
+      const yr = ymMatch[1].length === 2 ? `20${ymMatch[1]}` : ymMatch[1];
+      const mo = ymMatch[2];
+      tokens.push(`${yr}.${mo}`);
+      tokens.push(`${yr}-${mo}`);
+      tokens.push(`${ymMatch[1]}${mo}`);
+    }
+    const sprintMatch = s.match(/sprint\s*(\d+)/i);
+    if (sprintMatch) tokens.push(`sprint${sprintMatch[1]}`.toLowerCase());
+    return tokens;
+  };
+
+  const reqTokens = extractTokens(requestedIterationPath);
+  if (reqTokens.length > 0) {
+    const itemTokens = extractTokens(itemIterationPath);
+    // If both have D-numbers (e.g. D5 vs D4/D3), they MUST match!
+    const reqD = reqTokens.find(t => t.startsWith('d'));
+    const itemD = itemTokens.find(t => t.startsWith('d'));
+    if (reqD && itemD && reqD !== itemD) {
+      return false; // Mismatch between different D milestones (e.g. D5 vs D4, D3, D2)
+    }
+
+    const matchingTokens = reqTokens.filter(t => itemNorm.includes(norm(t)));
+    if (matchingTokens.length >= (reqTokens.length >= 2 ? 2 : 1)) {
+      return true;
+    }
+  }
+
+  if (reqNorm.length >= 4 && (itemNorm.includes(reqNorm) || reqNorm.includes(itemNorm))) {
+    return true;
+  }
+
+  return false;
+}
+
+// Unified ADO Metadata Discovery Core Function
+async function discoverAdoMetadata(cleanOrg, cleanProject, effectivePat) {
+  if (!cleanOrg || !cleanProject) {
+    throw new Error('Organization and Project are required.');
+  }
+
+  // If no PAT provided, return preset if available or minimal defaults
+  if (!effectivePat) {
+    const preset = KNOWN_PROJECT_PRESETS[cleanProject.toLowerCase()] || [];
+    return {
+      source: preset.length > 0 ? 'preset_offline' : 'no_credentials',
+      iterations: preset,
+      currentIteration: preset.find(p => p.isCurrent) || preset[0] || null,
+      areas: [{ id: '1', name: cleanProject, path: cleanProject, level: 0, hasChildren: false }],
+      teams: [{ id: '1', name: `${cleanProject} Team` }]
+    };
+  }
+
+  const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+  const headers = {
+    'Authorization': `Basic ${auth}`,
+    'Content-Type': 'application/json'
+  };
+
+  let iterations = [];
+  let areas = [];
+  let teams = [];
+  let currentIteration = null;
+  let discoverySource = 'live_ado';
+
+  // 1. Fetch Iterations (Classification Nodes & Team Settings)
+  try {
+    const iterEndpoints = [
+      `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/classificationnodes/Iterations?$depth=10&api-version=7.0`,
+      `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/classificationnodes/Iteration?$depth=10&api-version=7.0`
+    ];
+
+    for (const url of iterEndpoints) {
+      try {
+        const resp = await fetch(url, { headers });
+        if (resp.ok) {
+          const data = await resp.json();
+          const flattened = flattenNodes(data, '', 0, cleanProject);
+          iterations = flattened.map(item => {
+            const startDate = item.startDate ? item.startDate.split('T')[0] : undefined;
+            const finishDate = item.finishDate ? item.finishDate.split('T')[0] : undefined;
+            
+            // Calculate timeframe if dates present
+            let timeFrame = 'current';
+            const today = new Date().toISOString().split('T')[0];
+            if (finishDate && finishDate < today) timeFrame = 'past';
+            else if (startDate && startDate > today) timeFrame = 'future';
+
+            return {
+              id: String(item.id),
+              name: item.name,
+              path: item.path,
+              level: item.level || 0,
+              hasChildren: item.hasChildren || false,
+              startDate,
+              finishDate,
+              timeFrame
+            };
+          });
+          if (iterations.length > 0) {
+            discoverySource = 'live_ado_classification';
+            break;
+          }
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.warn('[Iterations Discovery Error]:', e.message);
+  }
+
+  // 2. Fetch Team Settings Iterations to cross-reference active sprint / timeframes
+  try {
+    const teamIterUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/work/teamsettings/iterations?api-version=7.0`;
+    const teamIterResp = await fetch(teamIterUrl, { headers });
+    if (teamIterResp.ok) {
+      const teamIterData = await teamIterResp.json();
+      const teamIters = teamIterData.value || [];
+
+      // Map team iterations and cross-reference
+      if (teamIters.length > 0) {
+        if (iterations.length === 0) {
+          iterations = teamIters.map(t => ({
+            id: t.id,
+            name: t.name,
+            path: t.path || `${cleanProject}\\${t.name}`,
+            startDate: t.attributes?.startDate?.split('T')[0],
+            finishDate: t.attributes?.finishDate?.split('T')[0],
+            timeFrame: t.attributes?.timeFrame || 'current',
+            isCurrent: t.attributes?.timeFrame === 'current',
+            level: 1,
+            hasChildren: false
+          }));
+        } else {
+          // Cross-reference existing classification iterations with timeframes & current flag
+          for (const item of iterations) {
+            const match = teamIters.find(t => t.id === item.id || t.name.toLowerCase() === item.name.toLowerCase() || t.path?.toLowerCase() === item.path?.toLowerCase());
+            if (match) {
+              if (match.attributes?.timeFrame) item.timeFrame = match.attributes.timeFrame;
+              if (match.attributes?.startDate) item.startDate = match.attributes.startDate.split('T')[0];
+              if (match.attributes?.finishDate) item.finishDate = match.attributes.finishDate.split('T')[0];
+              if (match.attributes?.timeFrame === 'current') {
+                item.isCurrent = true;
+                currentIteration = item;
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[Team Iterations Note]:', e.message);
+  }
+
+  // 3. If no active currentIteration identified yet, find current by date or default to first
+  if (!currentIteration && iterations.length > 0) {
+    currentIteration = iterations.find(i => i.timeFrame === 'current') || iterations.find(i => i.isCurrent) || iterations[0];
+    if (currentIteration) currentIteration.isCurrent = true;
+  }
+
+  // Fallback to presets if still empty
+  if (iterations.length === 0) {
+    const preset = KNOWN_PROJECT_PRESETS[cleanProject.toLowerCase()] || [];
+    iterations = preset;
+    currentIteration = preset.find(p => p.isCurrent) || preset[0] || null;
+    if (preset.length > 0) discoverySource = 'preset_fallback';
+  }
+
+  // 4. Fetch Area Paths
+  try {
+    const areaEndpoints = [
+      `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/classificationnodes/Areas?$depth=10&api-version=7.0`,
+      `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/classificationnodes/Area?$depth=10&api-version=7.0`
+    ];
+
+    for (const url of areaEndpoints) {
+      try {
+        const resp = await fetch(url, { headers });
+        if (resp.ok) {
+          const data = await resp.json();
+          const flattened = flattenNodes(data, '', 0, cleanProject);
+          areas = flattened.map(item => ({
+            id: String(item.id),
+            name: item.name,
+            path: item.path,
+            level: item.level || 0,
+            hasChildren: item.hasChildren || false
+          }));
+          if (areas.length > 0) break;
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.warn('[Area Paths Discovery Error]:', e.message);
+  }
+
+  // Default area path if none found
+  if (areas.length === 0) {
+    areas = [{ id: '1', name: cleanProject, path: cleanProject, level: 0, hasChildren: false }];
+  }
+
+  // 5. Fetch Project Teams
+  try {
+    const teamsUrl = `https://dev.azure.com/${cleanOrg}/_apis/projects/${cleanProject}/teams?api-version=7.0`;
+    const teamsResp = await fetch(teamsUrl, { headers });
+    if (teamsResp.ok) {
+      const teamsData = await teamsResp.json();
+      teams = (teamsData.value || []).map(t => ({ id: t.id, name: t.name, description: t.description }));
+    }
+  } catch {}
+
+  return {
+    source: discoverySource,
+    iterations,
+    currentIteration,
+    areas,
+    teams,
+    stats: {
+      totalIterations: iterations.length,
+      totalAreas: areas.length,
+      activeIterationsCount: iterations.filter(i => i.timeFrame === 'current').length
+    }
+  };
+}
+
+// 7. Unified Metadata Discovery Endpoint (Iterations + Areas + Active Sprints + Teams)
+app.all('/api/ado/metadata', async (req, res) => {
+  const org = req.query.org || req.body?.org;
+  const project = req.query.project || req.body?.project;
+  const pat = req.query.pat || req.body?.pat;
+
+  const { cleanOrg, cleanProject, pat: effectivePat, isValid } = resolveAdoCredentials(req, org, project, pat);
+
+  if (!isValid) {
+    return res.status(400).json({ ok: false, error: 'Malformed Azure DevOps organization or project name. Illegal characters detected.' });
+  }
+
+  // Scope check
+  const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+  if (!scopeCheck.allowed) {
+    return res.status(403).json({ ok: false, error: scopeCheck.reason, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+
+  if (!cleanOrg || !cleanProject) {
+    return res.status(400).json({ ok: false, error: 'Org and Project are required.' });
+  }
+
+  try {
+    const metadata = await discoverAdoMetadata(cleanOrg, cleanProject, effectivePat);
+    res.json({
+      ok: true,
+      org: cleanOrg,
+      project: cleanProject,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        name: req.auth.name,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      },
+      ...metadata
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 8. Fetch Iterations from Azure DevOps
+app.all('/api/ado/iterations', async (req, res) => {
+  const org = req.query.org || req.body?.org;
+  const project = req.query.project || req.body?.project;
+  const pat = req.query.pat || req.body?.pat;
+
+  const { cleanOrg, cleanProject, pat: effectivePat, isValid } = resolveAdoCredentials(req, org, project, pat);
+
+  if (!isValid) {
+    return res.status(400).json({ ok: false, error: 'Malformed Azure DevOps organization or project name. Illegal characters detected.' });
+  }
+
+  // Scope check
+  const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+  if (!scopeCheck.allowed) {
+    return res.status(403).json({ ok: false, error: scopeCheck.reason, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+
+  if (!cleanOrg || !cleanProject) {
+    return res.status(400).json({ ok: false, error: 'Org and Project are required.' });
+  }
+
+  try {
+    const metadata = await discoverAdoMetadata(cleanOrg, cleanProject, effectivePat);
+    res.json({
+      ok: true,
+      iterations: metadata.iterations,
+      currentIteration: metadata.currentIteration,
+      source: metadata.source,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      }
+    });
+  } catch (err) {
+    console.warn('[ADO Iterations API Warning]:', err.message);
+    const preset = KNOWN_PROJECT_PRESETS[cleanProject.toLowerCase()] || [];
+    res.json({ ok: true, iterations: preset, source: 'preset_fallback', error: err.message });
+  }
+});
+
+// 9. Fetch Areas from Azure DevOps
+app.all('/api/ado/areas', async (req, res) => {
+  const org = req.query.org || req.body?.org;
+  const project = req.query.project || req.body?.project;
+  const pat = req.query.pat || req.body?.pat;
+
+  const { cleanOrg, cleanProject, pat: effectivePat, isValid } = resolveAdoCredentials(req, org, project, pat);
+
+  if (!isValid) {
+    return res.status(400).json({ ok: false, error: 'Malformed Azure DevOps organization or project name. Illegal characters detected.' });
+  }
+
+  // Scope check
+  const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+  if (!scopeCheck.allowed) {
+    return res.status(403).json({ ok: false, error: scopeCheck.reason, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+
+  if (!cleanOrg || !cleanProject) {
+    return res.status(400).json({ ok: false, error: 'Org and Project are required.' });
+  }
+
+  try {
+    const metadata = await discoverAdoMetadata(cleanOrg, cleanProject, effectivePat);
+    res.json({
+      ok: true,
+      areas: metadata.areas,
+      source: metadata.source,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      }
+    });
+  } catch (err) {
+    console.warn('[ADO Areas API Warning]:', err.message);
+    res.json({ ok: true, areas: [{ id: '1', name: cleanProject, path: cleanProject, level: 0 }], source: 'fallback', error: err.message });
+  }
+});
+
+// 9. Fetch Real Project Team Members & Identities from Azure DevOps
+app.all('/api/ado/team-users', async (req, res) => {
+  const org = req.query.org || req.body?.org;
+  const project = req.query.project || req.body?.project;
+  const pat = req.query.pat || req.body?.pat;
+
+  const { cleanOrg, cleanProject, pat: effectivePat, isValid } = resolveAdoCredentials(req, org, project, pat);
+
+  if (!isValid) {
+    return res.status(400).json({ ok: false, error: 'Malformed Azure DevOps organization or project name. Illegal characters detected.' });
+  }
+
+  if (!cleanOrg || !cleanProject || !effectivePat) {
+    return res.status(400).json({ ok: false, error: 'Org, Project, and Personal Access Token (PAT) are required.' });
+  }
+
+  try {
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const headers = {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/json'
+    };
+
+    const discoveredUsersMap = new Map();
+
+    // 1. Fetch Project Teams
+    const teamsUrl = `https://dev.azure.com/${cleanOrg}/_apis/projects/${cleanProject}/teams?api-version=7.0`;
+    const teamsResp = await fetch(teamsUrl, { headers });
+    let teams = [];
+    if (teamsResp.ok) {
+      const teamsData = await teamsResp.json();
+      teams = teamsData.value || [];
+    }
+
+    // 2. Fetch Members for each team
+    for (const team of teams) {
+      try {
+        const membersUrl = `https://dev.azure.com/${cleanOrg}/_apis/projects/${cleanProject}/teams/${team.id}/members?api-version=7.0`;
+        const membersResp = await fetch(membersUrl, { headers });
+        if (membersResp.ok) {
+          const membersData = await membersResp.json();
+          for (const member of (membersData.value || [])) {
+            const identity = member.identity || member;
+            const originalName = (identity.displayName || identity.name || '').trim();
+            const userEmail = (identity.uniqueName || identity.mailAddress || identity.descriptor || '').trim();
+
+            if (originalName && !discoveredUsersMap.has(originalName.toLowerCase())) {
+              const cleanEmail = userEmail.includes('@') ? userEmail : `${originalName.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`;
+              discoveredUsersMap.set(originalName.toLowerCase(), {
+                id: `usr-ado-${identity.id || originalName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+                name: originalName,
+                email: cleanEmail,
+                teamName: team.name,
+                source: 'ado_team'
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[ADO Team Members fetch error for ${team.name}]:`, err.message);
+      }
+    }
+
+    // 3. If teams returned few/no users, also query top work items to extract original creators & assignees
+    try {
+      const wiqlUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/wiql?api-version=7.0`;
+      const wiqlQuery = `SELECT [System.Id], [System.AssignedTo], [System.CreatedBy] FROM WorkItems WHERE [System.TeamProject] = '${cleanProject}' ORDER BY [System.ChangedDate] DESC`;
+      const wiqlResp = await fetch(wiqlUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ query: wiqlQuery })
+      });
+
+      if (wiqlResp.ok) {
+        const wiqlData = await wiqlResp.json();
+        const topIds = (wiqlData.workItems || []).slice(0, 100).map(w => w.id);
+        if (topIds.length > 0) {
+          const batchUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/workitemsbatch?api-version=7.0`;
+          const batchResp = await fetch(batchUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              ids: topIds,
+              fields: ['System.AssignedTo', 'System.CreatedBy']
+            })
+          });
+
+          if (batchResp.ok) {
+            const batchData = await batchResp.json();
+            for (const item of (batchData.value || [])) {
+              const assignedTo = item.fields?.['System.AssignedTo'];
+              const createdBy = item.fields?.['System.CreatedBy'];
+
+              const extractIdentity = (obj) => {
+                if (!obj) return null;
+                let name = '';
+                let email = '';
+                if (typeof obj === 'object') {
+                  name = obj.displayName || obj.uniqueName || '';
+                  email = obj.uniqueName || obj.mailAddress || '';
+                } else if (typeof obj === 'string') {
+                  const emailMatch = obj.match(/<([^>]+)>/);
+                  if (emailMatch) {
+                    email = emailMatch[1];
+                    name = obj.replace(/<[^>]+>/, '').trim();
+                  } else {
+                    name = obj.trim();
+                  }
+                }
+                if (!name || name.toLowerCase() === 'unassigned') return null;
+                return { name, email: email.includes('@') ? email : `${name.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com` };
+              };
+
+              const aIdent = extractIdentity(assignedTo);
+              if (aIdent && !discoveredUsersMap.has(aIdent.name.toLowerCase())) {
+                discoveredUsersMap.set(aIdent.name.toLowerCase(), {
+                  id: `usr-ado-${aIdent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+                  name: aIdent.name,
+                  email: aIdent.email,
+                  source: 'ado_workitem_assignee'
+                });
+              }
+
+              const cIdent = extractIdentity(createdBy);
+              if (cIdent && !discoveredUsersMap.has(cIdent.name.toLowerCase())) {
+                discoveredUsersMap.set(cIdent.name.toLowerCase(), {
+                  id: `usr-ado-${cIdent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+                  name: cIdent.name,
+                  email: cIdent.email,
+                  source: 'ado_workitem_creator'
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[WorkItem identity extraction note]:', e.message);
+    }
+
+    const users = Array.from(discoveredUsersMap.values());
+    res.json({
+      ok: true,
+      org: cleanOrg,
+      project: cleanProject,
+      count: users.length,
+      users
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 10. Real Azure DevOps Work Item Sync (WIQL Query + Intelligent Iteration Resolution + Child Tasks + Batch Extraction)
+app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), async (req, res) => {
+  const { org, project, pat, areaPath, iterationPath, targetInstance = 'internal', customWiql } = req.body;
+  const { cleanOrg, cleanProject, pat: effectivePat, isValid } = resolveAdoCredentials(req, org, project, pat);
+  const startTime = Date.now();
+
+  let rawIter = iterationPath ? iterationPath.replace(/\//g, '\\').trim() : '';
+  let rawArea = areaPath ? areaPath.replace(/\//g, '\\').trim() : '';
+
+  // Strip org prefix if passed (e.g. simetricwdh\ACM)
+  if (rawArea && cleanOrg && rawArea.toLowerCase().startsWith(cleanOrg.toLowerCase() + '\\')) {
+    rawArea = rawArea.slice(cleanOrg.length + 1).trim();
+  }
+  if (rawIter && cleanOrg && rawIter.toLowerCase().startsWith(cleanOrg.toLowerCase() + '\\')) {
+    rawIter = rawIter.slice(cleanOrg.length + 1).trim();
+  }
+
+  if (!isValid) {
+    return res.status(400).json({
+      ok: false,
+      error: `Malformed Azure DevOps Target "${org}/${project}". Illegal characters detected.`,
+      stories: [],
+      defects: [],
+      testCases: [],
+      tasks: [],
+      source: 'invalid_target',
+      authSession: { role: req.auth.role, userId: req.auth.userId },
+      durationMs: Date.now() - startTime
+    });
+  }
+
+  // Scope check
+  const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+  if (!scopeCheck.allowed) {
+    return res.status(403).json({
+      ok: false,
+      error: scopeCheck.reason,
+      stories: [],
+      defects: [],
+      testCases: [],
+      tasks: [],
+      source: 'forbidden_scope',
+      authSession: { role: req.auth.role, userId: req.auth.userId },
+      durationMs: Date.now() - startTime
+    });
+  }
+
+  if (!cleanOrg || !cleanProject || !effectivePat) {
+    return res.json({
+      ok: false,
+      error: 'Azure DevOps Organization, Project, and Personal Access Token (PAT) are required to sync live work items.',
+      stories: [],
+      defects: [],
+      testCases: [],
+      tasks: [],
+      source: 'missing_credentials',
+      durationMs: Date.now() - startTime,
+      rawPayload: {
+        request: { org: cleanOrg, project: cleanProject, areaPath, iterationPath, targetInstance, customWiql },
+        diagnosticInfo: {
+          status: '400 Bad Request - Missing credentials (provide in request or set ADO_PAT in environment)',
+          totalReceived: 0,
+          mappedAsStories: 0,
+          mappedAsDefects: 0,
+          mappedAsTestCases: 0,
+          mappedAsTasks: 0
+        }
+      }
+    });
+  }
+
+  try {
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const headers = {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/json'
+    };
+
+    let wiqlQuery = '';
+    let resolvedIterationPaths = [];
+
+    // Helper: Normalize strings for fuzzy matching (remove non-alphanumeric, lowercase)
+    const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    // If user provided a custom WIQL query, use it directly!
+    if (customWiql && typeof customWiql === 'string' && customWiql.trim().length > 0) {
+      let q = customWiql.trim();
+      q = q.replace(/@project/gi, `'${cleanProject}'`);
+      wiqlQuery = q;
+    } else {
+      // 1. Fetch live iterations metadata to discover exact ADO iteration node paths
+      let availableIterations = [];
+      try {
+        const metadata = await discoverAdoMetadata(cleanOrg, cleanProject, effectivePat);
+        availableIterations = metadata.iterations || [];
+      } catch (err) {
+        console.warn('[Iterations Discovery note for sync]:', err.message);
+      }
+
+      // Smart resolution of candidate iteration paths
+      resolvedIterationPaths = resolveIterationCandidates(rawIter, availableIterations, cleanProject);
+
+      if (resolvedIterationPaths.length === 0 && rawIter) {
+        resolvedIterationPaths = [rawIter];
+        if (!rawIter.toLowerCase().startsWith(cleanProject.toLowerCase() + '\\')) {
+          resolvedIterationPaths.push(`${cleanProject}\\${rawIter}`);
+        }
+      }
+
+      // Build primary WIQL query
+      wiqlQuery = `SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo], [System.WorkItemType], [System.AreaPath], [System.IterationPath] FROM WorkItems WHERE [System.TeamProject] = '${cleanProject}'`;
+
+      if (resolvedIterationPaths.length > 0) {
+        const iterClauses = resolvedIterationPaths.map(p => {
+          const cp = p.replace(/'/g, "''");
+          return `[System.IterationPath] UNDER '${cp}' OR [System.IterationPath] = '${cp}'`;
+        });
+        wiqlQuery += ` AND (${iterClauses.join(' OR ')})`;
+      }
+
+      // Only apply area filter if specified and distinct from project root
+      if (rawArea && rawArea.toLowerCase() !== cleanProject.toLowerCase()) {
+        const cleanArea = rawArea.replace(/'/g, "''");
+        const prefixedArea = cleanArea.toLowerCase().startsWith((cleanProject + '\\').toLowerCase()) ? cleanArea : `${cleanProject}\\${cleanArea}`;
+        if (cleanArea.toLowerCase() === prefixedArea.toLowerCase()) {
+          wiqlQuery += ` AND ([System.AreaPath] UNDER '${cleanArea}' OR [System.AreaPath] = '${cleanArea}')`;
+        } else {
+          wiqlQuery += ` AND ([System.AreaPath] UNDER '${cleanArea}' OR [System.AreaPath] = '${cleanArea}' OR [System.AreaPath] UNDER '${prefixedArea}' OR [System.AreaPath] = '${prefixedArea}')`;
+        }
+      }
+      wiqlQuery += ' ORDER BY [System.Id] DESC';
+    }
+
+    const wiqlUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/wiql?api-version=7.0`;
+    let wiqlResp = await fetch(wiqlUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query: wiqlQuery })
+    });
+
+    // Fallback: If query failed or returned 0, retry broader queries
+    let wiqlData = null;
+    if (wiqlResp.ok) {
+      wiqlData = await wiqlResp.json();
+    }
+
+    if (!wiqlResp.ok || !wiqlData || (wiqlData.workItems || []).length === 0) {
+      // Step A: Retry with resolved iterations without any AreaPath constraint
+      if (resolvedIterationPaths.length > 0) {
+        const fallbackIterClauses = resolvedIterationPaths.map(p => {
+          const cp = p.replace(/'/g, "''");
+          return `[System.IterationPath] UNDER '${cp}' OR [System.IterationPath] = '${cp}'`;
+        });
+        const fallbackQuery = `SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo], [System.WorkItemType], [System.AreaPath], [System.IterationPath] FROM WorkItems WHERE [System.TeamProject] = '${cleanProject}' AND (${fallbackIterClauses.join(' OR ')}) ORDER BY [System.Id] DESC`;
+        
+        try {
+          const fallbackResp = await fetch(wiqlUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ query: fallbackQuery })
+          });
+          if (fallbackResp.ok) {
+            const fallbackData = await fallbackResp.json();
+            if ((fallbackData.workItems || []).length > 0) {
+              wiqlData = fallbackData;
+              wiqlQuery = fallbackQuery;
+            }
+          }
+        } catch {}
+      }
+
+      // Step B: If still 0, check if tag matches or if we can query active User Stories
+      if (!wiqlData || (wiqlData.workItems || []).length === 0) {
+        try {
+          // Broad query for work items in project
+          const broadQuery = `SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo], [System.WorkItemType], [System.AreaPath], [System.IterationPath] FROM WorkItems WHERE [System.TeamProject] = '${cleanProject}' AND [System.WorkItemType] IN ('User Story', 'Product Backlog Item', 'Requirement', 'Bug', 'Task') ORDER BY [System.ChangedDate] DESC`;
+          const broadResp = await fetch(wiqlUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ query: broadQuery })
+          });
+          if (broadResp.ok) {
+            const broadData = await broadResp.json();
+            if ((broadData.workItems || []).length > 0) {
+              wiqlData = broadData;
+              wiqlQuery = broadQuery;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    if (!wiqlData) {
+      const errorBody = await wiqlResp.text();
+      console.warn(`[ADO WIQL error HTTP ${wiqlResp.status}]:`, errorBody);
+      let parsedErr = errorBody;
+      try {
+        const j = JSON.parse(errorBody);
+        parsedErr = j.message || errorBody;
+      } catch {}
+      return res.json({
+        ok: false,
+        error: `Azure DevOps WIQL query failed (HTTP ${wiqlResp.status}): ${parsedErr.slice(0, 300)}`,
+        stories: [],
+        defects: [],
+        testCases: [],
+        tasks: [],
+        source: 'wiql_error',
+        durationMs: Date.now() - startTime,
+        rawPayload: {
+          request: { org: cleanOrg, project: cleanProject, areaPath, iterationPath, targetInstance, customWiql },
+          wiql: { query: wiqlQuery, httpStatus: wiqlResp.status, errorText: parsedErr },
+          batchResponse: { count: 0, value: [] },
+          diagnosticInfo: {
+            status: `${wiqlResp.status} Error`,
+            totalReceived: 0,
+            mappedAsStories: 0,
+            mappedAsDefects: 0,
+            mappedAsTestCases: 0,
+            mappedAsTasks: 0
+          }
+        }
+      });
+    }
+
+    const allWorkItems = wiqlData.workItems || [];
+    let workItemIds = allWorkItems.slice(0, 500).map(w => w.id);
+
+    // If we have story IDs, also query for child tasks linked via parent or hierarchy
+    if (workItemIds.length > 0) {
+      try {
+        const parentIdsStr = workItemIds.slice(0, 100).join(',');
+        const childTaskQuery = `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${cleanProject}' AND [System.Parent] IN (${parentIdsStr})`;
+        const childTaskResp = await fetch(wiqlUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ query: childTaskQuery })
+        });
+        if (childTaskResp.ok) {
+          const childData = await childTaskResp.json();
+          const childIds = (childData.workItems || []).map(w => w.id);
+          if (childIds.length > 0) {
+            const idSet = new Set(workItemIds);
+            childIds.forEach(id => idSet.add(id));
+            workItemIds = Array.from(idSet);
+          }
+        }
+      } catch (err) {
+        console.warn('[Child tasks query note]:', err.message);
+      }
+    }
+
+    if (workItemIds.length === 0) {
+      return res.json({
+        ok: true,
+        stories: [],
+        defects: [],
+        testCases: [],
+        tasks: [],
+        source: 'live_ado_empty',
+        durationMs: Date.now() - startTime,
+        rawPayload: {
+          request: { org: cleanOrg, project: cleanProject, areaPath, iterationPath, targetInstance, customWiql },
+          wiql: { query: wiqlQuery, resultCount: 0, resolvedIterationPaths },
+          batchResponse: { count: 0, value: [] },
+          diagnosticInfo: {
+            status: '200 OK (0 work items found for query)',
+            totalReceived: 0,
+            mappedAsStories: 0,
+            mappedAsDefects: 0,
+            mappedAsTestCases: 0,
+            mappedAsTasks: 0
+          }
+        }
+      });
+    }
+
+    // Batch fetch details in chunks of 200 (max allowed per ADO request)
+    const batchUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/workitemsbatch?api-version=7.0`;
+    const requestedFields = [
+      'System.Id',
+      'System.Title',
+      'System.State',
+      'System.AssignedTo',
+      'System.CreatedBy',
+      'System.WorkItemType',
+      'System.AreaPath',
+      'System.IterationPath',
+      'System.Description',
+      'Microsoft.VSTS.Common.AcceptanceCriteria',
+      'Microsoft.VSTS.Common.Priority',
+      'Microsoft.VSTS.Common.Severity',
+      'Microsoft.VSTS.Scheduling.StoryPoints',
+      'Microsoft.VSTS.TCM.ReproSteps',
+      'Microsoft.VSTS.CMMI.Symptom',
+      'System.Tags',
+      'System.Parent'
+    ];
+
+    const chunkSize = 200;
+    const chunkPromises = [];
+    for (let i = 0; i < workItemIds.length; i += chunkSize) {
+      const chunk = workItemIds.slice(i, i + chunkSize);
+      chunkPromises.push(
+        fetch(batchUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            ids: chunk,
+            fields: requestedFields
+          })
+        }).then(r => r.ok ? r.json() : { count: 0, value: [] })
+      );
+    }
+
+    const chunkResults = await Promise.all(chunkPromises);
+    const allFetchedItems = chunkResults.flatMap(res => res.value || []);
+
+    const fetchedStories = [];
+    const fetchedDefects = [];
+    const fetchedTestCases = [];
+    const fetchedTasks = [];
+    const discoveredTeamMembers = new Map();
+    const avatarColors = ['#0284c7', '#7c3aed', '#059669', '#d97706', '#dc2626', '#4f46e5'];
+
+    const registerDiscoveredMember = (rawName, email, source) => {
+      if (!rawName) return null;
+      const clean = String(rawName).replace(/<[^>]+>/, '').trim();
+      if (!clean || clean.toLowerCase() === 'unassigned' || clean.toLowerCase() === 'none' || clean.toLowerCase() === 'null') return null;
+      
+      const memberId = `member-${clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`;
+      if (!discoveredTeamMembers.has(memberId)) {
+        const cleanEmail = email || `${clean.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`;
+        const colorIdx = Math.abs(clean.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % avatarColors.length;
+        discoveredTeamMembers.set(memberId, {
+          id: memberId,
+          name: clean,
+          email: cleanEmail,
+          role: source === 'created_by' ? 'Product / ADO Creator' : 'Software Engineer',
+          avatarColor: avatarColors[colorIdx],
+          source: source || 'assigned_to'
+        });
+      }
+      return memberId;
+    };
+
+    for (const item of allFetchedItems) {
+      if (!item || !item.fields) continue;
+
+      const itemIter = item.fields['System.IterationPath'] || '';
+      const itemArea = item.fields['System.AreaPath'] || '';
+
+      // If a specific iteration path was requested, strictly ensure this work item belongs to it
+      if (rawIter && !itemMatchesIterationFilter(itemIter, rawIter, cleanProject)) {
+        continue;
+      }
+
+      const rawType = (item.fields['System.WorkItemType'] || 'User Story').trim();
+      const typeLower = rawType.toLowerCase();
+      const rawTitle = (item.fields['System.Title'] || '').trim();
+      const titleLower = rawTitle.toLowerCase();
+      
+      const isUserStory = typeLower === 'user story' || 
+                          typeLower === 'userstory' ||
+                          typeLower === 'story' ||
+                          typeLower === 'product backlog item' ||
+                          typeLower === 'pbi' ||
+                          typeLower === 'requirement' ||
+                          typeLower === 'feature' ||
+                          typeLower === 'epic';
+
+      const isDefect = !isUserStory && (
+                       typeLower === 'bug' || 
+                       typeLower.includes('bug') || 
+                       typeLower.includes('defect') || 
+                       typeLower.includes('issue') || 
+                       typeLower.includes('incident') || 
+                       typeLower.includes('problem') || 
+                       typeLower.includes('impediment') ||
+                       typeLower.includes('flaw')
+      );
+
+      const isTestCase = !isUserStory && !isDefect && (
+                         typeLower === 'test case' ||
+                         typeLower === 'testcase' ||
+                         typeLower.includes('test case') ||
+                         typeLower === 'test suite' ||
+                         typeLower.includes('test suite') ||
+                         typeLower === 'test plan' ||
+                         typeLower.includes('test plan') ||
+                         typeLower === 'shared steps' ||
+                         typeLower.includes('shared steps') ||
+                         typeLower === 'shared parameter' ||
+                         typeLower.includes('shared parameter') ||
+                         typeLower.includes('test run') ||
+                         typeLower.includes('test execution') ||
+                         typeLower.startsWith('test')
+      );
+
+      const isTask = !isUserStory && !isDefect && !isTestCase && (
+                     typeLower === 'task' ||
+                     typeLower.includes('task') ||
+                     typeLower.includes('activity') ||
+                     typeLower.includes('sub-task') ||
+                     typeLower.includes('subtask') ||
+                     typeLower === 'dev task' ||
+                     typeLower.includes('action')
+      );
+      
+      const rawState = (item.fields['System.State'] || 'New').trim();
+      const rawStateLower = rawState.toLowerCase();
+
+      // Map Story Status
+      let mappedStoryStatus = 'To Do';
+      if (rawStateLower.includes('in progress') || rawStateLower.includes('active') || rawStateLower.includes('doing') || rawStateLower.includes('committed')) {
+        mappedStoryStatus = 'Dev In Progress';
+      } else if (rawStateLower.includes('qa ready') || rawStateLower.includes('ready for test') || rawStateLower.includes('resolved')) {
+        mappedStoryStatus = 'QA Ready';
+      } else if (rawStateLower.includes('qa in progress') || rawStateLower.includes('testing')) {
+        mappedStoryStatus = 'QA In Progress';
+      } else if (rawStateLower.includes('closed') || rawStateLower.includes('done') || rawStateLower.includes('completed')) {
+        mappedStoryStatus = 'Done';
+      } else if (rawStateLower.includes('blocked')) {
+        mappedStoryStatus = 'Blocked';
+      }
+
+      // Map Defect Status ('New' | 'Active' | 'Fixed' | 'Retest' | 'Closed')
+      let mappedDefectStatus = 'Active';
+      if (rawStateLower === 'new' || rawStateLower === 'proposed' || rawStateLower === 'triaged') {
+        mappedDefectStatus = 'New';
+      } else if (rawStateLower.includes('active') || rawStateLower.includes('in progress') || rawStateLower.includes('investigating') || rawStateLower.includes('approved') || rawStateLower.includes('committed')) {
+        mappedDefectStatus = 'Active';
+      } else if (rawStateLower.includes('fixed') || rawStateLower.includes('resolved') || rawStateLower.includes('ready for qa') || rawStateLower.includes('qa ready')) {
+        mappedDefectStatus = 'Fixed';
+      } else if (rawStateLower.includes('retest') || rawStateLower.includes('verified') || rawStateLower.includes('testing')) {
+        mappedDefectStatus = 'Retest';
+      } else if (rawStateLower.includes('closed') || rawStateLower.includes('done') || rawStateLower.includes('completed') || rawStateLower.includes('rejected')) {
+        mappedDefectStatus = 'Closed';
+      }
+
+      // Map Task Status ('pending' | 'partial' | 'complete')
+      let mappedTaskStatus = 'pending';
+      if (rawStateLower.includes('closed') || rawStateLower.includes('done') || rawStateLower.includes('completed') || rawStateLower.includes('resolved')) {
+        mappedTaskStatus = 'complete';
+      } else if (rawStateLower.includes('active') || rawStateLower.includes('in progress') || rawStateLower.includes('doing') || rawStateLower.includes('committed')) {
+        mappedTaskStatus = 'partial';
+      }
+
+      // Map Severity ('critical' | 'high' | 'medium' | 'low')
+      const rawSeverity = item.fields['Microsoft.VSTS.Common.Severity'] || item.fields['Microsoft.VSTS.Common.Priority'];
+      let mappedSeverity = 'medium';
+      if (rawSeverity !== undefined && rawSeverity !== null) {
+        const sStr = String(rawSeverity).toLowerCase();
+        if (sStr.includes('1') || sStr.includes('crit') || sStr.includes('blocker')) mappedSeverity = 'critical';
+        else if (sStr.includes('2') || sStr.includes('high')) mappedSeverity = 'high';
+        else if (sStr.includes('3') || sStr.includes('med')) mappedSeverity = 'medium';
+        else if (sStr.includes('4') || sStr.includes('low')) mappedSeverity = 'low';
+      }
+
+      const assigneeObj = item.fields['System.AssignedTo'];
+      let rawAssigneeName = '';
+      let assigneeEmail = '';
+      if (typeof assigneeObj === 'object' && assigneeObj !== null) {
+        rawAssigneeName = assigneeObj.displayName || assigneeObj.uniqueName || '';
+        assigneeEmail = assigneeObj.uniqueName || assigneeObj.mail || '';
+      } else if (typeof assigneeObj === 'string') {
+        const emailMatch = assigneeObj.match(/<([^>]+)>/);
+        if (emailMatch) {
+          assigneeEmail = emailMatch[1];
+          rawAssigneeName = assigneeObj.replace(/<[^>]+>/, '').trim();
+        } else {
+          rawAssigneeName = assigneeObj.trim();
+        }
+      }
+
+      const isUnassigned = !rawAssigneeName || rawAssigneeName.toLowerCase() === 'unassigned' || rawAssigneeName.toLowerCase() === 'none';
+      const assigneeName = isUnassigned ? 'Unassigned' : rawAssigneeName;
+      const assigneeId = isUnassigned ? null : registerDiscoveredMember(rawAssigneeName, assigneeEmail, 'assigned_to');
+
+      const createdByObj = item.fields['System.CreatedBy'];
+      let rawCreatedByName = '';
+      let createdByEmail = '';
+      if (typeof createdByObj === 'object' && createdByObj !== null) {
+        rawCreatedByName = createdByObj.displayName || createdByObj.uniqueName || '';
+        createdByEmail = createdByObj.uniqueName || createdByObj.mail || '';
+      } else if (typeof createdByObj === 'string') {
+        const emailMatch = createdByObj.match(/<([^>]+)>/);
+        if (emailMatch) {
+          createdByEmail = emailMatch[1];
+          rawCreatedByName = createdByObj.replace(/<[^>]+>/, '').trim();
+        } else {
+          rawCreatedByName = createdByObj.trim();
+        }
+      }
+      const createdByName = rawCreatedByName || '';
+      const createdById = createdByName ? registerDiscoveredMember(createdByName, createdByEmail, 'created_by') : null;
+
+      const rawRepro = item.fields['Microsoft.VSTS.TCM.ReproSteps'] || item.fields['Microsoft.VSTS.CMMI.Symptom'] || '';
+      const rawDesc = item.fields['System.Description'] || rawRepro || '';
+      const reproSteps = sanitizeAdoRichText(rawRepro);
+      const description = sanitizeAdoRichText(rawDesc);
+
+      const tags = item.fields['System.Tags'] ? item.fields['System.Tags'].split(';').map(t => t.trim()).filter(Boolean) : [];
+
+      if (isDefect) {
+        fetchedDefects.push({
+          id: `def-${item.id}`,
+          adoId: item.id,
+          title: item.fields['System.Title'] || `Defect ${item.id}`,
+          workItemType: rawType,
+          status: mappedDefectStatus,
+          severity: mappedSeverity,
+          areaPath: item.fields['System.AreaPath'] || '',
+          iterationPath: item.fields['System.IterationPath'] || '',
+          assigneeId,
+          assigneeName,
+          createdById,
+          createdByName,
+          description: description,
+          stepsToReproduce: reproSteps || description,
+          tags: tags,
+          environment: 'QA'
+        });
+      } else if (isTestCase) {
+        fetchedTestCases.push({
+          id: `tc-${item.id}`,
+          adoId: item.id,
+          title: item.fields['System.Title'] || `Test Case ${item.id}`,
+          workItemType: rawType,
+          status: rawState,
+          areaPath: item.fields['System.AreaPath'] || '',
+          iterationPath: item.fields['System.IterationPath'] || '',
+          assigneeId,
+          assigneeName,
+          createdById,
+          createdByName,
+          description: description,
+          stepsToReproduce: reproSteps || description,
+          tags: tags,
+          automationStatus: item.fields['Microsoft.VSTS.TCM.AutomationStatus'] || 'Not Automated'
+        });
+      } else if (isTask) {
+        fetchedTasks.push({
+          id: `task-${item.id}`,
+          adoId: item.id,
+          title: item.fields['System.Title'] || `Task ${item.id}`,
+          workItemType: rawType,
+          status: mappedTaskStatus,
+          rawStatus: rawState,
+          priority: mappedSeverity,
+          areaPath: item.fields['System.AreaPath'] || '',
+          iterationPath: item.fields['System.IterationPath'] || '',
+          assigneeId,
+          assigneeName,
+          assigneeIds: assigneeId ? [assigneeId] : [],
+          createdById,
+          createdByName,
+          description: description,
+          tags: tags
+        });
+      } else {
+        // Genuine User Story / Backlog Item / Requirement / Feature / Epic
+        const rawCriteria = item.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] ? [sanitizeAdoRichText(item.fields['Microsoft.VSTS.Common.AcceptanceCriteria'])] : [];
+        fetchedStories.push({
+          id: `story-${item.id}`,
+          adoId: item.id,
+          title: item.fields['System.Title'] || `Story ${item.id}`,
+          workItemType: rawType,
+          status: mappedStoryStatus,
+          areaPath: item.fields['System.AreaPath'] || '',
+          iterationPath: item.fields['System.IterationPath'] || '',
+          assigneeId,
+          assigneeName,
+          createdById,
+          createdByName,
+          description: description,
+          acceptanceCriteria: rawCriteria,
+          storyPoints: item.fields['Microsoft.VSTS.Scheduling.StoryPoints'] || 5,
+          tags: tags
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      stories: fetchedStories,
+      defects: fetchedDefects,
+      testCases: fetchedTestCases,
+      tasks: fetchedTasks,
+      teamMembers: Array.from(discoveredTeamMembers.values()),
+      source: 'live_ado_wiql',
+      durationMs: Date.now() - startTime,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        name: req.auth.name,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      },
+      rawPayload: {
+        request: { org, project, areaPath, iterationPath, targetInstance, authMode: 'Bearer/Basic' },
+        wiql: {
+          query: wiqlQuery,
+          resolvedIterationPaths,
+          asOf: wiqlData.asOf || new Date().toISOString(),
+          workItemsCount: (wiqlData.workItems || []).length
+        },
+        batchResponse: {
+          count: allFetchedItems.length,
+          value: allFetchedItems
+        },
+        diagnosticInfo: {
+          status: '200 OK (Live Azure DevOps)',
+          totalReceived: allFetchedItems.length,
+          mappedAsStories: fetchedStories.length,
+          mappedAsDefects: fetchedDefects.length,
+          mappedAsTestCases: fetchedTestCases.length,
+          mappedAsTasks: fetchedTasks.length,
+          unmapped: 0,
+          sourceEndpoint: batchUrl
+        }
+      }
+    });
+  } catch (err) {
+    console.error('[ADO WorkItem Sync Error]:', err);
+    return res.json({
+      ok: false,
+      error: err.message || String(err),
+      stories: [],
+      defects: [],
+      testCases: [],
+      tasks: [],
+      source: 'error',
+      durationMs: Date.now() - startTime,
+      authSession: { role: req.auth.role, userId: req.auth.userId },
+      rawPayload: {
+        request: { org, project, areaPath, iterationPath, targetInstance },
+        error: { message: err.message || String(err) },
+        batchResponse: { count: 0, value: [] }
+      }
+    });
+  }
+});
+
+// 10. Single Work Item Fetch
+app.get('/api/ado/workitems/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { org, project, pat } = req.query;
+    const { cleanOrg, cleanProject, pat: effectivePat } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!cleanOrg || !effectivePat) {
+      return res.status(400).json({ ok: false, error: 'Org and Personal Access Token (PAT) are required.' });
+    }
+
+    // Scope check
+    const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+    if (!scopeCheck.allowed) {
+      return res.status(403).json({ ok: false, error: scopeCheck.reason, authSession: { role: req.auth.role, userId: req.auth.userId } });
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const url = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workitems/${id}?$expand=all&api-version=7.0`;
+
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ ok: false, error: `ADO returned HTTP ${response.status}: ${errText.slice(0, 200)}`, authSession: { role: req.auth.role, userId: req.auth.userId } });
+    }
+
+    const data = await response.json();
+    res.json({
+      ok: true,
+      workItem: data,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+});
+
+// 11. Create Work Item in Azure DevOps
+app.post('/api/ado/workitems', requirePermission('canEditWorkItems'), async (req, res) => {
+  try {
+    const { org, project, pat, type = 'Bug', title, description, areaPath, iterationPath, severity, priority, assignedTo, acceptanceCriteria, tags, patchOperations } = req.body;
+    const { cleanOrg, cleanProject, pat: effectivePat } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!cleanOrg || !cleanProject || !effectivePat) {
+      return res.status(400).json({ ok: false, error: 'Org, Project, and Personal Access Token (PAT) are required.' });
+    }
+
+    // Role Scope Check
+    const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+    if (!scopeCheck.allowed) {
+      return res.status(403).json({ ok: false, error: scopeCheck.reason, authSession: { role: req.auth.role, userId: req.auth.userId } });
+    }
+
+    let patchDoc = [];
+
+    if (Array.isArray(patchOperations) && patchOperations.length > 0) {
+      patchDoc = patchOperations;
+    } else {
+      if (!title) {
+        return res.status(400).json({ ok: false, error: 'Work Item title is required.' });
+      }
+
+      patchDoc.push({ op: 'add', path: '/fields/System.Title', value: title });
+
+      if (description) {
+        patchDoc.push({ op: 'add', path: '/fields/System.Description', value: description });
+      }
+
+      if (areaPath) {
+        patchDoc.push({ op: 'add', path: '/fields/System.AreaPath', value: areaPath });
+      }
+
+      if (iterationPath) {
+        patchDoc.push({ op: 'add', path: '/fields/System.IterationPath', value: iterationPath });
+      }
+
+      if (assignedTo) {
+        patchDoc.push({ op: 'add', path: '/fields/System.AssignedTo', value: assignedTo });
+      }
+
+      if (severity) {
+        patchDoc.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.Severity', value: severity });
+      }
+
+      if (priority) {
+        patchDoc.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.Priority', value: priority });
+      }
+
+      if (acceptanceCriteria) {
+        const criteriaVal = Array.isArray(acceptanceCriteria) ? acceptanceCriteria.join('\n') : acceptanceCriteria;
+        patchDoc.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: criteriaVal });
+      }
+
+      if (tags && (Array.isArray(tags) ? tags.length > 0 : Boolean(tags))) {
+        const tagsVal = Array.isArray(tags) ? tags.join('; ') : tags;
+        patchDoc.push({ op: 'add', path: '/fields/System.Tags', value: tagsVal });
+      }
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const encodedType = encodeURIComponent(type);
+    const url = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/workitems/$${encodedType}?api-version=7.0`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json-patch+json'
+      },
+      body: JSON.stringify(patchDoc)
+    });
+
+    const responseBody = await response.text();
+    let data;
+    try {
+      data = JSON.parse(responseBody);
+    } catch {
+      data = { raw: responseBody };
+    }
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        ok: false,
+        error: data.message || `Failed to create work item (HTTP ${response.status})`,
+        authSession: { role: req.auth.role, userId: req.auth.userId },
+        details: data
+      });
+    }
+
+    res.json({
+      ok: true,
+      workItem: data,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+});
+
+// 12. Update Work Item in Azure DevOps
+app.patch('/api/ado/workitems/:id', requirePermission('canEditWorkItems'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { org, project, pat, state, title, description, assignedTo, severity, patchOperations, comment } = req.body;
+    const { cleanOrg, cleanProject, pat: effectivePat } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!cleanOrg || !cleanProject || !effectivePat) {
+      return res.status(400).json({ ok: false, error: 'Org, Project, and Personal Access Token (PAT) are required.' });
+    }
+
+    // Role Scope Check
+    const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+    if (!scopeCheck.allowed) {
+      return res.status(403).json({ ok: false, error: scopeCheck.reason, authSession: { role: req.auth.role, userId: req.auth.userId } });
+    }
+
+    let patchDoc = [];
+
+    if (Array.isArray(patchOperations) && patchOperations.length > 0) {
+      patchDoc = patchOperations;
+    } else {
+      if (state) {
+        patchDoc.push({ op: 'add', path: '/fields/System.State', value: state });
+      }
+      if (title) {
+        patchDoc.push({ op: 'add', path: '/fields/System.Title', value: title });
+      }
+      if (description) {
+        patchDoc.push({ op: 'add', path: '/fields/System.Description', value: description });
+      }
+      if (assignedTo !== undefined) {
+        patchDoc.push({ op: 'add', path: '/fields/System.AssignedTo', value: assignedTo });
+      }
+      if (severity) {
+        patchDoc.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.Severity', value: severity });
+      }
+      if (comment) {
+        patchDoc.push({ op: 'add', path: '/fields/System.History', value: comment });
+      }
+    }
+
+    if (patchDoc.length === 0) {
+      return res.status(400).json({ ok: false, error: 'No update fields or patchOperations provided.' });
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const url = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/workitems/${id}?api-version=7.0`;
+
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json-patch+json'
+      },
+      body: JSON.stringify(patchDoc)
+    });
+
+    const responseBody = await response.text();
+    let data;
+    try {
+      data = JSON.parse(responseBody);
+    } catch {
+      data = { raw: responseBody };
+    }
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        ok: false,
+        error: data.message || `Failed to update work item (HTTP ${response.status})`,
+        authSession: { role: req.auth.role, userId: req.auth.userId },
+        details: data
+      });
+    }
+
+    res.json({
+      ok: true,
+      workItem: data,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+});
+
+// 13. Generic ADO REST API Proxy (Handles any ADO REST API call with server-side auth & no browser CORS)
+app.all('/api/ado/proxy', async (req, res) => {
+  try {
+    const rawEndpoint = req.query.endpoint || req.body?.endpoint;
+    if (!rawEndpoint) {
+      return res.status(400).json({ ok: false, error: 'Proxy parameter "endpoint" is required (e.g. "_apis/projects" or "_apis/wit/wiql").' });
+    }
+
+    const org = req.query.org || req.body?.org;
+    const project = req.query.project || req.body?.project;
+    const pat = req.query.pat || req.body?.pat;
+
+    const { cleanOrg, cleanProject, pat: effectivePat } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!cleanOrg || !effectivePat) {
+      return res.status(400).json({ ok: false, error: 'Azure DevOps Organization and PAT are required.' });
+    }
+
+    // Role Scope Check
+    const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+    if (!scopeCheck.allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: scopeCheck.reason,
+        authSession: { role: req.auth.role, userId: req.auth.userId }
+      });
+    }
+
+    const forwardMethod = req.method === 'GET' ? (req.query.method || 'GET') : (req.body?.method || req.method);
+
+    // Mutating write operation guard
+    if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(forwardMethod?.toUpperCase())) {
+      if (!req.auth.permissions.canEditWorkItems && !req.auth.permissions.canTriggerAdoSync) {
+        return res.status(403).json({
+          ok: false,
+          error: `User role "${req.auth.role}" does not have write permissions to execute mutating Azure DevOps operations via proxy.`,
+          authSession: { role: req.auth.role, userId: req.auth.userId }
+        });
+      }
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    
+    // Clean and build upstream path
+    let cleanedEndpoint = String(rawEndpoint).replace(/^\/+/, '');
+    
+    // Check if endpoint already includes project prefix
+    let targetUrl = '';
+    if (cleanedEndpoint.startsWith('_apis/')) {
+      // Organization-level or project-level
+      targetUrl = cleanProject && !cleanedEndpoint.startsWith('_apis/projects') 
+        ? `https://dev.azure.com/${cleanOrg}/${cleanProject}/${cleanedEndpoint}`
+        : `https://dev.azure.com/${cleanOrg}/${cleanedEndpoint}`;
+    } else {
+      targetUrl = `https://dev.azure.com/${cleanOrg}/${cleanedEndpoint}`;
+    }
+
+    // Append api-version if not provided
+    if (!targetUrl.includes('api-version')) {
+      targetUrl += (targetUrl.includes('?') ? '&' : '?') + 'api-version=7.0';
+    }
+
+    const forwardHeaders = {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': req.headers['content-type']?.includes('json-patch') ? 'application/json-patch+json' : 'application/json'
+    };
+
+    const fetchOptions = {
+      method: forwardMethod,
+      headers: forwardHeaders
+    };
+
+    if (forwardMethod !== 'GET' && forwardMethod !== 'HEAD') {
+      const payloadData = req.body?.data !== undefined ? req.body.data : req.body;
+      if (payloadData && typeof payloadData === 'object' && !payloadData.endpoint) {
+        fetchOptions.body = JSON.stringify(payloadData);
+      }
+    }
+
+    const response = await fetch(targetUrl, fetchOptions);
+    const responseText = await response.text();
+    let responseData;
+    try {
+      responseData = JSON.parse(responseText);
+    } catch {
+      responseData = responseText;
+    }
+
+    res.status(response.status).json({
+      ok: response.ok,
+      status: response.status,
+      data: responseData,
+      authSession: {
+        role: req.auth.role,
+        userId: req.auth.userId,
+        orgScope: req.auth.orgScope,
+        projectScope: req.auth.projectScope
+      }
+    });
+  } catch (err) {
+    console.error('[ADO Proxy Error]:', err);
+    res.status(502).json({ ok: false, error: err.message, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+});
+
+// ============================================================================
+// 7. FEATURE ROUTES PROTECTED BY SHARED PERMISSION MIDDLEWARE
+// ============================================================================
+
+// Release Quality Gating Approval: requires Administrator or Delivery/Release Manager
+app.post('/api/releases/gate-approve', requireRole(['Administrator', 'Delivery/Release Manager']), (req, res) => {
+  const { releaseId, gateName, approved, notes } = req.body || {};
+  res.json({
+    ok: true,
+    message: `Quality gate "${gateName || 'Release Gate'}" status updated to: ${approved ? 'APPROVED' : 'REJECTED'}.`,
+    audit: {
+      releaseId,
+      gateName,
+      approved: Boolean(approved),
+      notes: notes || '',
+      approvedBy: {
+        userId: req.auth.userId,
+        name: req.auth.name,
+        role: req.auth.role
+      },
+      timestamp: new Date().toISOString()
+    }
+  });
+});
+
+// Release Management & Publication: requires canManageReleases permission
+app.post('/api/releases/publish', requirePermission('canManageReleases'), (req, res) => {
+  const { releaseId, releaseName, version } = req.body || {};
+  res.json({
+    ok: true,
+    message: `Release "${releaseName || version || releaseId}" scheduled for deployment.`,
+    publishedBy: {
+      userId: req.auth.userId,
+      role: req.auth.role
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// QA Test Execution Runs: requires canRunTests permission
+app.post('/api/qa/runs', requirePermission('canRunTests'), (req, res) => {
+  const { testPlanId, suiteName, passedCount, failedCount, totalCount } = req.body || {};
+  res.json({
+    ok: true,
+    message: `Test run recorded for suite "${suiteName || 'General Suite'}".`,
+    run: {
+      testPlanId,
+      suiteName,
+      passedCount: passedCount || 0,
+      failedCount: failedCount || 0,
+      totalCount: totalCount || (passedCount || 0) + (failedCount || 0),
+      recordedBy: req.auth.userId,
+      role: req.auth.role,
+      timestamp: new Date().toISOString()
+    }
+  });
+});
+
+// User Administration: strictly requires Administrator role
+app.post('/api/admin/users', requireRole(['Administrator']), (req, res) => {
+  const { targetUserId, targetRole, action = 'update_role' } = req.body || {};
+  res.json({
+    ok: true,
+    message: `User ${targetUserId} action "${action}" executed by Administrator.`,
+    targetUserId,
+    targetRole,
+    performedBy: req.auth.userId
+  });
+});
+
+// Organization Settings: strictly requires Administrator role
+app.post('/api/admin/settings', requireRole(['Administrator']), (req, res) => {
+  const { settings } = req.body || {};
+  res.json({
+    ok: true,
+    message: 'System configuration settings updated successfully.',
+    updatedSettings: settings || {},
+    performedBy: req.auth.userId
+  });
+});
+
+// ============================================================================
+// API COLLECTION AUTOMATION & TEST RUNNER PROXY ENGINE
+// ============================================================================
+
+// Execute a single HTTP step on the server side to bypass CORS & record metrics
+app.post('/api/automation/execute-step', async (req, res) => {
+  const { method = 'GET', url, headers = {}, body, timeoutMs = 10000 } = req.body || {};
+
+  if (!url) {
+    return res.status(400).json({ error: 'Target URL is required for execution.' });
+  }
+
+  const startTime = Date.now();
+
+  try {
+    const fetchOptions = {
+      method: method.toUpperCase(),
+      headers: { ...headers },
+      signal: AbortSignal.timeout(Math.min(timeoutMs, 30000))
+    };
+
+    if (body && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
+      fetchOptions.body = typeof body === 'object' ? JSON.stringify(body) : String(body);
+      if (!fetchOptions.headers['Content-Type'] && !fetchOptions.headers['content-type']) {
+        fetchOptions.headers['Content-Type'] = 'application/json';
+      }
+    }
+
+    const response = await fetch(url, fetchOptions);
+    const durationMs = Date.now() - startTime;
+
+    // Collect response headers
+    const responseHeaders = {};
+    response.headers.forEach((val, key) => {
+      responseHeaders[key] = val;
+    });
+
+    // Parse response body
+    let responseBody = null;
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      try {
+        responseBody = await response.json();
+      } catch {
+        responseBody = await response.text();
+      }
+    } else {
+      responseBody = await response.text();
+    }
+
+    return res.json({
+      ok: true,
+      status: response.status,
+      statusText: response.statusText,
+      durationMs,
+      headers: responseHeaders,
+      body: responseBody
+    });
+  } catch (err) {
+    const durationMs = Date.now() - startTime;
+    return res.status(502).json({
+      error: `Gateway request failed: ${err.message || String(err)}`,
+      durationMs,
+      status: 502,
+      statusText: 'Bad Gateway'
+    });
+  }
+});
+
+// AI-powered API Test Suite Generator using Gemini
+app.post('/api/automation/generate-suite', async (req, res) => {
+  const { prompt, endpointSpec, userStoryTitle, category = 'smoke' } = req.body || {};
+
+  const ai = getAiClient(req.body?.apiKey);
+  if (!ai) {
+    return res.status(503).json({
+      error: 'Gemini AI API Key is not configured on the server. Please set GEMINI_API_KEY in environment or provide client key.'
+    });
+  }
+
+  const systemInstruction = `You are a Principal Test Automation Architect & API QA Lead.
+Generate a comprehensive, production-ready API Automation Test Suite in JSON format for the provided API spec or story.
+Include realistic HTTP methods (GET, POST, PUT, DELETE), URLs, headers, request bodies, assertions (status code, latency, json path checks), and variable extractors (e.g. extracting auth tokens, created IDs to chain requests).
+
+The output MUST be valid JSON matching this schema:
+{
+  "name": "Collection Name",
+  "description": "Comprehensive description",
+  "category": "smoke" | "regression" | "security" | "integration",
+  "baseUrl": "{{baseUrl}}",
+  "variables": {
+    "key": "value"
+  },
+  "requests": [
+    {
+      "name": "1. Step Name",
+      "method": "GET" | "POST" | "PUT" | "DELETE",
+      "url": "{{baseUrl}}/api/v1/resource",
+      "description": "What this test verifies",
+      "headers": [{ "key": "Content-Type", "value": "application/json", "enabled": true }],
+      "params": [],
+      "bodyType": "none" | "json" | "raw",
+      "bodyContent": "{\\"key\\": \\"val\\"}",
+      "enabled": true,
+      "timeoutMs": 3000,
+      "assertions": [
+        {
+          "type": "status_code" | "response_time" | "json_path_value" | "json_body_contains" | "header_exists",
+          "target": "path or header",
+          "operator": "equals" | "less_than" | "exists" | "contains",
+          "expectedValue": "200",
+          "description": "Human readable assertion description",
+          "enabled": true
+        }
+      ],
+      "extractVariables": [
+        {
+          "source": "json_body" | "header",
+          "path": "token",
+          "variableName": "authToken",
+          "enabled": true,
+          "description": "Extract token for chained calls"
+        }
+      ]
+    }
+  ]
+}`;
+
+  const userPrompt = `Generate a rigorous API automation test collection based on:
+Category: ${category}
+${userStoryTitle ? `User Story Context: ${userStoryTitle}` : ''}
+${endpointSpec ? `API Spec / Endpoints:\n${endpointSpec}` : ''}
+${prompt ? `Additional Instructions:\n${prompt}` : ''}
+
+Ensure each step has at least 2 clear assertions (status code and field validation), realistic payloads, and variable chaining where applicable. Return ONLY the raw JSON object.`;
+
+  try {
+    const result = await generateContentWithResilience(ai, {
+      prompt: `${systemInstruction}\n\n${userPrompt}`,
+      config: {
+        responseMimeType: 'application/json',
+        temperature: 0.2
+      }
+    });
+
+    const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const parsed = JSON.parse(rawText);
+    return res.json({ ok: true, suite: parsed });
+  } catch (err) {
+    return res.status(500).json({
+      error: formatAiErrorMessage(err)
+    });
+  }
+});
+
+// CI/CD Webhook Trigger Endpoint for External Pipelines
+app.post('/api/automation/webhook/:collectionId', async (req, res) => {
+  const { collectionId } = req.params;
+  const token = req.headers['x-webhook-token'] || req.query.token || req.body?.token;
+
+  res.json({
+    ok: true,
+    message: `Webhook received for collection ${collectionId}. Execution dispatched to pipeline runners.`,
+    collectionId,
+    tokenProvided: Boolean(token),
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Health check

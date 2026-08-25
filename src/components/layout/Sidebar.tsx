@@ -23,10 +23,13 @@ import {
   ChevronRight,
   ShieldCheck,
   Building2,
-  Globe2
+  Globe2,
+  MessageSquareQuote
 } from 'lucide-react';
 
 interface SidebarProps {
+  appName?: string;
+  projectCode?: string;
   activeView: AppView;
   onNavigate?: (view: AppView) => void;
   setActiveView?: (view: AppView) => void;
@@ -49,6 +52,8 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
+  appName = 'ACM (AT&T Connection Manager) Delivery',
+  projectCode = 'ACM',
   activeView,
   onNavigate,
   setActiveView,
@@ -72,6 +77,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (onNavigate) onNavigate(view);
     if (setActiveView) setActiveView(view);
   };
+
+  const brandInitial = projectCode ? projectCode[0].toUpperCase() : (appName ? appName[0].toUpperCase() : 'A');
 
   const navItems = [
     {
@@ -122,8 +129,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeType: 'accent'
     },
     {
+      id: 'retrospective' as AppView,
+      label: 'Retrospective Board',
+      icon: MessageSquareQuote,
+      badge: null
+    },
+    {
       id: 'people' as AppView,
-      label: 'People & 1-on-1s',
+      label: 'Peoples, People, Performance',
       icon: Award,
       badge: null
     },
@@ -151,16 +164,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Brand */}
         <div className="p-4 border-b border-[var(--border)] flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3 overflow-hidden min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center font-bold text-base shadow-xs flex-shrink-0">
-              N
+            <div className="w-9 h-9 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center font-bold text-base shadow-xs flex-shrink-0 uppercase">
+              {brandInitial}
             </div>
             {!isCollapsed && (
               <div className="flex flex-col min-w-0">
-                <span className="font-bold text-[14px] text-[var(--text-primary)] tracking-tight truncate leading-tight">
-                  Northstar Delivery
+                <span className="font-bold text-[14px] text-[var(--text-primary)] tracking-tight truncate leading-tight" title={appName}>
+                  {appName}
                 </span>
                 <span className="text-[10.5px] text-[var(--text-muted)] truncate font-medium">
-                  Dual ADO Operations
+                  Azure DevOps Connected
                 </span>
               </div>
             )}
@@ -227,7 +240,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </nav>
       </div>
 
-      {/* Footer / Dual ADO Integration shortcut */}
+      {/* Footer / Azure DevOps Integration shortcut */}
       <div className="p-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] flex-shrink-0">
         {onOpenAdoModal && !isCollapsed && (
           <button
@@ -237,16 +250,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <RefreshCw size={13} className="text-[var(--primary)] flex-shrink-0" />
               <div className="flex flex-col text-left min-w-0">
-                <span className="text-xs leading-tight truncate">Azure DevOps Hub</span>
-                <span className="text-[10px] text-[var(--text-muted)] font-normal truncate">Internal + External</span>
+                <span className="text-xs leading-tight truncate">Azure DevOps Sync</span>
+                <span className="text-[10px] text-[var(--text-muted)] font-normal truncate">REST API & WIQL</span>
               </div>
             </div>
             <div className="flex items-center gap-1 flex-shrink-0">
-              <span className="text-[9px] font-bold text-[var(--internal-ado)] bg-[var(--internal-ado-bg)] px-1 py-0.5 rounded">
-                INT
-              </span>
-              <span className="text-[9px] font-bold text-[var(--external-ado)] bg-[var(--external-ado-bg)] px-1 py-0.5 rounded">
-                EXT
+              <span className="text-[9px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded">
+                LIVE
               </span>
             </div>
           </button>

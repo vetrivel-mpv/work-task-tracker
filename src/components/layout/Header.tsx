@@ -10,7 +10,8 @@ import {
   ArrowRightLeft,
   FolderGit2,
   Building2,
-  Globe2
+  Globe2,
+  Rocket
 } from 'lucide-react';
 import { toDateStr, shiftDate, formatDisplayDate, isToday } from '../../utils/date';
 import { Release, DualAdoConfig } from '../../types';
@@ -42,7 +43,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  appName = 'Northstar Delivery Hub',
+  appName = 'ACM (AT&T Connection Manager) Delivery',
   currentDateStr,
   dateStr: propDateStr,
   onDateChange,
@@ -134,16 +135,19 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Release Filter Selector */}
         {releases.length > 0 && onSelectRelease && (
-          <select
-            value={selectedReleaseId || ''}
-            onChange={(e) => onSelectRelease(e.target.value || null)}
-            className="hidden lg:block bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl px-2.5 py-1.5 text-xs font-bold text-[var(--text-primary)] outline-none max-w-[200px] truncate cursor-pointer"
-          >
-            <option value="">All Releases</option>
-            {releases.map(r => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </select>
+          <div className="flex items-center gap-1.5 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl px-2.5 py-1 text-xs font-bold text-[var(--text-primary)]">
+            <Rocket size={13} className="text-[var(--primary)] flex-shrink-0" />
+            <select
+              value={selectedReleaseId || ''}
+              onChange={(e) => onSelectRelease(e.target.value || null)}
+              className="bg-transparent text-xs font-bold text-[var(--text-primary)] outline-none max-w-[160px] sm:max-w-[220px] truncate cursor-pointer"
+            >
+              <option value="">All Releases</option>
+              {releases.map(r => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </div>
         )}
       </div>
 
@@ -161,20 +165,17 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Right: Dual ADO Status, Broadcast & Add Task Buttons */}
+      {/* Right: ADO Sync, Broadcast & Add Task Buttons */}
       <div className="flex items-center gap-2 flex-shrink-0 order-2 sm:order-3">
         {onOpenAdoModal && (
           <button
             onClick={onOpenAdoModal}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[var(--text-primary)] bg-[var(--bg-subtle)] hover:bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl transition-all shadow-xs cursor-pointer whitespace-nowrap"
-            title="Azure DevOps Dual Instance Sync Hub"
+            title="Azure DevOps Synchronization Hub"
           >
             <FolderGit2 size={14} className="text-[var(--primary)]" />
             <span className="hidden md:inline">ADO Sync</span>
-            <div className="flex items-center gap-1 ml-0.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--internal-ado)]" title="Internal ADO Active" />
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--external-ado)]" title="External ADO Active" />
-            </div>
+            <span className="w-2 h-2 rounded-full bg-emerald-500 ml-0.5" title="Azure DevOps Connected" />
           </button>
         )}
 

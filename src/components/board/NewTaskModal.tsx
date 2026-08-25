@@ -8,8 +8,10 @@ import {
   Release, 
   Priority 
 } from '../../types';
-import { X, Clock, Calendar, Check, AlertCircle, BookOpen, Lock, Link as LinkIcon, Search } from 'lucide-react';
+import { X, Clock, Calendar, Check, AlertCircle, BookOpen, Lock, Link as LinkIcon, Search, Users } from 'lucide-react';
 import { toDateStr, shiftDate } from '../../utils/date';
+import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
+import { MultiSearchableSelect } from '../common/MultiSearchableSelect';
 
 interface NewTaskModalProps {
   isOpen: boolean;
@@ -248,21 +250,23 @@ export const NewTaskModal: React.FC<NewTaskModalProps> = ({
           {/* Release Association */}
           <div>
             <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Release Scope</label>
-            <select
+            <SearchableSelect
+              options={releases.map(r => ({
+                value: r.id,
+                label: r.name,
+                sublabel: r.targetDate ? `Target: ${r.targetDate}` : undefined,
+                badge: r.status
+              }))}
               value={releaseId}
-              onChange={(e) => {
-                setReleaseId(e.target.value);
+              onChange={(val) => {
+                setReleaseId(val);
                 setLinkedItemId('');
               }}
-              className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
-            >
-              <option value="">No Specific Release</option>
-              {releases.map(r => (
-                <option key={r.id} value={r.id}>
-                  {r.name} ({r.targetDate})
-                </option>
-              ))}
-            </select>
+              placeholder="No Specific Release"
+              allOptionLabel="No Specific Release"
+              searchPlaceholder="Search releases..."
+              size="sm"
+            />
           </div>
 
           {/* Link to User Story or Defect */}
@@ -299,65 +303,65 @@ export const NewTaskModal: React.FC<NewTaskModalProps> = ({
             </div>
 
             {linkedItemType === 'story' && (
-              <select
-                value={linkedItemId}
-                onChange={(e) => setLinkedItemId(e.target.value)}
-                className="w-full text-xs font-semibold px-2.5 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg mt-1 outline-none text-[var(--text-primary)]"
-              >
-                <option value="">Select User Story...</option>
-                {availableStories.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.adoId ? `US-${s.adoId}: ` : ''}{s.title}
-                  </option>
-                ))}
-              </select>
+              <div className="mt-1">
+                <SearchableSelect
+                  options={availableStories.map(s => ({
+                    value: s.id,
+                    label: s.adoId ? `US-${s.adoId}: ${s.title}` : s.title,
+                    sublabel: `Status: ${s.status} • Area: ${s.areaPath || 'None'}`,
+                    badge: s.storyPoints ? `${s.storyPoints} pts` : undefined
+                  }))}
+                  value={linkedItemId}
+                  onChange={setLinkedItemId}
+                  placeholder="Select User Story..."
+                  allOptionLabel="Select User Story..."
+                  searchPlaceholder="Search stories by title or ID..."
+                  size="sm"
+                />
+              </div>
             )}
 
             {linkedItemType === 'defect' && (
-              <select
-                value={linkedItemId}
-                onChange={(e) => setLinkedItemId(e.target.value)}
-                className="w-full text-xs font-semibold px-2.5 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-lg mt-1 outline-none text-[var(--text-primary)]"
-              >
-                <option value="">Select Defect / Bug...</option>
-                {availableDefects.map(d => (
-                  <option key={d.id} value={d.id}>
-                    [{d.severity.toUpperCase()}] {d.adoId ? `DEF-${d.adoId}: ` : ''}{d.title}
-                  </option>
-                ))}
-              </select>
+              <div className="mt-1">
+                <SearchableSelect
+                  options={availableDefects.map(d => ({
+                    value: d.id,
+                    label: d.adoId ? `DEF-${d.adoId}: ${d.title}` : d.title,
+                    sublabel: `Status: ${d.status} • Sev: ${d.severity}`,
+                    badge: d.severity.toUpperCase(),
+                    badgeColor: d.severity === 'critical' ? '#E11D48' : '#D97706'
+                  }))}
+                  value={linkedItemId}
+                  onChange={setLinkedItemId}
+                  placeholder="Select Defect / Bug..."
+                  allOptionLabel="Select Defect / Bug..."
+                  searchPlaceholder="Search defects by title, severity, or ID..."
+                  size="sm"
+                />
+              </div>
             )}
           </div>
 
           {/* Assignees Selection */}
           <div>
             <label className="block text-xs font-bold text-[var(--text-primary)] mb-1.5">Assignees</label>
-            <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1">
-              {team.map(member => {
-                const isSelected = assigneeIds.includes(member.id);
-                return (
-                  <button
-                    key={member.id}
-                    type="button"
-                    onClick={() => toggleAssignee(member.id)}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-[var(--primary-light)] text-[var(--primary)] border-[var(--primary)]'
-                        : 'bg-[var(--surface)] text-[var(--text-secondary)] border-[var(--border)] hover:bg-[var(--surface-hover)]'
-                    }`}
-                  >
-                    <div
-                      className="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold text-white"
-                      style={{ backgroundColor: member.avatarColor || 'var(--primary)' }}
-                    >
-                      {member.name[0]}
-                    </div>
-                    <span>{member.name}</span>
-                    {isSelected && <Check size={12} />}
-                  </button>
-                );
-              })}
-            </div>
+            <MultiSearchableSelect
+              options={team.map(m => ({
+                value: m.id,
+                label: m.name,
+                sublabel: m.role,
+                avatarColor: m.avatarColor || 'var(--primary)',
+                avatarInitials: m.name.split(' ').map(n => n[0]).join('').slice(0, 2)
+              }))}
+              values={assigneeIds}
+              onChange={setAssigneeIds}
+              placeholder="Assign team members..."
+              allOptionLabel="Select all members"
+              searchPlaceholder="Search members by name or role..."
+              size="sm"
+              icon={<Users size={13} />}
+              maxDisplayTags={3}
+            />
           </div>
 
           {/* Groups Selection */}
