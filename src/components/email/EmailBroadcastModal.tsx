@@ -25,7 +25,7 @@ interface EmailBroadcastModalProps {
   isOpen: boolean;
   onClose: () => void;
   state: AppState;
-  initialTab?: 'standup' | 'qa' | 'dashboard';
+  initialTab?: 'standup' | 'qa' | 'dashboard' | 'ai_composer';
 }
 
 export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
@@ -34,12 +34,24 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
   state,
   initialTab = 'standup'
 }) => {
-  const [activeTab, setActiveTab] = useState<'standup' | 'qa' | 'dashboard'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'standup' | 'qa' | 'dashboard' | 'ai_composer'>(initialTab);
   const [viewMode, setViewMode] = useState<'preview' | 'markdown' | 'html'>('preview');
   const [copiedType, setCopiedType] = useState<'md' | 'html' | null>(null);
   const [selectedReleaseId, setSelectedReleaseId] = useState<string>(
     state.selectedReleaseId || (state.releases[0]?.id ?? '')
   );
+
+  // AI Composer State
+  const [aiType, setAiType] = useState<string>('Sprint 24 Status & QA Digest');
+  const [aiTone, setAiTone] = useState<string>('Executive & Crisp');
+  const [aiSubject, setAiSubject] = useState<string>('[CareFlow EHR] Sprint 24 Delivery & QA Verification Digest');
+  const [aiRecipient, setAiRecipient] = useState<string>(state.settings?.emailRecipient || 'engineering-leadership@careflow.io');
+  const [aiRawNotes, setAiRawNotes] = useState<string>(
+    `- Completed FHIR schema validator & closed multi-tenant auth RFC\n- Maya discovered appointment slot double-booking race condition; advisory lock deployed\n- 56 tests passed, 1 failed (Mount Sinai PDF batch timeout)\n- Next focus: Sprint 24 QA sign-off & customer patch release`
+  );
+  const [aiGeneratedEmail, setAiGeneratedEmail] = useState<string>('');
+  const [isAiLoading, setIsAiLoading] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -49,6 +61,15 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
     reportData = buildQaStatusReport(state, selectedReleaseId || undefined);
   } else if (activeTab === 'dashboard') {
     reportData = buildDashboardDigest(state);
+  } else if (activeTab === 'ai_composer' && aiGeneratedEmail) {
+    const encodedSubject = encodeURIComponent(aiSubject || 'Executive Delivery & Quality Update');
+    const encodedBody = encodeURIComponent(aiGeneratedEmail);
+    reportData = {
+      subject: aiSubject,
+      markdown: aiGeneratedEmail,
+      html: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1e293b; line-height: 1.6;">${aiGeneratedEmail.replace(/\n\n/g, '<br/><br/>').replace(/\n/g, '<br/>')}</div>`,
+      mailtoUrl: `mailto:${aiRecipient || state.settings?.emailRecipient || ''}?subject=${encodedSubject}&body=${encodedBody}`
+    };
   } else {
     reportData = buildStandupEmail(state);
   }
@@ -251,6 +272,28 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
               </pre>
             </div>
           )}
+
+          {/* Email Preview Area */}
+          <div className="bg-[var(--surface)] p-6 rounded-2xl border border-[var(--border)] shadow-xs text-xs font-sans">
+            {viewMode === 'preview' && (
+              <div 
+                className="space-y-4"
+                dangerouslySetInnerHTML={{ __html: reportData.html }}
+              />
+            )}
+
+            {viewMode === 'markdown' && (
+              <pre className="bg-[var(--bg)] text-[var(--text-primary)] p-5 rounded-2xl font-mono text-xs leading-relaxed whitespace-pre-wrap overflow-x-auto border border-[var(--border)]">
+                {reportData.markdown}
+              </pre>
+            )}
+
+            {viewMode === 'html' && (
+              <pre className="bg-[var(--bg)] text-[var(--text-primary)] p-5 rounded-2xl font-mono text-xs leading-relaxed whitespace-pre-wrap overflow-x-auto border border-[var(--border)]">
+                {reportData.html}
+              </pre>
+            )}
+          </div>
         </div>
 
         {/* Footer Bar */}
@@ -286,3 +329,4 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
     </div>
   );
 };
+
