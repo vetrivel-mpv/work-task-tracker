@@ -316,13 +316,39 @@ export function sanitizeAndLinkWorkItems(
   });
 
   // Sanitize Tasks
+  const todayStr = new Date().toISOString().split('T')[0];
+  const storyAdoMap = new Map<number, string>();
+  sanitizedStories.forEach(s => {
+    if (s.adoId) storyAdoMap.set(s.adoId, s.id);
+  });
+  const defectAdoMap = new Map<number, string>();
+  sanitizedDefects.forEach(d => {
+    if (d.adoId) defectAdoMap.set(d.adoId, d.id);
+  });
+
   const sanitizedTasks = (data.tasks || []).map(t => {
     const primaryName = t.assigneeName || (t.assigneeIds && t.assigneeIds[0]);
     const member = getOrCreateMember(primaryName);
     const assigneeIds = member ? [member.id] : (t.assigneeIds || []);
 
+    let userStoryId = t.userStoryId || null;
+    let defectId = t.defectId || null;
+    const parentId = (t as any).parentId;
+    if (parentId && typeof parentId === 'number') {
+      if (storyAdoMap.has(parentId)) {
+        userStoryId = storyAdoMap.get(parentId)!;
+      } else if (defectAdoMap.has(parentId)) {
+        defectId = defectAdoMap.get(parentId)!;
+      }
+    }
+
     return {
       ...t,
+      dateStr: t.dateStr || todayStr,
+      priority: t.priority || 'medium',
+      status: t.status || 'pending',
+      userStoryId,
+      defectId,
       assigneeIds,
       assigneeId: member ? member.id : (t.assigneeId || null),
       assigneeName: member ? member.name : (t.assigneeName || undefined)

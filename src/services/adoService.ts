@@ -40,8 +40,14 @@ export interface AdoMetadataDiscoveryResult {
 export interface AdoWorkItemDto {
   id: string;
   adoId: number;
+  parentId?: number | null;
+  userStoryId?: string | null;
+  defectId?: string | null;
+  dateStr?: string;
   title: string;
   status: string;
+  rawStatus?: string;
+  priority?: string;
   areaPath: string;
   iterationPath: string;
   assigneeId?: string | null;

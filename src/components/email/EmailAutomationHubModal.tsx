@@ -30,50 +30,33 @@ import {
 } from '../../services/emailService';
 import { formatDisplayDate } from '../../utils/date';
 
-interface EmailBroadcastModalProps {
+interface EmailAutomationHubModalProps {
   isOpen: boolean;
   onClose: () => void;
   state: AppState;
-  initialTab?: string;
   initialTemplate?: EmailTemplateType;
   initialDefectId?: string;
   initialReleaseId?: string;
   onUpdateState?: (updater: (prev: AppState) => AppState) => void;
 }
 
-export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
+export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = ({
   isOpen,
   onClose,
   state,
-  initialTab,
-  initialTemplate,
+  initialTemplate = 'daily_standup',
   initialDefectId,
   initialReleaseId,
   onUpdateState
 }) => {
-  // Map legacy tab names to EmailTemplateType
-  const resolveInitialTemplate = (): EmailTemplateType => {
-    if (initialTemplate) return initialTemplate;
-    if (initialTab === 'qa') return 'qa_gate';
-    if (initialTab === 'dashboard') return 'executive_pulse';
-    if (initialTab === 'capacity' || initialTab === 'resource') return 'resource_capacity';
-    if (initialTab === 'defect') return 'defect_escalation';
-    if (initialTab === 'signoff' || initialTab === 'release') return 'release_signoff';
-    return 'daily_standup';
-  };
-
-  const [selectedTemplate, setSelectedTemplate] = useState<EmailTemplateType>(resolveInitialTemplate);
-  const [selectedReleaseId, setSelectedReleaseId] = useState<string>(
-    initialReleaseId || state.selectedReleaseId || state.releases[0]?.id || ''
-  );
-  const [selectedDefectId, setSelectedDefectId] = useState<string>(
-    initialDefectId || state.defects[0]?.id || ''
-  );
-  const [activeViewMode, setActiveViewMode] = useState<'preview' | 'markdown' | 'schedules' | 'logs'>('preview');
+  const [selectedTemplate, setSelectedTemplate] = useState<EmailTemplateType>(initialTemplate);
+  const [selectedReleaseId, setSelectedReleaseId] = useState<string>(initialReleaseId || state.selectedReleaseId || state.releases[0]?.id || '');
+  const [selectedDefectId, setSelectedDefectId] = useState<string>(initialDefectId || state.defects[0]?.id || '');
+  const [activeTab, setActiveTab] = useState<'preview' | 'markdown' | 'schedules' | 'logs'>('preview');
 
   // Generated email bundle
   const [emailData, setEmailData] = useState<EmailRenderOutput>(() =>
-    generateEmailByType(resolveInitialTemplate(), state, {
+    generateEmailByType(initialTemplate, state, {
       releaseId: initialReleaseId || state.selectedReleaseId || undefined,
       defectId: initialDefectId
     })
@@ -134,16 +117,6 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
 
   const [dispatchLogs, setDispatchLogs] = useState<EmailDispatchLog[]>(state.settings.emailLogs || []);
 
-  // Update selection if prop initialTab changes when opening
-  useEffect(() => {
-    if (isOpen) {
-      const tpl = resolveInitialTemplate();
-      setSelectedTemplate(tpl);
-      if (initialDefectId) setSelectedDefectId(initialDefectId);
-      if (initialReleaseId) setSelectedReleaseId(initialReleaseId);
-    }
-  }, [isOpen, initialTab, initialTemplate, initialDefectId, initialReleaseId]);
-
   // Sync template generation whenever parameters change
   useEffect(() => {
     const rendered = generateEmailByType(selectedTemplate, state, {
@@ -162,13 +135,13 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
     {
       type: 'daily_standup',
       title: 'Daily Standup Digest',
-      desc: 'Member check-ins, task counts, active blockers & leaves',
+      desc: 'Member check-ins, tasks done %, blockers & OOO leaves',
       icon: Calendar
     },
     {
       type: 'qa_gate',
       title: 'QA Quality Gate Report',
-      desc: 'Story QA Pass Rate %, open bug counts & critical blocker callouts',
+      desc: 'Story QA Pass Rate %, open bug counts & critical defect callouts',
       icon: Shield
     },
     {
@@ -186,7 +159,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
     {
       type: 'defect_escalation',
       title: 'Critical Defect Escalation (P0)',
-      desc: 'Immediate incident broadcast, reproduction logs & SLA countdown',
+      desc: 'Immediate incident broadcast, RCA logs & SLA countdown',
       icon: AlertTriangle
     },
     {
@@ -332,17 +305,11 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
   };
 
   return (
-    <div 
-      id="email-automation-hub-backdrop"
-      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200"
-    >
-      <div 
-        id="email-automation-hub-container"
-        className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden"
-      >
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
         
         {/* MODAL HEADER */}
-        <div className="p-4 sm:p-5 border-b border-[var(--border)] flex items-center justify-between bg-[var(--surface-hover)] shrink-0">
+        <div className="p-4 sm:p-5 border-b border-[var(--border)] flex items-center justify-between bg-[var(--surface-hover)]">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-[var(--primary-light)] text-[var(--primary)] flex items-center justify-center shadow-xs">
               <Mail size={20} />
@@ -369,7 +336,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
         </div>
 
         {/* BODY LAYOUT */}
-        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
+        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
           
           {/* LEFT SIDEBAR: TEMPLATE SELECTOR & PARAMETERS */}
           <div className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-[var(--border)] bg-[var(--surface)] flex flex-col overflow-y-auto p-4 gap-4 shrink-0">
@@ -482,10 +449,10 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
           </div>
 
           {/* MAIN CONTENT AREA */}
-          <div className="flex-1 flex flex-col overflow-hidden bg-[var(--surface-hover)]/30 min-h-0">
+          <div className="flex-1 flex flex-col overflow-hidden bg-[var(--surface-hover)]/30">
             
             {/* TOP BAR: RECIPIENTS, SUBJECT & TABS */}
-            <div className="p-4 border-b border-[var(--border)] bg-[var(--surface)] flex flex-col gap-3 shrink-0">
+            <div className="p-4 border-b border-[var(--border)] bg-[var(--surface)] flex flex-col gap-3">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <label className="text-[10px] font-bold uppercase text-[var(--text-muted)] tracking-wider block mb-1">To (Recipients)</label>
@@ -523,34 +490,34 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
               <div className="flex items-center justify-between flex-wrap gap-2 pt-1">
                 <div className="flex items-center gap-1 bg-[var(--surface-hover)] p-1 rounded-xl border border-[var(--border)]">
                   <button
-                    onClick={() => setActiveViewMode('preview')}
+                    onClick={() => setActiveTab('preview')}
                     className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      activeViewMode === 'preview' ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                      activeTab === 'preview' ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                     }`}
                   >
                     HTML Preview
                   </button>
                   <button
-                    onClick={() => setActiveViewMode('markdown')}
+                    onClick={() => setActiveTab('markdown')}
                     className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      activeViewMode === 'markdown' ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                      activeTab === 'markdown' ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                     }`}
                   >
                     Markdown / Slack
                   </button>
                   <button
-                    onClick={() => setActiveViewMode('schedules')}
+                    onClick={() => setActiveTab('schedules')}
                     className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                      activeViewMode === 'schedules' ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                      activeTab === 'schedules' ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                     }`}
                   >
                     <Clock size={13} />
                     <span>Schedules</span>
                   </button>
                   <button
-                    onClick={() => setActiveViewMode('logs')}
+                    onClick={() => setActiveTab('logs')}
                     className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                      activeViewMode === 'logs' ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                      activeTab === 'logs' ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                     }`}
                   >
                     <Layers size={13} />
@@ -607,10 +574,10 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
             </div>
 
             {/* VIEW CONTAINER */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 min-h-0">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6">
               
               {/* TAB 1: HTML VISUAL PREVIEW */}
-              {activeViewMode === 'preview' && (
+              {activeTab === 'preview' && (
                 <div className="flex flex-col gap-4 max-w-3xl mx-auto">
                   {aiHighlights.length > 0 && (
                     <div className="bg-[var(--primary-light)] border border-[var(--primary)]/30 p-3.5 rounded-xl">
@@ -634,7 +601,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
               )}
 
               {/* TAB 2: MARKDOWN / PLAIN TEXT */}
-              {activeViewMode === 'markdown' && (
+              {activeTab === 'markdown' && (
                 <div className="max-w-3xl mx-auto">
                   <textarea
                     rows={20}
@@ -646,7 +613,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
               )}
 
               {/* TAB 3: AUTOMATED RECURRING SCHEDULES */}
-              {activeViewMode === 'schedules' && (
+              {activeTab === 'schedules' && (
                 <div className="max-w-4xl mx-auto flex flex-col gap-4">
                   <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs">
                     <div className="flex items-center justify-between mb-4">
@@ -702,7 +669,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
               )}
 
               {/* TAB 4: AUDIT DISPATCH LOGS */}
-              {activeViewMode === 'logs' && (
+              {activeTab === 'logs' && (
                 <div className="max-w-4xl mx-auto">
                   <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs">
                     <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">Transmission & Delivery History</h3>

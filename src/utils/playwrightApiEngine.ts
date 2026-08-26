@@ -205,7 +205,7 @@ export function generatePlaywrightSpecFromFlow(
   flow: ApiTestFlow,
   environment?: ApiEnvironment | null
 ): string {
-  const mergedVariables = {
+  const mergedVariables: Record<string, any> = {
     baseUrl: environment?.baseUrl || flow.globalVariables?.baseUrl || 'http://localhost:3000',
     ...(environment?.variables || {}),
     ...(flow.globalVariables || {})

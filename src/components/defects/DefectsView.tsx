@@ -9,7 +9,8 @@ import {
   TeamMember,
   AdoInstanceType,
   DualAdoConfig,
-  AppUser
+  AppUser,
+  Task
 } from '../../types';
 import { 
   Plus, 
@@ -40,7 +41,9 @@ import {
   Calendar,
   Clock,
   Filter,
-  CheckCircle
+  CheckCircle,
+  ShieldAlert,
+  Mail
 } from 'lucide-react';
 import { generateDefectAnalysis } from '../../services/aiService';
 import { generateId, toDateStr } from '../../utils/date';
@@ -50,6 +53,8 @@ import { SearchableSelect, SelectOption } from '../common/SearchableSelect';
 import { FilterBar, FilterDropdownConfig } from '../common/FilterBar';
 import { useWorkItemFilters } from '../../utils/useWorkItemFilters';
 import { HighlightText } from '../common/HighlightText';
+import { StoryBugTaskTracker } from '../common/StoryBugTaskTracker';
+import { TechnicalDebtImpactModal } from './TechnicalDebtImpactModal';
 
 interface DefectsViewProps {
   defects: Defect[];
@@ -57,15 +62,21 @@ interface DefectsViewProps {
   userStories: UserStory[];
   team: TeamMember[];
   selectedReleaseId: string | null;
+  tasks?: Task[];
   geminiApiKey?: string;
   dualAdoConfig?: DualAdoConfig;
   adoConfig?: any;
   currentUserId?: string;
   users?: AppUser[];
+  currentDateStr?: string;
   onSelectRelease?: (releaseId: string | null) => void;
   onAddDefect: (defect: Defect) => void;
   onUpdateDefect: (defect: Defect) => void;
   onDeleteDefect: (defectId: string) => void;
+  onAddTask?: (task: Partial<Task>) => void;
+  onToggleTaskStatus?: (taskId: string) => void;
+  onDeleteTask?: (taskId: string) => void;
+  onOpenEmailModal?: (template?: string, defectId?: string, releaseId?: string) => void;
 }
 
 const SEVERITY_CONFIG: { [key in Severity]: { label: string; bg: string; text: string; border: string } } = {
@@ -89,17 +100,26 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
   userStories,
   team,
   selectedReleaseId,
+  tasks = [],
   geminiApiKey,
   dualAdoConfig,
   adoConfig,
   currentUserId,
   users = [],
+  currentDateStr,
   onSelectRelease,
   onAddDefect,
   onUpdateDefect,
-  onDeleteDefect
+  onDeleteDefect,
+  onAddTask,
+  onToggleTaskStatus,
+  onDeleteTask,
+  onOpenEmailModal
 }) => {
   const [copiedLinkDefectId, setCopiedLinkDefectId] = useState<string | null>(null);
+
+  // Technical Debt & Impact Matrix Modal state
+  const [isTechDebtModalOpen, setIsTechDebtModalOpen] = useState(false);
 
   const {
     search,
@@ -669,6 +689,19 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
               <span className="text-[var(--text-muted)]">Active:</span>
               <span className="text-[var(--primary)]">{activeCount}/{defects.length}</span>
             </div>
+
+            {/* Technical Debt & Impact Matrix Modal Trigger Button */}
+            <button
+              onClick={() => setIsTechDebtModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-[var(--text-primary)] bg-[var(--surface-hover)] hover:bg-[var(--surface)] hover:text-[var(--primary)] border border-[var(--border)] hover:border-red-500/40 rounded-xl shadow-xs transition-all active:scale-98 cursor-pointer"
+              id="open-tech-debt-matrix-btn"
+              title="Open Technical Debt & Impact Matrix in popup window"
+            >
+              <ShieldAlert size={15} className="text-red-600 dark:text-red-400" />
+              <span>Tech Debt & Impact Matrix</span>
+              <ExternalLink size={13} className="opacity-70" />
+            </button>
+
             <button
               onClick={openAddModal}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all active:scale-98 cursor-pointer"
@@ -962,6 +995,21 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                           )}
                         </div>
                       </div>
+
+                      {/* Interactive Embedded Task Tracker */}
+                      <StoryBugTaskTracker
+                        parentType="bug"
+                        parentId={defect.id}
+                        parentAdoId={defect.adoId}
+                        parentTitle={defect.title}
+                        tasks={tasks}
+                        team={team}
+                        currentDateStr={currentDateStr}
+                        onToggleStatus={onToggleTaskStatus}
+                        onAddTask={onAddTask}
+                        onDeleteTask={onDeleteTask}
+                        defaultExpanded={false}
+                      />
                     </div>
                   </div>
 
@@ -977,6 +1025,15 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                       >
                         <ExternalLink size={15} />
                       </a>
+                    )}
+                    {onOpenEmailModal && (
+                      <button
+                        onClick={() => onOpenEmailModal('defect_escalation', defect.id, defect.releaseId)}
+                        className="p-1.5 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 rounded-lg cursor-pointer transition-all"
+                        title="Escalate Defect via Email Automation Hub"
+                      >
+                        <Mail size={15} />
+                      </button>
                     )}
                     <button
                       onClick={() => handleRunAiAnalysis(defect)}
@@ -1418,6 +1475,16 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
           </div>
         </div>
       )}
+      {/* Technical Debt & Impact Matrix Full Popup Window */}
+      <TechnicalDebtImpactModal
+        isOpen={isTechDebtModalOpen}
+        onClose={() => setIsTechDebtModalOpen(false)}
+        defects={defects}
+        releases={releases}
+        team={team}
+        selectedReleaseId={selectedReleaseId}
+        onSelectRelease={onSelectRelease}
+      />
     </div>
   );
 };

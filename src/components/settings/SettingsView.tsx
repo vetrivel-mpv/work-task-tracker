@@ -194,6 +194,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [projectSubtitle, setProjectSubtitle] = useState(state.settings.projectSubtitle || 'AT&T Connection Manager Delivery Hub');
   const [clientName, setClientName] = useState(state.settings.clientName || 'AT&T');
   const [emailRecipient, setEmailRecipient] = useState(state.settings.emailRecipient || 'engineering-leads@careflow.io');
+  const [qaTeamEmail, setQaTeamEmail] = useState(state.settings.qaTeamEmail || 'qa-leads@careflow.io');
+  const [managerEmail, setManagerEmail] = useState(state.settings.managerEmail || 'engineering-managers@careflow.io');
+  const [executiveEmail, setExecutiveEmail] = useState(state.settings.executiveEmail || 'executives@careflow.io');
+  const [onCallEmail, setOnCallEmail] = useState(state.settings.onCallEmail || 'oncall@careflow.io');
+  
+  // SMTP Config
+  const [smtpHost, setSmtpHost] = useState(state.settings.smtpConfig?.host || 'smtp.sendgrid.net');
+  const [smtpPort, setSmtpPort] = useState(state.settings.smtpConfig?.port || 587);
+  const [smtpUser, setSmtpUser] = useState(state.settings.smtpConfig?.user || 'apikey');
+  const [smtpPassword, setSmtpPassword] = useState(state.settings.smtpConfig?.password || '');
+  const [smtpFrom, setSmtpFrom] = useState(state.settings.smtpConfig?.fromAddress || 'notifications@northstar.delivery');
+  const [smtpTesting, setSmtpTesting] = useState(false);
+  const [smtpTestResult, setSmtpTestResult] = useState<string | null>(null);
+
   const [geminiModel, setGeminiModel] = useState(state.settings.geminiModel || 'gemini-2.5-flash');
   const [selectedTheme, setSelectedTheme] = useState<ThemeId>(state.settings.theme || 'executive_slate');
   const [selectedDensity, setSelectedDensity] = useState<LayoutDensity>(state.settings.density || 'comfortable');
@@ -305,6 +319,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         clientName,
         customPresets,
         emailRecipient,
+        qaTeamEmail,
+        managerEmail,
+        executiveEmail,
+        onCallEmail,
+        smtpConfig: {
+          host: smtpHost,
+          port: Number(smtpPort) || 587,
+          user: smtpUser,
+          password: smtpPassword,
+          fromAddress: smtpFrom,
+          secure: Number(smtpPort) === 465
+        },
         geminiModel,
         theme: selectedTheme,
         density: selectedDensity
@@ -312,6 +338,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     });
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 3000);
+  };
+
+  const handleTestSmtp = async () => {
+    setSmtpTesting(true);
+    setSmtpTestResult(null);
+    try {
+      const res = await fetch('/api/email/test-smtp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: smtpHost,
+          port: smtpPort,
+          user: smtpUser,
+          from: smtpFrom
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setSmtpTestResult(data.message || 'SMTP Connection Verified!');
+      } else {
+        setSmtpTestResult(`Failed: ${data.error || 'Connection error'}`);
+      }
+    } catch (err: any) {
+      setSmtpTestResult(`Error: ${err.message}`);
+    } finally {
+      setSmtpTesting(false);
+      setTimeout(() => setSmtpTestResult(null), 5000);
+    }
   };
 
   const handleAddGroup = () => {
@@ -687,18 +741,153 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
         </div>
 
-        {/* Global Preference Fields */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-[var(--border)]">
-          <div>
-            <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Default Report Email Recipient</label>
-            <input
-              type="email"
-              value={emailRecipient}
-              onChange={(e) => setEmailRecipient(e.target.value)}
-              className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)] transition-colors"
-            />
+        {/* Email Automation Routing & Notification Matrix */}
+        <div className="pt-4 border-t border-[var(--border)] flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <Mail size={16} className="text-[var(--primary)]" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)]">
+              Email Automation & Recipient Routing Matrix
+            </h3>
+          </div>
+          <p className="text-[11px] text-[var(--text-secondary)]">
+            Define default recipient lists mapped to automated delivery triggers (Daily Standup, QA Gate, Capacity, Escalations).
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-bold text-[var(--text-primary)] mb-1">
+                Engineering Leads & Standup Digest Recipient
+              </label>
+              <input
+                type="text"
+                value={emailRecipient}
+                onChange={(e) => setEmailRecipient(e.target.value)}
+                placeholder="engineering-leads@careflow.io"
+                className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[var(--text-primary)] mb-1">
+                QA Leads & Quality Gatekeeper Recipient
+              </label>
+              <input
+                type="text"
+                value={qaTeamEmail}
+                onChange={(e) => setQaTeamEmail(e.target.value)}
+                placeholder="qa-leads@careflow.io, release-managers@careflow.io"
+                className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[var(--text-primary)] mb-1">
+                Engineering Managers & Capacity Report Recipient
+              </label>
+              <input
+                type="text"
+                value={managerEmail}
+                onChange={(e) => setManagerEmail(e.target.value)}
+                placeholder="engineering-managers@careflow.io, scrum-masters@careflow.io"
+                className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[var(--text-primary)] mb-1">
+                Executive Delivery Pulse & C-Suite Recipient
+              </label>
+              <input
+                type="text"
+                value={executiveEmail}
+                onChange={(e) => setExecutiveEmail(e.target.value)}
+                placeholder="executives@careflow.io, vps@careflow.io"
+                className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-[11px] font-bold text-[var(--text-primary)] mb-1">
+                Critical Defect Escalation & On-Call Recipient (P0/P1)
+              </label>
+              <input
+                type="text"
+                value={onCallEmail}
+                onChange={(e) => setOnCallEmail(e.target.value)}
+                placeholder="oncall@careflow.io, incident-commander@careflow.io"
+                className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Enterprise SMTP Dispatch Engine Config */}
+        <div className="pt-4 border-t border-[var(--border)] flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <MailCheck size={16} className="text-[var(--primary)]" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)]">
+                Enterprise SMTP Server & Relay Config
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={handleTestSmtp}
+              disabled={smtpTesting}
+              className="inline-flex items-center gap-1.5 px-3 py-1 bg-[var(--surface-hover)] hover:bg-[var(--border)] border border-[var(--border)] text-xs font-bold rounded-xl text-[var(--text-primary)] cursor-pointer disabled:opacity-50"
+            >
+              <Mail size={13} className="text-[var(--primary)]" />
+              <span>{smtpTesting ? 'Testing...' : 'Test SMTP Connection'}</span>
+            </button>
           </div>
 
+          {smtpTestResult && (
+            <div className={`p-2.5 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in ${
+              smtpTestResult.startsWith('Failed') || smtpTestResult.startsWith('Error')
+                ? 'bg-rose-500/10 border border-rose-500/20 text-rose-600'
+                : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-600'
+            }`}>
+              <CheckCircle2 size={15} />
+              <span>{smtpTestResult}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-[10.5px] font-bold text-[var(--text-primary)] mb-1">SMTP Host</label>
+              <input
+                type="text"
+                value={smtpHost}
+                onChange={(e) => setSmtpHost(e.target.value)}
+                placeholder="smtp.sendgrid.net"
+                className="w-full text-xs font-mono px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+              />
+            </div>
+            <div>
+              <label className="block text-[10.5px] font-bold text-[var(--text-primary)] mb-1">Port</label>
+              <input
+                type="number"
+                value={smtpPort}
+                onChange={(e) => setSmtpPort(Number(e.target.value))}
+                placeholder="587"
+                className="w-full text-xs font-mono px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+              />
+            </div>
+            <div>
+              <label className="block text-[10.5px] font-bold text-[var(--text-primary)] mb-1">From Sender Address</label>
+              <input
+                type="text"
+                value={smtpFrom}
+                onChange={(e) => setSmtpFrom(e.target.value)}
+                placeholder="notifications@northstar.delivery"
+                className="w-full text-xs font-mono px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none text-[var(--text-primary)]"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Global Preference Fields */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-[var(--border)]">
           <div>
             <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Gemini AI Model Engine</label>
             <select

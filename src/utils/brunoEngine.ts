@@ -376,8 +376,9 @@ npx @usebruno/cli run ./collections/${slug} \\
 /**
  * Generates copyable Azure DevOps Pipeline YAML for Bruno CLI
  */
-export function generateBrunoAzureDevOpsYaml(collection: ApiAutomationCollection | ApiTestFlow): string {
-  const slug = collection.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+export function generateBrunoAzureDevOpsYaml(collection: ApiAutomationCollection | ApiTestFlow | string): string {
+  const collectionName = typeof collection === 'string' ? collection : collection?.name || 'ACM Test Suite';
+  const slug = collectionName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   return `trigger:
   branches:
     include:
@@ -401,7 +402,7 @@ stages:
     displayName: 'Bruno Automated API Flow Quality Gates'
     jobs:
       - job: ExecuteBrunoCollection
-        displayName: 'Execute ${collection.name} with Bruno CLI'
+        displayName: 'Execute ${collectionName} with Bruno CLI'
         steps:
           - task: NodeTool@0
             inputs:
@@ -442,8 +443,9 @@ stages:
 /**
  * Generates copyable GitHub Actions workflow YAML for Bruno CLI
  */
-export function generateBrunoGitHubActionsYaml(collection: ApiAutomationCollection | ApiTestFlow): string {
-  const slug = collection.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+export function generateBrunoGitHubActionsYaml(collection: ApiAutomationCollection | ApiTestFlow | string): string {
+  const collectionName = typeof collection === 'string' ? collection : collection?.name || 'ACM Test Suite';
+  const slug = collectionName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   return `name: Bruno API Automation Quality Gates
 
 on:
@@ -455,7 +457,7 @@ on:
 
 jobs:
   bruno-api-suite:
-    name: Run ${collection.name} with Bruno CLI
+    name: Run ${collectionName} with Bruno CLI
     runs-on: ubuntu-latest
 
     steps:

@@ -206,6 +206,57 @@ export async function generateAppreciationNote(
   }
 }
 
+export interface PerformanceReviewPayload {
+  memberName: string;
+  role: string;
+  period: string;
+  tasksCompleted: number;
+  tasksAssigned: number;
+  completionRate: number;
+  storyPointsDelivered: number;
+  defectsResolved: number;
+  highlights?: string;
+  currentSprintShare?: number;
+  recentVelocityData?: any[];
+}
+
+export interface PerformanceDossier {
+  executiveSummary: string;
+  strengths: string[];
+  growthOpportunities: string[];
+  smartGoals: string[];
+  suggestedAppreciation: string;
+}
+
+export async function generatePerformanceReview(
+  payload: PerformanceReviewPayload,
+  apiKey?: string
+): Promise<{ ok: boolean; dossier?: PerformanceDossier; error?: string; model?: string }> {
+  try {
+    const res = await fetch('/api/ai/performance-review', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(extractErrorMessage(data, res.status));
+    }
+
+    return { ok: true, dossier: data.dossier, model: data.model };
+  } catch (err: any) {
+    console.error('[AI Performance Review Error]:', err);
+    return {
+      ok: false,
+      error: extractErrorMessage(err)
+    };
+  }
+}
+
 export interface RoastPayload {
   heatLevel: 'mild' | 'spicy' | 'fiery';
   target: 'sprint_team' | 'member';
@@ -414,6 +465,347 @@ export async function generateRetroSummary(
     return {
       ok: false,
       error: extractErrorMessage(err)
+    };
+  }
+}
+
+export interface WritingAssistOptions {
+  text: string;
+  action: 'improve' | 'expand' | 'shorten' | 'bulletize' | 'formal' | 'technical';
+  tone?: string;
+  context?: string;
+  apiKey?: string;
+}
+
+export async function requestWritingAssist(
+  options: WritingAssistOptions
+): Promise<AiResponse> {
+  try {
+    const res = await fetch('/api/ai/writing-assist', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.apiKey ? { Authorization: `Bearer ${options.apiKey}` } : {})
+      },
+      body: JSON.stringify({
+        text: options.text,
+        action: options.action,
+        tone: options.tone,
+        context: options.context
+      })
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(extractErrorMessage(data, res.status));
+    }
+
+    return {
+      ok: true,
+      text: data.text || data.result,
+      model: data.model
+    };
+  } catch (err: any) {
+    console.error('[AI Writing Assist Error]:', err);
+    return {
+      ok: false,
+      error: extractErrorMessage(err)
+    };
+  }
+}
+
+export interface QaVelocityIntelligenceResult {
+  qualityHealthScore: number;
+  verdict: 'GO' | 'CONDITIONAL_GO' | 'NO_GO';
+  verdictHeadline: string;
+  executiveSummary: string;
+  keyStrengths: string[];
+  criticalRisks: Array<{
+    area: string;
+    riskLevel: 'HIGH' | 'MEDIUM' | 'LOW';
+    description: string;
+    mitigation: string;
+  }>;
+  automationRecommendations: Array<{
+    title: string;
+    techStack: string;
+    impact: 'HIGH' | 'MEDIUM' | 'EFFICIENCY';
+    recommendation: string;
+  }>;
+  predictedReleaseConfidence: number;
+}
+
+export async function generateQaVelocityIntelligence(
+  payload: {
+    releaseName?: string;
+    defectStats: any;
+    testStats: any;
+    storyStats: any;
+    techStack?: string;
+    recentDefects?: Defect[];
+    recentStories?: UserStory[];
+  },
+  apiKey?: string
+): Promise<{
+  ok: boolean;
+  intel?: QaVelocityIntelligenceResult;
+  model?: string;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/ai/qa-velocity-intel', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(extractErrorMessage(data, res.status));
+    }
+
+    return {
+      ok: true,
+      intel: data.intel,
+      model: data.model
+    };
+  } catch (err: any) {
+    console.warn('[AI QA Velocity Intel Falling back to local heuristics]:', err);
+    // Intelligent heuristic fallback
+    const { defectStats, testStats, storyStats } = payload;
+    const criticalCount = defectStats?.critical || 0;
+    const highCount = defectStats?.high || 0;
+    const passRate = testStats?.passRate ?? 94;
+    const mttr = Number(defectStats?.mttrDays || 1.8);
+    const escapeRate = defectStats?.escapeRate || 0;
+
+    let score = 92;
+    if (criticalCount > 0) score -= (criticalCount * 25);
+    if (highCount > 0) score -= (highCount * 8);
+    if (passRate < 95) score -= Math.round((95 - passRate) * 1.5);
+    if (mttr > 2.5) score -= 10;
+    if (escapeRate > 5) score -= 15;
+    score = Math.max(15, Math.min(99, score));
+
+    const verdict: 'GO' | 'CONDITIONAL_GO' | 'NO_GO' = 
+      criticalCount > 0 ? 'NO_GO' : score >= 85 ? 'GO' : 'CONDITIONAL_GO';
+
+    const fallbackIntel: QaVelocityIntelligenceResult = {
+      qualityHealthScore: score,
+      verdict,
+      verdictHeadline: verdict === 'GO' 
+        ? 'High Velocity & Production Readiness Confirmed'
+        : verdict === 'NO_GO'
+        ? 'Deployment Gate Blocked by High Severity Defects'
+        : 'Conditionally Approved: Minor Test Gaps Under Remediation',
+      executiveSummary: `Release quality index evaluates at ${score}/100. ${criticalCount > 0 ? `Zero tolerance gate violated with ${criticalCount} active critical defect(s).` : 'No S1 critical blockers detected.'} Automated test suite pass rate stands at ${passRate}% with an average MTTR of ${mttr} days.`,
+      keyStrengths: [
+        `Automated test execution pass rate steady at ${passRate}%`,
+        `Mean Time to Remediation (MTTR) holding at ${mttr} days/bug`,
+        `Story QA acceptance velocity tracking at ${storyStats?.passRate || 85}% completion`
+      ],
+      criticalRisks: criticalCount > 0 ? [
+        {
+          area: 'Release Blockers',
+          riskLevel: 'HIGH',
+          description: `${criticalCount} critical blocker defect(s) actively pending resolution`,
+          mitigation: 'Prioritize hotfix triage and rerun targeted Playwright regression shards.'
+        }
+      ] : [
+        {
+          area: 'Regression Scope',
+          riskLevel: 'LOW',
+          description: 'Edge-case concurrency and boundary checks across modified microservices',
+          mitigation: 'Trigger automated Bruno CLI integration flow across staging cluster.'
+        }
+      ],
+      automationRecommendations: [
+        {
+          title: 'Playwright Sharding & Trace Captures',
+          techStack: 'Playwright TypeScript',
+          impact: 'HIGH',
+          recommendation: 'Enable parallel worker sharding (4x workers) in CI/CD pipeline to accelerate feedback to under 3 minutes.'
+        },
+        {
+          title: 'Bruno CLI Git-Native Flow Integration',
+          techStack: 'Bruno CLI',
+          impact: 'EFFICIENCY',
+          recommendation: 'Incorporate .bru flows into pre-merge PR hooks to catch API contract regressions before staging.'
+        }
+      ],
+      predictedReleaseConfidence: Math.max(20, Math.min(98, score + 2))
+    };
+
+    return {
+      ok: true,
+      intel: fallbackIntel,
+      model: 'heuristic-engine'
+    };
+  }
+}
+
+export interface ResourceCapacityAdviceResult {
+  overallHealth: 'HEALTHY' | 'MODERATE_RISK' | 'OVERLOADED';
+  healthScore: number; // 0 - 100
+  summary: string;
+  bottlenecks: Array<{
+    memberName: string;
+    role: string;
+    plannedHours: number;
+    capacityHours: number;
+    utilizationPct: number;
+    issue: string;
+    suggestion: string;
+  }>;
+  underutilizedMembers: Array<{
+    memberName: string;
+    role: string;
+    availableHours: number;
+    utilizationPct: number;
+    suggestedTaskTypes: string[];
+  }>;
+  actionableRebalances: Array<{
+    fromMember: string;
+    toMember: string;
+    taskTitle: string;
+    hoursRelieved: number;
+    reason: string;
+  }>;
+  leaveImpacts: Array<{
+    memberName: string;
+    dates: string;
+    lostCapacity: number;
+    mitigation: string;
+  }>;
+}
+
+export async function generateResourceCapacityAdvice(
+  payload: {
+    weekRangeStr: string;
+    totalTeamCapacityHours: number;
+    totalPlannedHours: number;
+    teamUtilizationPct: number;
+    memberStats: Array<{
+      id: string;
+      name: string;
+      role: string;
+      grossCapacity: number;
+      leaveHours: number;
+      netCapacity: number;
+      plannedHours: number;
+      utilizationPct: number;
+      taskCount: number;
+      storyCount: number;
+      defectCount: number;
+      topTasks: string[];
+      leaveNote?: string;
+    }>;
+  },
+  apiKey?: string
+): Promise<{ ok: boolean; advice?: ResourceCapacityAdviceResult; error?: string; model?: string }> {
+  try {
+    const res = await fetch('/api/ai/resource-capacity-advice', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.advice) {
+      return { ok: true, advice: data.advice, model: data.model || 'gemini-2.5-flash' };
+    }
+    throw new Error(data.error || 'Server error');
+  } catch (err: any) {
+    // Intelligent heuristic fallback
+    const overloaded = payload.memberStats.filter(m => m.utilizationPct > 100);
+    const underloaded = payload.memberStats.filter(m => m.utilizationPct < 75 && m.netCapacity > 0);
+    const onLeave = payload.memberStats.filter(m => m.leaveHours > 0);
+
+    let healthScore = 90;
+    if (overloaded.length > 0) healthScore -= overloaded.length * 15;
+    if (payload.teamUtilizationPct > 110) healthScore -= 20;
+    if (payload.teamUtilizationPct < 60) healthScore -= 10;
+    healthScore = Math.max(25, Math.min(98, healthScore));
+
+    const overallHealth: 'HEALTHY' | 'MODERATE_RISK' | 'OVERLOADED' =
+      overloaded.length > 1 || payload.teamUtilizationPct > 115
+        ? 'OVERLOADED'
+        : overloaded.length === 1 || payload.teamUtilizationPct > 100
+        ? 'MODERATE_RISK'
+        : 'HEALTHY';
+
+    const bottlenecks = overloaded.map(m => ({
+      memberName: m.name,
+      role: m.role,
+      plannedHours: m.plannedHours,
+      capacityHours: m.netCapacity,
+      utilizationPct: m.utilizationPct,
+      issue: `Workload exceeds available weekly capacity by ${Math.round(m.plannedHours - m.netCapacity)} hours (${m.utilizationPct}% allocation).`,
+      suggestion: `Offload non-critical defect verification or story sub-tasks to available teammates.`
+    }));
+
+    const underutilizedMembers = underloaded.map(m => ({
+      memberName: m.name,
+      role: m.role,
+      availableHours: Math.max(0, Math.round(m.netCapacity - m.plannedHours)),
+      utilizationPct: m.utilizationPct,
+      suggestedTaskTypes: ['API automation testing', 'Defect triage & re-test', 'Technical documentation', 'PR reviews']
+    }));
+
+    const actionableRebalances: Array<{
+      fromMember: string;
+      toMember: string;
+      taskTitle: string;
+      hoursRelieved: number;
+      reason: string;
+    }> = [];
+
+    if (overloaded.length > 0 && underloaded.length > 0) {
+      overloaded.forEach((ov, idx) => {
+        const target = underloaded[idx % underloaded.length];
+        if (ov.topTasks.length > 0) {
+          actionableRebalances.push({
+            fromMember: ov.name,
+            toMember: target.name,
+            taskTitle: ov.topTasks[0] || 'Verification Task',
+            hoursRelieved: 4,
+            reason: `Rebalancing 4h from ${ov.name} (${ov.utilizationPct}%) to ${target.name} (${target.utilizationPct}%) balances sprint throughput.`
+          });
+        }
+      });
+    }
+
+    const leaveImpacts = onLeave.map(m => ({
+      memberName: m.name,
+      dates: m.leaveNote || 'Scheduled Leave',
+      lostCapacity: m.leaveHours,
+      mitigation: `Ensure pending critical work is handed over to a co-owner before departure.`
+    }));
+
+    const summary = overallHealth === 'HEALTHY'
+      ? `Team capacity is well-balanced across all members (${payload.teamUtilizationPct}% net utilization for ${payload.weekRangeStr}). Total planned tasks (${payload.totalPlannedHours}h) fit cleanly within net available capacity (${payload.totalTeamCapacityHours}h).`
+      : overallHealth === 'MODERATE_RISK'
+      ? `Capacity warning: ${overloaded.length} member(s) exceed 100% weekly capacity. Recommend minor task re-distribution to prevent sprint carryover.`
+      : `High allocation pressure detected: ${overloaded.length} member(s) critically overloaded with team utilization at ${payload.teamUtilizationPct}%. Immediate workload rebalancing advised.`;
+
+    return {
+      ok: true,
+      advice: {
+        overallHealth,
+        healthScore,
+        summary,
+        bottlenecks,
+        underutilizedMembers,
+        actionableRebalances,
+        leaveImpacts
+      },
+      model: 'heuristic-engine'
     };
   }
 }

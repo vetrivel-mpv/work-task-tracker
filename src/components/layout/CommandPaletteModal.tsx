@@ -19,7 +19,8 @@ import {
   Command,
   X,
   MessageSquareQuote,
-  Zap
+  Zap,
+  Flame
 } from 'lucide-react';
 import { AppView, AppState } from '../../types';
 
@@ -29,7 +30,8 @@ interface CommandPaletteModalProps {
   onNavigate: (view: AppView) => void;
   onOpenNewTask: () => void;
   onOpenAdoModal: () => void;
-  onOpenEmailModal: () => void;
+  onOpenEmailModal: (template?: string) => void;
+  onOpenTechDebtModal?: () => void;
   state: AppState;
 }
 
@@ -40,6 +42,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onOpenNewTask,
   onOpenAdoModal,
   onOpenEmailModal,
+  onOpenTechDebtModal,
   state
 }) => {
   const [query, setQuery] = useState('');
@@ -58,7 +61,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   const navCommands = [
     { id: 'board' as AppView, title: 'Daily Task Board', category: 'Navigation', icon: CheckSquare, desc: 'Manage daily execution, time slots & tasks' },
     { id: 'stories' as AppView, title: 'User Stories & Requirements', category: 'Navigation', icon: BookOpen, desc: 'Sprint backlog, acceptance criteria & ADO stories' },
-    { id: 'testCases' as AppView, title: 'Test Cases & Execution', category: 'Navigation', icon: FileCheck2, desc: 'QA test repository, design steps & pass/fail runs' },
+    // { id: 'testCases' as AppView, title: 'Test Cases & Execution', category: 'Navigation', icon: FileCheck2, desc: 'QA test repository, design steps & pass/fail runs' },
     { id: 'defects' as AppView, title: 'Defects & Bug Tracking', category: 'Navigation', icon: Bug, desc: 'Live bug triage, root-cause AI & ADO sync' },
     { id: 'qa_dashboard' as AppView, title: 'QA Analytics & Metrics', category: 'Navigation', icon: BarChart3, desc: 'Quality velocity, defect aging & test coverage' },
     { id: 'apiAutomation' as AppView, title: 'API Automation & Collection Runner', category: 'Navigation', icon: Zap, desc: 'Trigger API test suites, assertion gates, Newman CI/CD & Playwright scripts' },
@@ -96,15 +99,70 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
     },
     {
       id: 'action-broadcast',
-      title: 'Executive Email & Standup Dispatcher',
-      category: 'Actions',
+      title: 'Email Hub: Daily Standup Digest & Blockers',
+      category: 'Email Automation',
       icon: Mail,
-      desc: 'Generate and send HTML formatted standup or QA status emails',
+      desc: 'Generate & send formatted daily check-in digest, tasks done % & blockers',
       action: () => {
         onClose();
-        onOpenEmailModal();
+        onOpenEmailModal('daily_standup');
       }
-    }
+    },
+    {
+      id: 'action-email-qa-gate',
+      title: 'Email Hub: QA Quality Gate Report',
+      category: 'Email Automation',
+      icon: Mail,
+      desc: 'Generate & send QA pass rate %, open bug counts & defect callouts',
+      action: () => {
+        onClose();
+        onOpenEmailModal('qa_gate');
+      }
+    },
+    {
+      id: 'action-email-pulse',
+      title: 'Email Hub: Executive Delivery Pulse',
+      category: 'Email Automation',
+      icon: Zap,
+      desc: 'Generate C-suite macro progress, burn-up velocity & active release pipelines',
+      action: () => {
+        onClose();
+        onOpenEmailModal('executive_pulse');
+      }
+    },
+    {
+      id: 'action-email-capacity',
+      title: 'Email Hub: Weekly Resource Capacity & Allocation',
+      category: 'Email Automation',
+      icon: Users,
+      desc: 'Generate team net capacity, planned tasks vs headroom breakdown',
+      action: () => {
+        onClose();
+        onOpenEmailModal('resource_capacity');
+      }
+    },
+    {
+      id: 'action-email-signoff',
+      title: 'Email Hub: Release Go/No-Go Sign-Off',
+      category: 'Email Automation',
+      icon: Rocket,
+      desc: 'Generate formal deployment readiness checklist & QA sign-off',
+      action: () => {
+        onClose();
+        onOpenEmailModal('release_signoff');
+      }
+    },
+    ...(onOpenTechDebtModal ? [{
+      id: 'action-tech-debt-matrix',
+      title: 'Technical Debt & Defect Impact Matrix',
+      category: 'Actions',
+      icon: Flame,
+      desc: 'Open severity, blast-radius & remediation velocity impact matrix popup',
+      action: () => {
+        onClose();
+        onOpenTechDebtModal();
+      }
+    }] : [])
   ];
 
   // Search through state items (stories, defects, test cases)

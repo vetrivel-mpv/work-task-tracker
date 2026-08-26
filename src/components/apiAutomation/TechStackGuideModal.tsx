@@ -136,6 +136,7 @@ export const TechStackGuideModal: React.FC<TechStackGuideModalProps> = ({
   const playwrightCli = generatePlaywrightCliCommands();
   const playwrightAdoYaml = generatePlaywrightAzureDevOpsYaml(defaultCollection.name);
   const brunoCli = generateBrunoCliCommand(defaultCollection.name, 'staging');
+  const brunoAdoYaml = generateBrunoAzureDevOpsYaml(defaultCollection);
   const newmanCommand = generateNewmanCliCommand(defaultCollection.name);
   const azureYaml = generateAzureDevOpsPipelineYaml(defaultCollection);
   const githubYaml = generateGitHubActionsWorkflowYaml(defaultCollection);

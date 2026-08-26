@@ -27,6 +27,7 @@ interface PortalSummaryStripProps {
   onClearSearch: () => void;
   selectedReleaseId: string | null;
   onClearReleaseFilter: () => void;
+  onOpenTechDebtModal?: () => void;
 }
 
 export const PortalSummaryStrip: React.FC<PortalSummaryStripProps> = ({
@@ -36,7 +37,8 @@ export const PortalSummaryStrip: React.FC<PortalSummaryStripProps> = ({
   searchQuery,
   onClearSearch,
   selectedReleaseId,
-  onClearReleaseFilter
+  onClearReleaseFilter,
+  onOpenTechDebtModal
 }) => {
   // Calculations
   const tasksForDay = (state.tasks || []).filter(t => t.dateStr === currentDateStr);
@@ -206,15 +208,16 @@ export const PortalSummaryStrip: React.FC<PortalSummaryStripProps> = ({
             </div>
           </div>
 
-          {/* Defects Status Pill */}
-          <div 
+          {/* Defects Status Pill (Clickable -> Opens Tech Debt & Impact Matrix) */}
+          <button 
             id="strip-defects-status-indicator"
-            className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border)] shadow-2xs"
-            title={`${openDefects.length} open defects total (${criticalDefects} critical/high)`}
+            onClick={onOpenTechDebtModal}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--bg-subtle)] hover:bg-[var(--surface-hover)] border border-[var(--border)] hover:border-rose-500/40 shadow-2xs cursor-pointer transition-all group"
+            title={`${openDefects.length} open defects total (${criticalDefects} critical/high). Click to view Technical Debt & Defect Impact Matrix.`}
           >
             <div className="flex items-center gap-1.5">
-              <Bug size={13} className={criticalDefects > 0 ? 'text-rose-500 shrink-0' : 'text-[var(--text-muted)] shrink-0'} />
-              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)] tracking-wider whitespace-nowrap">
+              <Bug size={13} className={criticalDefects > 0 ? 'text-rose-500 group-hover:scale-110 transition-transform shrink-0' : 'text-[var(--text-muted)] group-hover:text-rose-400 shrink-0'} />
+              <span className="text-[10px] font-bold uppercase text-[var(--text-muted)] group-hover:text-[var(--text-primary)] tracking-wider whitespace-nowrap transition-colors">
                 Open Defects
               </span>
             </div>
@@ -232,7 +235,7 @@ export const PortalSummaryStrip: React.FC<PortalSummaryStripProps> = ({
                 </span>
               )}
             </div>
-          </div>
+          </button>
         </div>
       </div>
     </div>

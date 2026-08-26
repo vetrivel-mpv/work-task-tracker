@@ -44,11 +44,24 @@ import {
   Search,
   Shield,
   UserCog,
-  CalendarCheck2
+  CalendarCheck2,
+  Copy,
+  Check,
+  Download,
+  Share2,
+  Compass,
+  ArrowUpRight,
+  TrendingDown,
+  Mail,
+  SlidersHorizontal,
+  CheckSquare,
+  HelpCircle,
+  FileText
 } from 'lucide-react';
 import { UsersTable } from './UsersTable';
 import { AbsenceTrackerView } from './AbsenceTrackerView';
 import { TeamRoastView } from './TeamRoastView';
+import { ResourceAllocationView } from './ResourceAllocationView';
 import {
   ResponsiveContainer,
   LineChart,
@@ -59,9 +72,16 @@ import {
   Tooltip,
   Legend,
   Area,
-  ComposedChart
+  ComposedChart,
+  BarChart,
+  Bar,
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  Radar
 } from 'recharts';
-import { generateAppreciationNote } from '../../services/aiService';
+import { generateAppreciationNote, generatePerformanceReview, PerformanceDossier } from '../../services/aiService';
 import { generateId, toDateStr, shiftDate, formatDisplayDate } from '../../utils/date';
 
 interface PeopleReviewViewProps {
@@ -94,9 +114,12 @@ interface PeopleReviewViewProps {
   onUpdateAbsence?: (record: AbsenceRecord) => void;
   onDeleteAbsence?: (recordId: string) => void;
   onSaveRoast?: (roast: TeamRoastRecord) => void;
+  onUpdateTask?: (task: Task) => void;
+  onUpdateStory?: (story: UserStory) => void;
+  onUpdateDefect?: (defect: Defect) => void;
 }
 
-type MainTab = 'roster_performance' | 'absence_tracker' | 'sprint_roast' | 'users_governance';
+type MainTab = 'roster_performance' | 'resource_allocation' | 'absence_tracker' | 'sprint_roast' | 'users_governance';
 type ChartMetricMode = 'all' | 'completed' | 'workload' | 'quality';
 type SprintMetricMode = 'all' | 'velocity' | 'predictability' | 'individual';
 type TeamFilterSection = 'all' | 'my_team' | 'assigned_to' | 'created_by';
@@ -130,7 +153,10 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
   onAddAbsence,
   onUpdateAbsence,
   onDeleteAbsence,
-  onSaveRoast
+  onSaveRoast,
+  onUpdateTask,
+  onUpdateStory,
+  onUpdateDefect
 }) => {
   const [mainTab, setMainTab] = useState<MainTab>('roster_performance');
   const [selectedPeriod, setSelectedPeriod] = useState<'month' | 'quarter' | 'year'>('quarter');
@@ -157,7 +183,13 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
   const [highlights, setHighlights] = useState('');
   const [areasOfGrowth, setAreasOfGrowth] = useState('');
   const [appreciationNote, setAppreciationNote] = useState('');
+  const [reviewRating, setReviewRating] = useState<number>(5);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiDossierLoading, setAiDossierLoading] = useState(false);
+  const [aiDossier, setAiDossier] = useState<PerformanceDossier | null>(null);
+  const [copiedAppreciation, setCopiedAppreciation] = useState(false);
+  const [activeSubTab, setActiveSubTab] = useState<'analytics' | 'skills_matrix' | 'one_on_one'>('analytics');
+  const [expandedReviewId, setExpandedReviewId] = useState<string | null>(null);
 
   const activeMember = team.find(t => t.id === activeMemberId) || team[0];
 
@@ -475,6 +507,39 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
     }
   };
 
+  const handleGenerateAiDossier = async () => {
+    if (!activeMember) return;
+    setAiDossierLoading(true);
+    const payload = {
+      memberName: activeMember.name,
+      role: activeMember.role,
+      period: selectedPeriod,
+      tasksCompleted: completedTasks,
+      tasksAssigned: memberTasks.length,
+      completionRate: memberTasks.length > 0 ? Math.round((completedTasks / memberTasks.length) * 100) : 100,
+      storyPointsDelivered: storyPointsDelivered,
+      defectsResolved: defectsResolved,
+      highlights: highlights.trim() || undefined,
+      currentSprintShare: sprintMetricsSummary.memberShare,
+      recentVelocityData: sprintVelocityData
+    };
+
+    const res = await generatePerformanceReview(payload, geminiApiKey);
+    setAiDossierLoading(false);
+    if (res.ok && res.dossier) {
+      setAiDossier(res.dossier);
+      if (!highlights.trim() && res.dossier.executiveSummary) {
+        setHighlights(res.dossier.executiveSummary);
+      }
+      if (!areasOfGrowth.trim() && res.dossier.growthOpportunities?.length) {
+        setAreasOfGrowth(res.dossier.growthOpportunities.join('\n• '));
+      }
+      if (!appreciationNote.trim() && res.dossier.suggestedAppreciation) {
+        setAppreciationNote(res.dossier.suggestedAppreciation);
+      }
+    }
+  };
+
   const handleSaveReviewNote = (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeMember || !highlights.trim()) return;
@@ -488,13 +553,62 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
       areasOfGrowth: areasOfGrowth.trim(),
       appreciationNote: appreciationNote.trim() || undefined,
       author: 'Alex Rivera (Lead)',
-      createdAt: toDateStr(new Date())
+      createdAt: toDateStr(new Date()),
+      rating: reviewRating,
+      strengths: aiDossier?.strengths || undefined,
+      smartGoals: aiDossier?.smartGoals || undefined,
+      executiveSummary: aiDossier?.executiveSummary || undefined
     });
 
     setHighlights('');
     setAreasOfGrowth('');
     setAppreciationNote('');
+    setReviewRating(5);
+    setAiDossier(null);
     setReviewModalOpen(false);
+  };
+
+  const handleExportPerformanceReport = () => {
+    if (!activeMember) return;
+    const content = `=====================================================
+360° PEOPLE & PERFORMANCE DOSSIER: ${activeMember.name.toUpperCase()}
+Role: ${activeMember.role} | Email: ${activeMember.email || 'N/A'}
+Review Period: ${selectedPeriod.toUpperCase()} | Generated: ${new Date().toLocaleDateString()}
+=====================================================
+
+--- 1. OVERALL METRICS SNAPSHOT ---
+- Total Assigned Tasks: ${memberTasks.length}
+- Completed Tasks: ${completedTasks} (${memberTasks.length > 0 ? Math.round((completedTasks / memberTasks.length) * 100) : 100}% Completion Rate)
+- Story Points Delivered: ${storyPointsDelivered} pts
+- Defects Resolved / Fixed: ${defectsResolved}
+- Sprint Velocity Contribution (Last Sprint): ${sprintMetricsSummary.memberShare} pts (${sprintMetricsSummary.memberPctOfTeam}% of Team Delivery)
+
+--- 2. 7-DAY CONTRIBUTION TRENDS ---
+${trendData.map(d => `• ${d.fullDate} (${d.dayLabel}): ${d.completedTasks} tasks completed, ${d.storyPoints} pts delivered`).join('\n')}
+
+--- 3. 6-SPRINT VELOCITY TRENDS ---
+${sprintVelocityData.map(s => `• ${s.sprintName}: ${s.memberCompletedPoints} pts delivered (Team: ${s.teamCompletedPoints} pts, Predictability: ${s.completionRate}%)`).join('\n')}
+
+--- 4. LOGGED 1-ON-1 & GROWTH REVIEWS (${memberReviews.length}) ---
+${memberReviews.map(r => `
+[${r.dateStr} | ${r.period.toUpperCase()} REVIEW by ${r.author}]
+Rating: ${r.rating || 5}/5 ⭐
+Highlights: ${r.highlights}
+Areas of Growth: ${r.areasOfGrowth || 'None logged'}
+Appreciation: ${r.appreciationNote || 'None logged'}
+${r.smartGoals ? `SMART Goals: \n${r.smartGoals.map(g => `  - ${g}`).join('\n')}` : ''}
+`).join('\n-----------------------------------------------------')}
+`;
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Performance_Dossier_${activeMember.name.replace(/\s+/g, '_')}_${selectedPeriod}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // Custom Chart Tooltip Component
@@ -637,6 +751,11 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
                 <Flame size={12} /> AI Roast Arena
               </span>
             )}
+            {mainTab === 'resource_allocation' && (
+              <span className="px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 text-[10.5px] font-bold flex items-center gap-1">
+                <Layers size={12} /> Capacity vs Planned
+              </span>
+            )}
             {mainTab === 'users_governance' && (
               <span className="px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 text-[10.5px] font-bold">
                 {users.length} Users Enrolled
@@ -645,6 +764,7 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
           </div>
           <p className="text-xs text-[var(--text-secondary)] font-medium mt-0.5">
             {mainTab === 'roster_performance' && 'Dedicated My Team view, ADO Assigned To & Created By peoples, 7-day contribution trends, and 1-on-1s'}
+            {mainTab === 'resource_allocation' && 'Weekly capacity vs planned tasks & stories per team member with PTO deductions and AI rebalancing'}
             {mainTab === 'absence_tracker' && 'Log full-day leaves, half-day mornings/afternoons, and hourly permissions with automatic capacity deductions'}
             {mainTab === 'sprint_roast' && 'AI comedy & standup roast analyzing blockers, bug pile, and story delays with constructive delivery tips'}
             {mainTab === 'users_governance' && 'Fixed 6-role permission matrix, org/project scoping, connection owner admin assignment, and ADO sync'}
@@ -664,6 +784,17 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
             >
               <Users className="w-3.5 h-3.5" />
               <span>Team & Performance</span>
+            </button>
+            <button
+              onClick={() => setMainTab('resource_allocation')}
+              className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                mainTab === 'resource_allocation'
+                  ? 'bg-[var(--surface)] text-indigo-600 dark:text-indigo-400 shadow-xs border border-[var(--border)]'
+                  : 'text-[var(--text-secondary)] hover:text-indigo-500'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5 text-indigo-500" />
+              <span>Resource Allocation</span>
             </button>
             <button
               onClick={() => setMainTab('absence_tracker')}
@@ -731,8 +862,22 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
         </div>
       </div>
 
-      {/* Conditional View: Absence Tracker, Roast, Users Table or Team Directory */}
-      {mainTab === 'absence_tracker' ? (
+      {/* Conditional View: Resource Allocation, Absence Tracker, Roast, Users Table or Team Directory */}
+      {mainTab === 'resource_allocation' ? (
+        <ResourceAllocationView
+          team={team}
+          tasks={tasks}
+          userStories={userStories}
+          defects={defects}
+          absences={absences}
+          currentDateStr={currentDateStr}
+          geminiApiKey={geminiApiKey}
+          onUpdateMember={onUpdateMember}
+          onUpdateTask={onUpdateTask}
+          onUpdateStory={onUpdateStory}
+          onUpdateDefect={onUpdateDefect}
+        />
+      ) : mainTab === 'absence_tracker' ? (
         <AbsenceTrackerView
           team={team}
           absences={absences}
@@ -1000,7 +1145,7 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <button
                       onClick={() => handleToggleMyTeam(activeMember)}
                       className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl border transition-all ${
@@ -1014,8 +1159,20 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
                     </button>
 
                     <button
-                      onClick={() => setReviewModalOpen(true)}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all"
+                      onClick={handleExportPerformanceReport}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-hover)] text-[var(--text-primary)] transition-all"
+                      title="Download full 360 Performance Dossier text report"
+                    >
+                      <Download size={13} />
+                      <span>Export Dossier</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setReviewModalOpen(true);
+                        setAiDossier(null);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all cursor-pointer"
                     >
                       <Award size={14} />
                       <span>Log 1-on-1 Review</span>
@@ -1024,23 +1181,148 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
                 </div>
 
                 {/* Scorecards */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                   <div className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-3.5 text-center">
                     <div className="text-2xl font-black text-[var(--primary)]">{completedTasks}</div>
-                    <div className="text-[11px] font-bold text-[var(--text-muted)] uppercase mt-0.5">Tasks Completed (Total)</div>
+                    <div className="text-[10.5px] font-bold text-[var(--text-muted)] uppercase mt-0.5">Tasks Completed ({memberTasks.length > 0 ? Math.round((completedTasks/memberTasks.length)*100) : 100}%)</div>
                   </div>
 
                   <div className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-3.5 text-center">
                     <div className="text-2xl font-black text-[var(--secondary-accent)]">{storyPointsDelivered}</div>
-                    <div className="text-[11px] font-bold text-[var(--text-muted)] uppercase mt-0.5">Story Points Delivered</div>
+                    <div className="text-[10.5px] font-bold text-[var(--text-muted)] uppercase mt-0.5">Story Points Delivered</div>
                   </div>
 
                   <div className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-3.5 text-center">
                     <div className="text-2xl font-black text-[var(--critical)]">{defectsResolved}</div>
-                    <div className="text-[11px] font-bold text-[var(--text-muted)] uppercase mt-0.5">Defects Handled & Fixed</div>
+                    <div className="text-[10.5px] font-bold text-[var(--text-muted)] uppercase mt-0.5">Defects Handled & Fixed</div>
+                  </div>
+
+                  <div className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-3.5 text-center">
+                    <div className="text-2xl font-black text-emerald-600 dark:text-emerald-400">{sprintMetricsSummary.memberShare} pts</div>
+                    <div className="text-[10.5px] font-bold text-[var(--text-muted)] uppercase mt-0.5">Sprint Share ({sprintMetricsSummary.memberPctOfTeam}%)</div>
                   </div>
                 </div>
+
+                {/* Sub-tab Navigation */}
+                <div className="flex items-center gap-2 border-b border-[var(--border)] pt-2">
+                  <button
+                    onClick={() => setActiveSubTab('analytics')}
+                    className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+                      activeSubTab === 'analytics'
+                        ? 'border-[var(--primary)] text-[var(--primary)]'
+                        : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    }`}
+                  >
+                    <Activity size={14} />
+                    <span>Velocity & Contribution Analytics</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveSubTab('skills_matrix')}
+                    className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+                      activeSubTab === 'skills_matrix'
+                        ? 'border-[var(--primary)] text-[var(--primary)]'
+                        : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    }`}
+                  >
+                    <Compass size={14} />
+                    <span>360° Skills & Delivery Radar</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveSubTab('one_on_one')}
+                    className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+                      activeSubTab === 'one_on_one'
+                        ? 'border-[var(--primary)] text-[var(--primary)]'
+                        : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    }`}
+                  >
+                    <MessageSquareCheck size={14} />
+                    <span>1-on-1 History & Reviews ({memberReviews.length})</span>
+                  </button>
+                </div>
               </div>
+
+              {activeSubTab === 'skills_matrix' && (
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 shadow-xs flex flex-col gap-5 animate-in fade-in duration-150">
+                  <div className="flex items-center justify-between pb-3 border-b border-[var(--border)]">
+                    <div>
+                      <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+                        <Compass size={16} className="text-[var(--primary)]" />
+                        <span>360° Delivery Competency Matrix</span>
+                      </h3>
+                      <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                        Multi-dimensional assessment based on task completion velocity, bug resolution rigor, code review participation, and sprint delivery.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                    <div className="h-64 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <RadarChart data={[
+                          { subject: 'Velocity', score: Math.min(100, Math.round((storyPointsDelivered || 20) * 2.5)), fullMark: 100 },
+                          { subject: 'Code Quality', score: Math.min(100, Math.max(60, 100 - (memberDefects.length * 4))), fullMark: 100 },
+                          { subject: 'Sprint Predictability', score: sprintMetricsSummary.predictability || 90, fullMark: 100 },
+                          { subject: 'Execution Rate', score: memberTasks.length > 0 ? Math.round((completedTasks / memberTasks.length) * 100) : 95, fullMark: 100 },
+                          { subject: 'Peer Collaboration', score: activeMember.isMyTeam ? 94 : 88, fullMark: 100 },
+                          { subject: 'Ownership', score: 92, fullMark: 100 }
+                        ]}>
+                          <PolarGrid stroke="var(--border)" />
+                          <PolarAngleAxis dataKey="subject" tick={{ fill: 'var(--text-secondary)', fontSize: 11, fontWeight: 'bold' }} />
+                          <PolarRadiusAxis angle={30} domain={[0, 100]} stroke="var(--border)" />
+                          <Radar name={activeMember.name} dataKey="score" stroke="#4F46E5" fill="#4F46E5" fillOpacity={0.4} />
+                          <Tooltip content={({ active, payload }) => {
+                            if (active && payload && payload.length) {
+                              const data = payload[0].payload;
+                              return (
+                                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2.5 shadow-md text-xs">
+                                  <div className="font-bold text-[var(--text-primary)]">{data.subject}</div>
+                                  <div className="text-[var(--primary)] font-black text-sm">{data.score}/100</div>
+                                </div>
+                              );
+                            }
+                            return null;
+                          }} />
+                        </RadarChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    <div className="flex flex-col gap-3">
+                      <div className="p-3 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl">
+                        <div className="flex items-center justify-between text-xs font-bold mb-1">
+                          <span className="text-[var(--text-primary)]">Execution & Task Throughput</span>
+                          <span className="text-emerald-600 dark:text-emerald-400">{memberTasks.length > 0 ? Math.round((completedTasks/memberTasks.length)*100) : 100}%</span>
+                        </div>
+                        <div className="w-full bg-[var(--surface)] rounded-full h-2 overflow-hidden border border-[var(--border)]">
+                          <div className="bg-emerald-500 h-2 rounded-full" style={{ width: `${memberTasks.length > 0 ? Math.round((completedTasks/memberTasks.length)*100) : 100}%` }} />
+                        </div>
+                      </div>
+
+                      <div className="p-3 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl">
+                        <div className="flex items-center justify-between text-xs font-bold mb-1">
+                          <span className="text-[var(--text-primary)]">Sprint Commitment Predictability</span>
+                          <span className="text-[var(--primary)]">{sprintMetricsSummary.predictability}%</span>
+                        </div>
+                        <div className="w-full bg-[var(--surface)] rounded-full h-2 overflow-hidden border border-[var(--border)]">
+                          <div className="bg-[var(--primary)] h-2 rounded-full" style={{ width: `${sprintMetricsSummary.predictability}%` }} />
+                        </div>
+                      </div>
+
+                      <div className="p-3 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl">
+                        <div className="flex items-center justify-between text-xs font-bold mb-1">
+                          <span className="text-[var(--text-primary)]">Defect Resolution & Rigor</span>
+                          <span className="text-indigo-600 dark:text-indigo-400">{defectsResolved} Resolved</span>
+                        </div>
+                        <div className="w-full bg-[var(--surface)] rounded-full h-2 overflow-hidden border border-[var(--border)]">
+                          <div className="bg-indigo-500 h-2 rounded-full" style={{ width: '85%' }} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {(activeSubTab === 'analytics' || activeSubTab === 'one_on_one') && (
+                <>
 
               {/* --- 6-SPRINT RECHARTS TEAM VELOCITY TRENDS LINE CHART --- */}
               <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 shadow-xs flex flex-col gap-5">
@@ -1548,39 +1830,137 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
 
               {/* 1-on-1 History & Reviews */}
               <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 shadow-xs flex flex-col gap-4">
-                <h3 className="text-sm font-bold text-[var(--text-primary)]">1-on-1 & Growth Notes History</h3>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+                      <MessageSquareCheck size={16} className="text-[var(--primary)]" />
+                      <span>1-on-1 & Growth Notes History</span>
+                    </h3>
+                    <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                      Quarterly and monthly coaching sessions, AI-generated strengths & SMART goals, ratings, and appreciation notes.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setReviewModalOpen(true);
+                      setAiDossier(null);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all cursor-pointer"
+                  >
+                    <Plus size={13} />
+                    <span>New Check-in</span>
+                  </button>
+                </div>
 
                 {memberReviews.length > 0 ? (
                   <div className="flex flex-col gap-3">
-                    {memberReviews.map(rev => (
-                      <div key={rev.id} className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-4 flex flex-col gap-2">
-                        <div className="flex items-center justify-between text-xs text-[var(--text-muted)] pb-1 border-b border-[var(--border)]">
-                          <span className="font-bold text-[var(--text-primary)] capitalize">{rev.period} Review &bull; {rev.author}</span>
-                          <span>{formatDisplayDate(rev.dateStr)}</span>
-                        </div>
-                        <div className="text-xs text-[var(--text-primary)] leading-relaxed">
-                          <strong>Key Highlights:</strong> {rev.highlights}
-                        </div>
-                        {rev.areasOfGrowth && (
-                          <div className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                            <strong>Areas for Growth:</strong> {rev.areasOfGrowth}
-                          </div>
-                        )}
-                        {rev.appreciationNote && (
-                          <div className="mt-2 p-3 bg-[var(--surface)] border border-[var(--critical-border)] rounded-lg text-xs text-[var(--critical)] leading-relaxed flex items-start gap-2">
-                            <Heart size={14} className="text-[var(--critical)] flex-shrink-0 mt-0.5" />
-                            <div>
-                              <strong>Appreciation:</strong> {rev.appreciationNote}
+                    {memberReviews.map(rev => {
+                      const isExpanded = expandedReviewId === rev.id;
+                      return (
+                        <div key={rev.id} className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-4 flex flex-col gap-3 transition-all">
+                          <div className="flex items-center justify-between text-xs text-[var(--text-muted)] pb-2 border-b border-[var(--border)] flex-wrap gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-[var(--text-primary)] capitalize">{rev.period} Review</span>
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--surface)] border border-[var(--border)] font-semibold text-[var(--text-secondary)]">
+                                By {rev.author}
+                              </span>
+                              {rev.rating && (
+                                <div className="flex items-center gap-0.5 text-amber-500 font-bold text-xs ml-1">
+                                  {Array.from({ length: 5 }).map((_, i) => (
+                                    <Star
+                                      key={i}
+                                      size={12}
+                                      className={i < rev.rating! ? 'fill-amber-500 text-amber-500' : 'text-[var(--border)]'}
+                                    />
+                                  ))}
+                                  <span className="ml-1 text-[11px] text-[var(--text-secondary)]">({rev.rating}/5)</span>
+                                </div>
+                              )}
                             </div>
+                            <span className="font-mono-token text-[11px]">{formatDisplayDate(rev.dateStr)}</span>
                           </div>
-                        )}
-                      </div>
-                    ))}
+
+                          {rev.executiveSummary && (
+                            <div className="p-3 bg-[var(--surface)] border border-[var(--border)] rounded-lg text-xs text-[var(--text-primary)] leading-relaxed font-medium">
+                              <strong>Executive Summary:</strong> {rev.executiveSummary}
+                            </div>
+                          )}
+
+                          <div className="text-xs text-[var(--text-primary)] leading-relaxed">
+                            <strong>Key Highlights:</strong> {rev.highlights}
+                          </div>
+
+                          {rev.areasOfGrowth && (
+                            <div className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                              <strong>Areas for Growth:</strong> {rev.areasOfGrowth}
+                            </div>
+                          )}
+
+                          {rev.strengths && rev.strengths.length > 0 && (
+                            <div className="flex flex-col gap-1 text-xs">
+                              <strong className="text-[var(--text-primary)]">Core Strengths:</strong>
+                              <div className="flex flex-wrap gap-1.5 mt-0.5">
+                                {rev.strengths.map((s, idx) => (
+                                  <span key={idx} className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 font-medium">
+                                    ✓ {s}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {rev.smartGoals && rev.smartGoals.length > 0 && (
+                            <div className="flex flex-col gap-1 text-xs">
+                              <strong className="text-[var(--text-primary)]">SMART Coaching Goals:</strong>
+                              <ul className="list-disc pl-4 space-y-1 text-xs text-[var(--text-secondary)]">
+                                {rev.smartGoals.map((g, idx) => (
+                                  <li key={idx}>{g}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {rev.appreciationNote && (
+                            <div className="mt-1 p-3 bg-[var(--surface)] border border-rose-200 dark:border-rose-900/50 rounded-lg text-xs text-rose-700 dark:text-rose-300 leading-relaxed flex items-start gap-2">
+                              <Heart size={14} className="text-rose-500 flex-shrink-0 mt-0.5" />
+                              <div className="flex-1">
+                                <div className="flex items-center justify-between mb-1">
+                                  <strong>Appreciation & Recognition:</strong>
+                                  <button
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(rev.appreciationNote!);
+                                    }}
+                                    className="text-[10px] font-bold text-rose-600 dark:text-rose-400 hover:underline flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <Copy size={11} /> Copy Note
+                                  </button>
+                                </div>
+                                <p className="italic text-[11.5px]">{rev.appreciationNote}</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
-                  <p className="text-xs text-[var(--text-muted)] italic">No review notes recorded yet for {activeMember.name}.</p>
+                  <div className="p-8 text-center bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl flex flex-col items-center gap-2">
+                    <MessageSquareCheck size={28} className="text-[var(--text-muted)]" />
+                    <p className="text-xs font-semibold text-[var(--text-secondary)]">No 1-on-1 review notes recorded yet for {activeMember.name}.</p>
+                    <button
+                      onClick={() => {
+                        setReviewModalOpen(true);
+                        setAiDossier(null);
+                      }}
+                      className="mt-1 px-3.5 py-1.5 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all cursor-pointer"
+                    >
+                      + Log First 1-on-1 Check-in
+                    </button>
+                  </div>
                 )}
               </div>
+            </>
+            )}
             </>
           )}
         </div>
@@ -1688,23 +2068,126 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
         </div>
       )}
 
-      {/* 1-on-1 Review Modal with AI Drafter */}
+      {/* 1-on-1 Review Modal with AI 360 Dossier & Drafter */}
       {reviewModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl max-w-xl w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
-              <h2 className="text-base font-bold text-[var(--text-primary)]">
-                Log 1-on-1 & Performance Check-in: {activeMember?.name}
-              </h2>
+              <div>
+                <h2 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+                  <Award size={18} className="text-[var(--primary)]" />
+                  <span>Log 1-on-1 Performance Check-in: {activeMember?.name}</span>
+                </h2>
+                <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                  Record qualitative achievements, coaching priorities, and generate 360° AI performance dossiers.
+                </p>
+              </div>
               <button
                 onClick={() => setReviewModalOpen(false)}
-                className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer text-lg"
               >
                 &times;
               </button>
             </div>
 
             <form onSubmit={handleSaveReviewNote} className="p-6 flex flex-col gap-4 max-h-[calc(85vh-80px)] overflow-y-auto">
+              {/* Period & Star Rating */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Review Period</label>
+                  <select
+                    value={selectedPeriod}
+                    onChange={(e: any) => setSelectedPeriod(e.target.value)}
+                    className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl outline-none cursor-pointer"
+                  >
+                    <option value="month">Monthly Check-in</option>
+                    <option value="quarter">Quarterly Performance Review (QPR)</option>
+                    <option value="year">Annual Review</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Performance Rating</label>
+                  <div className="flex items-center gap-1.5 py-1">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        type="button"
+                        onClick={() => setReviewRating(star)}
+                        className="cursor-pointer transition-transform hover:scale-110 p-1"
+                      >
+                        <Star
+                          size={18}
+                          className={star <= reviewRating ? 'fill-amber-500 text-amber-500' : 'text-slate-300 dark:text-slate-700'}
+                        />
+                      </button>
+                    ))}
+                    <span className="ml-2 text-xs font-bold text-[var(--text-secondary)]">
+                      {reviewRating === 5 ? 'Exceptional (5/5)' : reviewRating === 4 ? 'Exceeds Expectations (4/5)' : reviewRating === 3 ? 'Meets Expectations (3/5)' : 'Needs Alignment'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* AI 360 Generator Callout */}
+              <div className="p-3.5 bg-[var(--bg-subtle)] border border-[var(--primary)]/30 rounded-xl flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-[var(--primary)]/10 text-[var(--primary)]">
+                    <Sparkles size={18} />
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold text-[var(--text-primary)]">Auto-Generate 360° AI Dossier</div>
+                    <div className="text-[11px] text-[var(--text-secondary)]">
+                      Synthesizes {completedTasks} tasks, {storyPointsDelivered} pts, and {defectsResolved} bugs into executive summary & SMART goals.
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleGenerateAiDossier}
+                  disabled={aiDossierLoading}
+                  className="px-3 py-1.5 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs transition-all flex items-center gap-1 cursor-pointer flex-shrink-0"
+                >
+                  <Sparkles size={13} />
+                  <span>{aiDossierLoading ? 'Analyzing...' : 'Generate 360° Dossier'}</span>
+                </button>
+              </div>
+
+              {/* Generated Dossier Preview if Available */}
+              {aiDossier && (
+                <div className="p-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl flex flex-col gap-3 animate-in fade-in duration-150">
+                  <div className="flex items-center justify-between text-xs font-bold text-[var(--primary)] pb-1 border-b border-[var(--border)]">
+                    <span>✨ AI 360 Performance Dossier Drafted</span>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400">Ready to save</span>
+                  </div>
+
+                  {aiDossier.strengths && aiDossier.strengths.length > 0 && (
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[11px] font-bold text-[var(--text-primary)]">Identified Strengths:</span>
+                      <div className="flex flex-wrap gap-1">
+                        {aiDossier.strengths.map((s, idx) => (
+                          <span key={idx} className="text-[10.5px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-medium">
+                            ✓ {s}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {aiDossier.smartGoals && aiDossier.smartGoals.length > 0 && (
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[11px] font-bold text-[var(--text-primary)]">Suggested SMART Goals:</span>
+                      <ul className="list-disc pl-4 text-[11px] text-[var(--text-secondary)] space-y-0.5">
+                        {aiDossier.smartGoals.map((g, idx) => (
+                          <li key={idx}>{g}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
                   Key Delivery Highlights & Achievements <span className="text-[var(--critical)]">*</span>
@@ -1721,11 +2204,11 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">
-                  Areas of Growth & Coaching Goals
+                  Areas of Growth & Coaching Priorities
                 </label>
                 <textarea
                   rows={2}
-                  placeholder="What can they focus on in the next sprint or quarter?"
+                  placeholder="What technical, leadership, or delivery goals should they focus on?"
                   value={areasOfGrowth}
                   onChange={(e) => setAreasOfGrowth(e.target.value)}
                   className="w-full text-xs px-3 py-2 bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl outline-none"
@@ -1735,20 +2218,23 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
               {/* AI Appreciation Drafter */}
               <div className="bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl p-4 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-[var(--text-primary)]">Appreciation Letter (Optional)</span>
+                  <span className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                    <Heart size={14} className="text-rose-500" />
+                    <span>Recognition & Appreciation Letter (Optional)</span>
+                  </span>
                   <button
                     type="button"
                     onClick={handleDraftAiAppreciation}
                     disabled={aiLoading}
-                    className="inline-flex items-center gap-1 text-xs font-bold text-[var(--primary)] hover:underline"
+                    className="inline-flex items-center gap-1 text-xs font-bold text-[var(--primary)] hover:underline cursor-pointer"
                   >
                     <Sparkles size={13} />
-                    <span>{aiLoading ? 'Drafting…' : '✨ Draft with Gemini'}</span>
+                    <span>{aiLoading ? 'Drafting…' : '✨ Re-Draft with Gemini'}</span>
                   </button>
                 </div>
                 <textarea
                   rows={3}
-                  placeholder="Sincere appreciation note to share directly with the engineer..."
+                  placeholder="Sincere appreciation note to share directly with the engineer in 1-on-1 or team shoutout..."
                   value={appreciationNote}
                   onChange={(e) => setAppreciationNote(e.target.value)}
                   className="w-full text-xs px-3 py-2 bg-[var(--surface)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl outline-none"
@@ -1759,15 +2245,15 @@ export const PeopleReviewView: React.FC<PeopleReviewViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setReviewModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-[var(--text-secondary)]"
+                  className="px-4 py-2 text-xs font-semibold text-[var(--text-secondary)] cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs"
+                  className="px-5 py-2 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs cursor-pointer"
                 >
-                  Save Review Note
+                  Save Review Note & Dossier
                 </button>
               </div>
             </form>

@@ -21,7 +21,7 @@ import {
   Command, 
   Moon, 
   Sun, 
-  RefreshCw,
+  RefreshCw, 
   Activity,
   Layers,
   ChevronDown,
@@ -39,7 +39,8 @@ import {
   Check,
   Grid,
   GripVertical,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Flame
 } from 'lucide-react';
 import { AppView, Release, DualAdoConfig, AppState, AppTheme, UserRole, ROLE_CONFIGS } from '../../types';
 import { toDateStr, shiftDate, formatDisplayDate, isToday } from '../../utils/date';
@@ -59,6 +60,7 @@ interface ModernPortalHeaderProps {
   onOpenAdoModal: () => void;
   onOpenEmailModal: (tab?: 'standup' | 'qa' | 'dashboard') => void;
   onOpenCommandPalette: () => void;
+  onOpenTechDebtModal?: () => void;
   dualAdoConfig?: DualAdoConfig;
   state: AppState;
   onUpdateTheme?: (theme: AppTheme) => void;
@@ -78,6 +80,7 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
   onOpenAdoModal,
   onOpenEmailModal,
   onOpenCommandPalette,
+  onOpenTechDebtModal,
   dualAdoConfig,
   state,
   onUpdateTheme
@@ -117,7 +120,7 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
   const DEFAULT_TAB_ORDER: AppView[] = [
     'board',
     'stories',
-    'testCases',
+    // 'testCases', // Commented out per user request
     'defects',
     'qa_dashboard',
     'apiAutomation',
@@ -318,14 +321,14 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
       badgeType: 'neutral',
       group: 'delivery'
     },
-    testCases: {
+    /* testCases: {
       id: 'testCases' as AppView,
       label: 'Test Cases',
       icon: FileCheck2,
       badge: testCasesCount > 0 ? String(testCasesCount) : null,
       badgeType: 'neutral',
       group: 'quality'
-    },
+    }, */
     defects: {
       id: 'defects' as AppView,
       label: 'Defects & QA',
@@ -567,14 +570,28 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
             <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Azure DevOps Connected" />
           </button>
 
-          {/* Broadcast Dispatcher */}
+          {/* Technical Debt & Impact Matrix Popup Trigger */}
+          {onOpenTechDebtModal && (
+            <button
+              onClick={onOpenTechDebtModal}
+              id="header-tech-debt-matrix-btn"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-rose-600 dark:text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded-xl transition-all shadow-2xs cursor-pointer shrink-0 group"
+              title="Technical Debt & Defect Impact Matrix"
+            >
+              <Flame size={13} className="text-rose-600 dark:text-rose-400 group-hover:scale-110 transition-transform" />
+              <span className="hidden lg:inline text-[11px] font-bold">Tech Debt</span>
+            </button>
+          )}
+
+          {/* Email Automation Hub & Executive Dispatcher */}
           <button
-            onClick={() => onOpenEmailModal('standup')}
+            onClick={() => onOpenEmailModal('daily_standup')}
+            id="header-email-hub-btn"
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-[var(--text-primary)] bg-[var(--bg-subtle)] hover:bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl transition-all shadow-2xs cursor-pointer shrink-0"
-            title="Executive Dispatcher"
+            title="Email Automation & Dispatch Center (6 Production Formats)"
           >
             <Mail size={13} className="text-[var(--primary)]" />
-            <span className="hidden xl:inline text-[11px]">Broadcast</span>
+            <span className="hidden xl:inline text-[11px]">Email Hub</span>
           </button>
 
           {/* Active User Indicator */}

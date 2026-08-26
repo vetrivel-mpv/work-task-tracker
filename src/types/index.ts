@@ -59,6 +59,7 @@ export interface Task {
   iterationPath?: string;
   userStoryId?: string | null;
   defectId?: string | null;
+  parentId?: number | string | null;
   releaseId?: string | null;
   dependsOnTaskIds?: string[];
   comments?: TaskComment[];
@@ -216,6 +217,8 @@ export interface TeamMember {
   active?: boolean;
   isMyTeam?: boolean; // True for 'My Team' members
   adoSource?: 'assigned_to' | 'created_by' | 'manual';
+  weeklyCapacityHours?: number; // e.g. 40 (or 32, 20)
+  targetFocusHours?: number; // Focus allocation hours
 }
 
 export interface TeamGroup {
@@ -367,6 +370,10 @@ export interface PeopleReviewNote {
   appreciationNote?: string;
   author: string;
   createdAt: string;
+  rating?: number; // 1 to 5 stars
+  smartGoals?: string[];
+  strengths?: string[];
+  executiveSummary?: string;
 }
 
 export type AbsenceType = 'full_day' | 'half_day_morning' | 'half_day_afternoon' | 'hourly_permission';
@@ -510,6 +517,38 @@ export interface AdoConfig {
 
 export type LayoutDensity = 'compact' | 'comfortable';
 
+export type EmailTemplateType = 
+  | 'daily_standup'
+  | 'qa_gate'
+  | 'executive_pulse'
+  | 'resource_capacity'
+  | 'defect_escalation'
+  | 'release_signoff';
+
+export interface EmailScheduleConfig {
+  id: string;
+  templateType: EmailTemplateType;
+  title: string;
+  frequency: 'daily' | 'weekly' | 'event_driven';
+  targetDays?: ('Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri')[];
+  timeStr?: string; // e.g. "17:00"
+  recipients: string[];
+  ccList?: string[];
+  enabled: boolean;
+  lastSentAt?: string | null;
+  includeAiSummary?: boolean;
+}
+
+export interface EmailDispatchLog {
+  id: string;
+  timestamp: string;
+  templateType: EmailTemplateType;
+  subject: string;
+  recipients: string[];
+  status: 'sent' | 'queued' | 'simulated' | 'failed';
+  error?: string;
+}
+
 export interface AppSettings {
   appName?: string;
   projectCode?: string;
@@ -518,12 +557,23 @@ export interface AppSettings {
   customPresets?: any[];
   emailRecipient?: string;
   managerEmail?: string;
+  qaTeamEmail?: string;
+  releaseManagerEmail?: string;
+  executivesEmail?: string;
+  onCallEmail?: string;
+  emailSchedules?: EmailScheduleConfig[];
+  emailLogs?: EmailDispatchLog[];
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUser?: string;
+  smtpSenderName?: string;
   yourName?: string;
   carryForward?: boolean;
   selectedReleaseId?: string | null;
   sidebarCollapsed?: boolean;
   lastBackupAt?: string | null;
   geminiModel?: string;
+  geminiApiKey?: string;
   theme?: AppTheme;
   density?: LayoutDensity;
 }

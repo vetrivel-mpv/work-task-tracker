@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   Task, 
   TeamMember, 
@@ -15,6 +15,10 @@ import {
 import { TaskCard } from './TaskCard';
 import { DependencyChainView } from './DependencyChainView';
 import { SprintBurnupChart } from './SprintBurnupChart';
+import { SprintBurnupModal } from './SprintBurnupModal';
+import { TechnicalDebtImpactModal } from '../defects/TechnicalDebtImpactModal';
+import { TaskListView } from './TaskListView';
+import { StoryBugTaskTrackerView } from './StoryBugTaskTrackerView';
 import { StandupDiscussionSyncModal } from '../standup/StandupDiscussionSyncModal';
 import { getWorkItemAssignee } from '../../utils/assigneeUtils';
 import { 
@@ -42,8 +46,12 @@ import {
   Lock,
   GitBranch,
   LayoutGrid,
+  LayoutList,
   Rocket,
-  Target
+  Target,
+  TrendingUp,
+  ShieldAlert,
+  ExternalLink
 } from 'lucide-react';
 import { isTaskOverdue } from '../../utils/date';
 import { matchesReleaseOrIteration, formatReleaseDisplayName } from '../../utils/adoPaths';
@@ -119,8 +127,14 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   onUpdateStandupEntry,
   onUpdateState
 }) => {
-  // View mode (Board vs Dependency Chain)
-  const [viewType, setViewType] = useState<'board' | 'dependency_chain'>('board');
+  // View mode (Board vs List vs Dependency Chain vs Story & Bug Tracker)
+  const [viewType, setViewType] = useState<'board' | 'list' | 'dependency_chain' | 'story_bug_tracker'>('board');
+
+  // Sprint Burnup & Release Predictability Modal State
+  const [isBurnupModalOpen, setIsBurnupModalOpen] = useState(false);
+
+  // Technical Debt & Impact Matrix Modal State
+  const [isTechDebtModalOpen, setIsTechDebtModalOpen] = useState(false);
 
   // Grouping mode
   const [groupBy, setGroupBy] = useState<GroupByMode>('priority');
@@ -647,18 +661,86 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     notifyMove(`Assigned to ${grpName}`);
   };
 
+  // Live scope points calculation for the active release
+  const releaseScopePoints = useMemo(() => {
+    const matchingStories = currentReleaseObj
+      ? userStories.filter(s => matchesReleaseOrIteration(s, currentReleaseObj.id, releases))
+      : userStories;
+    const total = matchingStories.reduce((acc, s) => acc + (s.storyPoints || 5), 0);
+    const done = matchingStories
+      .filter(s => s.status === 'Done' || s.status === 'QA Passed')
+      .reduce((acc, s) => acc + (s.storyPoints || 5), 0);
+    const percent = total > 0 ? Math.round((done / total) * 100) : releaseProgressPercent;
+    return { total, done, percent };
+  }, [currentReleaseObj, userStories, releases, releaseProgressPercent]);
+
   return (
     <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full pb-16">
-      {/* D3.js Sprint Burnup & Release Predictability Horizon */}
-      <SprintBurnupChart
-        releases={releases}
-        userStories={userStories}
-        tasks={tasks}
-        defects={defects}
-        selectedReleaseId={selectedReleaseId}
-        currentDateStr={dateStr}
-        onSelectRelease={onSelectRelease}
-      />
+      {/* Sprint Burnup & Release Predictability Horizon Interactive Launcher Banner */}
+      <div 
+        id="taskboard-burnup-predictability-banner"
+        className="bg-gradient-to-r from-[var(--surface)] via-[var(--bg-subtle)] to-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 shadow-xs flex flex-wrap items-center justify-between gap-4"
+      >
+        <div className="flex items-center gap-3.5 min-w-0">
+          <div className="w-11 h-11 rounded-2xl bg-[var(--primary-light)] text-[var(--primary)] flex items-center justify-center shadow-xs shrink-0">
+            <TrendingUp size={22} />
+          </div>
+          <div className="flex flex-col min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-sm sm:text-base font-bold text-[var(--text-primary)] tracking-tight">
+                Sprint Burnup & Release Predictability Horizon
+              </h2>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-[var(--primary-light)] text-[var(--primary)] border border-[var(--primary)]/30 shrink-0">
+                {currentReleaseDisplayName}
+              </span>
+              {currentReleaseObj?.targetDate && (
+                <span className="text-[11px] font-semibold text-[var(--text-secondary)] flex items-center gap-1 hidden sm:flex shrink-0">
+                  <Calendar size={12} />
+                  Target: {currentReleaseObj.targetDate}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+              Live D3 trajectory, Monte Carlo velocity forecasts, scope stability & what-if simulator
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
+          {/* Quick Scope Metric Chip */}
+          <div className="flex items-center gap-2 bg-[var(--surface)] border border-[var(--border)] px-3 py-1.5 rounded-xl shadow-2xs text-xs font-semibold">
+            <span className="text-[var(--text-muted)]">Story Scope:</span>
+            <span className="font-mono font-bold text-[var(--primary)]">
+              {releaseScopePoints.done}/{releaseScopePoints.total} pts ({releaseScopePoints.percent}%)
+            </span>
+          </div>
+
+          {/* Clickable Buttons Opening Popup Windows */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setIsTechDebtModalOpen(true)}
+              className="px-3.5 py-2 bg-[var(--surface)] hover:bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border)] hover:border-red-500/40 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-2 cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+              id="open-tech-debt-modal-from-board-btn"
+              title="Open Technical Debt & Impact Matrix in popup window"
+            >
+              <ShieldAlert size={15} className="text-red-600 dark:text-red-400" />
+              <span>Tech Debt & Impact Matrix</span>
+              <ExternalLink size={13} className="opacity-70" />
+            </button>
+
+            <button
+              onClick={() => setIsBurnupModalOpen(true)}
+              className="px-4 py-2 bg-[var(--primary)] hover:opacity-90 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-2 cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+              id="open-sprint-burnup-modal-btn"
+              title="Open complete Sprint Burnup & Release Predictability in popup window"
+            >
+              <TrendingUp size={15} />
+              <span>Sprint Burnup & Predictability</span>
+              <ExternalLink size={13} className="opacity-80" />
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* Top Insights & Execution Health Bar */}
       <div id="taskboard-execution-health-bar" className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs flex flex-col gap-4">
@@ -1090,7 +1172,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
       {/* Grouping View Switcher & Drag-and-Drop Guidance Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 shadow-xs">
         <div className="flex flex-wrap items-center gap-3">
-          {/* Main View Mode Selector (Board vs Dependency Chain) */}
+          {/* Main View Mode Selector (Board Lanes vs List View vs Dependency Chain) */}
           <div className="flex items-center bg-[var(--surface-hover)] p-1 rounded-xl border border-[var(--border)] gap-1">
             <button
               onClick={() => setViewType('board')}
@@ -1099,9 +1181,25 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                   ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               }`}
+              id="view-mode-board-lanes-btn"
+              title="Kanban Board Lanes with drag-and-drop card buckets"
             >
               <LayoutGrid size={13} className={viewType === 'board' ? 'text-[var(--primary)]' : ''} />
               <span>Board Lanes</span>
+            </button>
+
+            <button
+              onClick={() => setViewType('list')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                viewType === 'list'
+                  ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              id="view-mode-list-view-btn"
+              title="Compact, high-density structured list and table view"
+            >
+              <LayoutList size={13} className={viewType === 'list' ? 'text-[var(--primary)]' : ''} />
+              <span>List View</span>
             </button>
 
             <button
@@ -1111,6 +1209,8 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                   ? 'bg-amber-600 text-white shadow-xs'
                   : 'text-[var(--text-secondary)] hover:text-amber-600'
               }`}
+              id="view-mode-dependency-chain-btn"
+              title="Blockers and upstream prerequisite flow"
             >
               <GitBranch size={13} />
               <span>Dependency Chain & Blockers</span>
@@ -1122,9 +1222,23 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                 </span>
               )}
             </button>
+
+            <button
+              onClick={() => setViewType('story_bug_tracker')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                viewType === 'story_bug_tracker'
+                  ? 'bg-[var(--surface)] text-[var(--primary)] shadow-xs border border-[var(--border)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              id="view-mode-story-bug-tracker-btn"
+              title="Interactive open vs closed tasks tracker per User Story & Bug"
+            >
+              <Target size={13} className={viewType === 'story_bug_tracker' ? 'text-[var(--primary)]' : ''} />
+              <span>Story & Bug Task Tracker</span>
+            </button>
           </div>
 
-          {viewType === 'board' && (
+          {(viewType === 'board' || viewType === 'list') && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
                 <Layers size={14} className="text-[var(--primary)]" />
@@ -1200,6 +1314,8 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
               <span>
                 {viewType === 'dependency_chain'
                   ? 'Inspect blockers, cascading prerequisites, and complete upstream tasks'
+                  : viewType === 'list'
+                  ? 'Actionable high-density table with inline status toggling, sorting, and direct editing'
                   : 'Drag & drop cards to reorder or move between group buckets'}
               </span>
             </div>
@@ -1207,7 +1323,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
         </div>
       </div>
 
-      {/* Main View Area: Dependency Chain View OR Dynamic Board Lanes */}
+      {/* Main View Area: Dependency Chain View OR List View OR Story & Bug Task Tracker OR Dynamic Board Lanes */}
       {viewType === 'dependency_chain' ? (
         <DependencyChainView
           tasks={scopedTasks}
@@ -1223,6 +1339,42 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
           onUpdateTask={onUpdateTask}
           onDeleteTask={onDeleteTask}
           onAddComment={onAddComment}
+        />
+      ) : viewType === 'story_bug_tracker' ? (
+        <StoryBugTaskTrackerView
+          userStories={userStories}
+          defects={defects}
+          tasks={tasks}
+          team={team}
+          releases={releases}
+          selectedReleaseId={selectedReleaseId}
+          currentDateStr={dateStr}
+          onToggleTaskStatus={onToggleStatus}
+          onAddTask={onAddTask}
+          onUpdateTask={onUpdateTask}
+          onDeleteTask={onDeleteTask}
+          onSelectRelease={onSelectRelease}
+        />
+      ) : viewType === 'list' ? (
+        <TaskListView
+          tasks={filteredTasks}
+          allTasks={tasks}
+          team={team}
+          groups={groups}
+          userStories={userStories}
+          defects={defects}
+          releases={releases}
+          standup={standup}
+          currentDateStr={dateStr}
+          searchQuery={searchQuery}
+          groupBy={groupBy}
+          onToggleStatus={onToggleStatus}
+          onUpdateTask={onUpdateTask}
+          onDeleteTask={onDeleteTask}
+          onAddTask={onAddTask}
+          onAddComment={onAddComment}
+          onPushToStandup={handlePushToStandup}
+          selectedReleaseId={selectedReleaseId}
         />
       ) : (
       <div className={`grid gap-6 items-start ${
@@ -1450,6 +1602,30 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
           onUpdateState={onUpdateState}
         />
       )}
+
+      {/* Sprint Burnup & Release Predictability Horizon Full Popup Modal */}
+      <SprintBurnupModal
+        isOpen={isBurnupModalOpen}
+        onClose={() => setIsBurnupModalOpen(false)}
+        releases={releases}
+        userStories={userStories}
+        tasks={tasks}
+        defects={defects}
+        selectedReleaseId={selectedReleaseId}
+        currentDateStr={dateStr}
+        onSelectRelease={onSelectRelease}
+      />
+
+      {/* Technical Debt & Impact Matrix Full Popup Modal */}
+      <TechnicalDebtImpactModal
+        isOpen={isTechDebtModalOpen}
+        onClose={() => setIsTechDebtModalOpen(false)}
+        defects={defects}
+        releases={releases}
+        team={team}
+        selectedReleaseId={selectedReleaseId}
+        onSelectRelease={onSelectRelease}
+      />
     </div>
   );
 };

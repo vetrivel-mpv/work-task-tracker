@@ -36,6 +36,7 @@ import { FilterBar, FilterDropdownConfig } from '../common/FilterBar';
 import { useWorkItemFilters } from '../../utils/useWorkItemFilters';
 import { isTestCaseItem, filterPureUserStories } from '../../utils/itemClassification';
 import { HighlightText } from '../common/HighlightText';
+import { StoryBugTaskTracker } from '../common/StoryBugTaskTracker';
 
 interface UserStoriesViewProps {
   userStories: UserStory[];
@@ -45,10 +46,14 @@ interface UserStoriesViewProps {
   tasks: Task[];
   defects: Defect[];
   selectedReleaseId: string | null;
+  currentDateStr?: string;
   onSelectRelease?: (releaseId: string | null) => void;
   onAddStory: (story: UserStory) => void;
   onUpdateStory: (story: UserStory) => void;
   onDeleteStory: (storyId: string) => void;
+  onAddTask?: (task: Partial<Task>) => void;
+  onToggleTaskStatus?: (taskId: string) => void;
+  onDeleteTask?: (taskId: string) => void;
 }
 
 const STATUS_OPTIONS: UserStoryStatus[] = [
@@ -70,10 +75,14 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
   tasks,
   defects,
   selectedReleaseId,
+  currentDateStr,
   onSelectRelease,
   onAddStory,
   onUpdateStory,
-  onDeleteStory
+  onDeleteStory,
+  onAddTask,
+  onToggleTaskStatus,
+  onDeleteTask
 }) => {
   // Pure genuine User Stories only — strictly filter out any Test Cases, Test Plans, or Test Suites
   const pureStories = useMemo(() => {
@@ -559,6 +568,21 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
 
                         <span className="ml-auto">Updated {story.updatedAt}</span>
                       </div>
+
+                      {/* Interactive Embedded Task Tracker */}
+                      <StoryBugTaskTracker
+                        parentType="story"
+                        parentId={story.id}
+                        parentAdoId={story.adoId}
+                        parentTitle={story.title}
+                        tasks={tasks}
+                        team={team}
+                        currentDateStr={currentDateStr}
+                        onToggleStatus={onToggleTaskStatus}
+                        onAddTask={onAddTask}
+                        onDeleteTask={onDeleteTask}
+                        defaultExpanded={false}
+                      />
                     </div>
                   </div>
 

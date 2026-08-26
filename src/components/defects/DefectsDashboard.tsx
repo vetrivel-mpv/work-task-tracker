@@ -25,13 +25,23 @@ import {
   Activity,
   Rocket,
   Gauge,
-  BookOpen
+  BookOpen,
+  Cpu,
+  ShieldCheck,
+  Sparkles,
+  Zap,
+  SlidersHorizontal,
+  FileCode
 } from 'lucide-react';
 import { buildQaStatusReport } from '../../services/emailService';
 import { matchesReleaseOrIteration, formatReleaseDisplayName } from '../../utils/adoPaths';
 import { DefectImpactMatrix } from './DefectImpactMatrix';
+import { TechnicalDebtImpactModal } from './TechnicalDebtImpactModal';
 import { QeVelocityWidgets } from './QeVelocityWidgets';
 import { QeProcessPlaybook } from './QeProcessPlaybook';
+import { QaTechStackSimulator } from './QaTechStackSimulator';
+import { ReleaseQualityGates } from './ReleaseQualityGates';
+import { QaAiCopilot } from './QaAiCopilot';
 
 interface DefectsDashboardProps {
   defects: Defect[];
@@ -69,7 +79,8 @@ export const DefectsDashboard: React.FC<DefectsDashboardProps> = ({
   selectedReleaseId,
   onOpenQaStatusEmail
 }) => {
-  const [activeTab, setActiveTab] = useState<'analytics' | 'velocity' | 'playbook'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'velocity' | 'tech_stack' | 'quality_gates' | 'ai_copilot' | 'playbook'>('analytics');
+  const [isTechDebtModalOpen, setIsTechDebtModalOpen] = useState(false);
 
   // Scoped datasets based on global top header release selector
   const activeRelease = useMemo(() => {
@@ -86,6 +97,11 @@ export const DefectsDashboard: React.FC<DefectsDashboardProps> = ({
     if (!selectedReleaseId || selectedReleaseId === 'all') return userStories;
     return userStories.filter(s => matchesReleaseOrIteration(s, selectedReleaseId, releases));
   }, [userStories, selectedReleaseId, releases]);
+
+  const activeTestCases = useMemo(() => {
+    if (!selectedReleaseId || selectedReleaseId === 'all') return testCases;
+    return testCases.filter(t => matchesReleaseOrIteration(t, selectedReleaseId, releases));
+  }, [testCases, selectedReleaseId, releases]);
 
   // KPI Calculations
   const totalDefects = activeDefects.length;
@@ -129,56 +145,36 @@ export const DefectsDashboard: React.FC<DefectsDashboardProps> = ({
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 shadow-xs flex flex-wrap items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-lg font-bold text-[var(--text-primary)] tracking-tight">QA Health & Defects Analytics</h1>
-            {activeRelease && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/20">
-                <Rocket size={12} />
-                {formatReleaseDisplayName(activeRelease.name, activeRelease.releaseNumber)}
-              </span>
-            )}
+            <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+              <BarChart3 size={20} />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-[var(--text-primary)] tracking-tight flex items-center gap-2">
+                QA Delivery Analytics & Velocity Intelligence
+                {activeRelease && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/20">
+                    <Rocket size={12} />
+                    {formatReleaseDisplayName(activeRelease.name, activeRelease.releaseNumber)}
+                  </span>
+                )}
+              </h1>
+              <p className="text-xs text-[var(--text-secondary)] font-medium mt-0.5">
+                Defect containment, Playwright/Bruno sharded execution velocity, quality gates, and AI risk prediction
+              </p>
+            </div>
           </div>
-          <p className="text-xs text-[var(--text-secondary)] font-medium mt-0.5">
-            Defect resolution velocity, release risk indices, and QA pass rates
-          </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Sub-tab Navigation */}
-          <div className="flex items-center p-1 bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl text-xs font-bold">
-            <button
-              onClick={() => setActiveTab('analytics')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
-                activeTab === 'analytics'
-                  ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <BarChart3 size={14} />
-              <span>QA Analytics</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('velocity')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
-                activeTab === 'velocity'
-                  ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <Gauge size={14} />
-              <span>QE Velocity</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('playbook')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
-                activeTab === 'playbook'
-                  ? 'bg-[var(--surface)] text-[var(--text-primary)] shadow-xs'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <BookOpen size={14} />
-              <span>Process & Playbook</span>
-            </button>
-          </div>
+          <button
+            onClick={() => setIsTechDebtModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-[var(--text-primary)] bg-[var(--surface-hover)] hover:bg-[var(--surface)] hover:text-[var(--primary)] border border-[var(--border)] hover:border-red-500/40 rounded-xl shadow-xs transition-all cursor-pointer"
+            id="open-tech-debt-modal-from-dashboard-btn"
+            title="Open Technical Debt & Impact Matrix in popup window"
+          >
+            <ShieldAlert size={14} className="text-red-600 dark:text-red-400" />
+            <span>Tech Debt Matrix</span>
+          </button>
 
           <button
             onClick={onOpenQaStatusEmail}
@@ -190,19 +186,130 @@ export const DefectsDashboard: React.FC<DefectsDashboardProps> = ({
         </div>
       </div>
 
+      {/* Sub-tab Navigation Bar */}
+      <div className="flex items-center gap-1.5 p-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-x-auto shadow-xs">
+        <button
+          onClick={() => setActiveTab('analytics')}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'analytics'
+              ? 'bg-[var(--primary)] text-white shadow-xs'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+          }`}
+        >
+          <BarChart3 size={15} />
+          <span>QA Analytics & Defects</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('velocity')}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'velocity'
+              ? 'bg-[var(--primary)] text-white shadow-xs'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+          }`}
+        >
+          <Gauge size={15} />
+          <span>QE Velocity & DORA</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('tech_stack')}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'tech_stack'
+              ? 'bg-[var(--primary)] text-white shadow-xs'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+          }`}
+        >
+          <Cpu size={15} />
+          <span>Tech Stack & Simulator</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('quality_gates')}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'quality_gates'
+              ? 'bg-[var(--primary)] text-white shadow-xs'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+          }`}
+        >
+          <ShieldCheck size={15} />
+          <span>Release Quality Gates</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('ai_copilot')}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'ai_copilot'
+              ? 'bg-purple-600 text-white shadow-xs'
+              : 'text-purple-600 dark:text-purple-400 hover:bg-purple-500/10'
+          }`}
+        >
+          <Sparkles size={15} />
+          <span>AI QA Copilot</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('playbook')}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'playbook'
+              ? 'bg-[var(--primary)] text-white shadow-xs'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+          }`}
+        >
+          <BookOpen size={15} />
+          <span>SDET Playbook</span>
+        </button>
+      </div>
+
+      {/* Tab: QE Velocity & DORA Quality */}
       {activeTab === 'velocity' && (
         <QeVelocityWidgets
           defects={activeDefects}
-          testCases={testCases}
+          testCases={activeTestCases}
           userStories={activeStories}
           selectedRelease={activeRelease}
         />
       )}
 
+      {/* Tab: Latest Tech Stack & Parallel Simulator */}
+      {activeTab === 'tech_stack' && (
+        <QaTechStackSimulator
+          totalTestCases={activeTestCases.length || testCases.length || 85}
+          automatedCount={activeTestCases.filter(t => t.automationStatus === 'Automated').length || 64}
+          releaseName={activeRelease ? formatReleaseDisplayName(activeRelease.name, activeRelease.releaseNumber) : 'Current Release'}
+        />
+      )}
+
+      {/* Tab: Release Quality Gates & Go/No-Go Decision Engine */}
+      {activeTab === 'quality_gates' && (
+        <ReleaseQualityGates
+          defects={activeDefects}
+          releases={releases}
+          userStories={activeStories}
+          testCases={activeTestCases}
+          team={team}
+          selectedRelease={activeRelease}
+          onOpenQaStatusEmail={onOpenQaStatusEmail}
+        />
+      )}
+
+      {/* Tab: AI QA Velocity Copilot */}
+      {activeTab === 'ai_copilot' && (
+        <QaAiCopilot
+          defects={activeDefects}
+          releases={releases}
+          userStories={activeStories}
+          testCases={activeTestCases}
+          selectedRelease={activeRelease}
+        />
+      )}
+
+      {/* Tab: SDET Playbook */}
       {activeTab === 'playbook' && (
         <QeProcessPlaybook />
       )}
 
+      {/* Tab: QA Analytics & Defects Core */}
       {activeTab === 'analytics' && (
         <>
           {/* Top Level KPI Cards Grid */}
@@ -326,6 +433,16 @@ export const DefectsDashboard: React.FC<DefectsDashboardProps> = ({
           </div>
         </>
       )}
+
+      {/* Technical Debt & Impact Matrix Full Popup Window */}
+      <TechnicalDebtImpactModal
+        isOpen={isTechDebtModalOpen}
+        onClose={() => setIsTechDebtModalOpen(false)}
+        defects={defects}
+        releases={releases}
+        team={team}
+        selectedReleaseId={selectedReleaseId}
+      />
     </div>
   );
 };

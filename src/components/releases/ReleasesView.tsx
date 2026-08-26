@@ -28,7 +28,8 @@ import {
   LayoutList,
   ChevronRight,
   Flame,
-  HelpCircle
+  HelpCircle,
+  Mail
 } from 'lucide-react';
 import { generateReleaseNotes } from '../../services/aiService';
 import { generateId, toDateStr, formatDisplayDate } from '../../utils/date';
@@ -82,6 +83,7 @@ interface ReleasesViewProps {
     selectedReleaseId?: string;
   }) => void;
   onOpenAdoModal?: () => void;
+  onOpenEmailModal?: (template?: string, defectId?: string, releaseId?: string) => void;
 }
 
 const STATUS_CONFIG: { [key in ReleaseStatus]: { label: string; bg: string; text: string } } = {
@@ -195,7 +197,8 @@ export const ReleasesView: React.FC<ReleasesViewProps> = ({
   onUpdateRelease,
   onDeleteRelease,
   onSyncData,
-  onOpenAdoModal
+  onOpenAdoModal,
+  onOpenEmailModal
 }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRelease, setEditingRelease] = useState<Release | null>(null);
@@ -1276,13 +1279,26 @@ export const ReleasesView: React.FC<ReleasesViewProps> = ({
                     </button>
                   </div>
 
-                  <button
-                    onClick={() => handleGenerateAiNotes(rel)}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 bg-[var(--primary-light)] hover:bg-[var(--primary)] hover:text-white text-[var(--primary)] text-xs font-semibold rounded-xl transition-all shadow-xs cursor-pointer"
-                  >
-                    <Sparkles size={13} />
-                    <span>Generate AI Notes</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleGenerateAiNotes(rel)}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 bg-[var(--primary-light)] hover:bg-[var(--primary)] hover:text-white text-[var(--primary)] text-xs font-semibold rounded-xl transition-all shadow-xs cursor-pointer"
+                    >
+                      <Sparkles size={13} />
+                      <span>AI Notes</span>
+                    </button>
+
+                    {onOpenEmailModal && (
+                      <button
+                        onClick={() => onOpenEmailModal('release_signoff', undefined, rel.id)}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 bg-emerald-500/10 hover:bg-emerald-500 hover:text-white text-emerald-600 dark:text-emerald-400 text-xs font-semibold rounded-xl transition-all border border-emerald-500/20 cursor-pointer"
+                        title="Generate and Send Release Go/No-Go Sign-Off Email"
+                      >
+                        <Mail size={13} />
+                        <span>Sign-Off Email</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             );

@@ -48,6 +48,7 @@ import { ApiAutomationCollection, ApiEnvironment, ApiTestExecutionRun } from './
 import { AdoSyncModal } from './components/ado/AdoSyncModal';
 import { EmailBroadcastModal } from './components/email/EmailBroadcastModal';
 import { AiDuplicateScannerModal } from './components/common/AiDuplicateScannerModal';
+import { TechnicalDebtImpactModal } from './components/defects/TechnicalDebtImpactModal';
 import { AbsenceRecord, TeamRoastRecord } from './types';
 
 export const App: React.FC = () => {
@@ -63,7 +64,10 @@ export const App: React.FC = () => {
   const [emailModalOpen, setEmailModalOpen] = useState<boolean>(false);
   const [duplicateScannerOpen, setDuplicateScannerOpen] = useState<boolean>(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
-  const [emailInitialTab, setEmailInitialTab] = useState<'standup' | 'qa' | 'dashboard'>('standup');
+  const [techDebtModalOpen, setTechDebtModalOpen] = useState<boolean>(false);
+  const [emailInitialTab, setEmailInitialTab] = useState<string>('daily_standup');
+  const [emailModalDefectId, setEmailModalDefectId] = useState<string | undefined>(undefined);
+  const [emailModalReleaseId, setEmailModalReleaseId] = useState<string | undefined>(undefined);
 
   // Global Command Palette Shortcut (⌘K / Ctrl+K)
   useEffect(() => {
@@ -645,11 +649,39 @@ export const App: React.FC = () => {
         iterationPath: d.iterationPath || targetRelease?.iterationPath || d.iterationPath || ''
       }));
 
-      const incomingTasks = (synced.tasks || []).map(t => ({
-        ...t,
-        releaseId: t.releaseId || targetReleaseId || null,
-        iterationPath: t.iterationPath || targetRelease?.iterationPath || t.iterationPath || ''
-      }));
+      const storyAdoIdMap = new Map<number, string>();
+      incomingStories.forEach(s => {
+        if (s.adoId) storyAdoIdMap.set(s.adoId, s.id);
+      });
+      const defectAdoIdMap = new Map<number, string>();
+      incomingDefects.forEach(d => {
+        if (d.adoId) defectAdoIdMap.set(d.adoId, d.id);
+      });
+
+      const todayStr = currentDateStr || toDateStr(new Date());
+
+      const incomingTasks = (synced.tasks || []).map(t => {
+        let userStoryId = t.userStoryId || null;
+        let defectId = t.defectId || null;
+        const parentId = (t as any).parentId;
+        if (parentId && typeof parentId === 'number') {
+          if (storyAdoIdMap.has(parentId)) {
+            userStoryId = storyAdoIdMap.get(parentId)!;
+          } else if (defectAdoIdMap.has(parentId)) {
+            defectId = defectAdoIdMap.get(parentId)!;
+          }
+        }
+        return {
+          ...t,
+          dateStr: t.dateStr || todayStr,
+          priority: t.priority || 'medium',
+          status: t.status || 'pending',
+          userStoryId,
+          defectId,
+          releaseId: t.releaseId || targetReleaseId || null,
+          iterationPath: t.iterationPath || targetRelease?.iterationPath || t.iterationPath || ''
+        };
+      });
 
       const incomingTestCasesWithRel = incomingTestCases.map(tc => ({
         ...tc,
@@ -818,8 +850,10 @@ export const App: React.FC = () => {
   };
 
   // Email helper triggers
-  const handleOpenEmailModal = (tab: 'standup' | 'qa' | 'dashboard' = 'standup') => {
-    setEmailInitialTab(tab);
+  const handleOpenEmailModal = (template: string = 'daily_standup', defectId?: string, releaseId?: string) => {
+    setEmailInitialTab(template);
+    setEmailModalDefectId(defectId);
+    setEmailModalReleaseId(releaseId);
     setEmailModalOpen(true);
   };
 
@@ -840,6 +874,7 @@ export const App: React.FC = () => {
         onOpenAdoModal={() => setAdoModalOpen(true)}
         onOpenEmailModal={(tab) => handleOpenEmailModal(tab || 'standup')}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+        onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
         dualAdoConfig={state.dualAdoConfig}
         state={state}
         onUpdateTheme={handleUpdateTheme}
@@ -854,6 +889,7 @@ export const App: React.FC = () => {
         onClearSearch={() => setSearchQuery('')}
         selectedReleaseId={selectedReleaseId}
         onClearReleaseFilter={() => setSelectedReleaseId(null)}
+        onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
       />
 
       {/* Main Full-Width Portal Workspace */}
@@ -895,13 +931,18 @@ export const App: React.FC = () => {
               tasks={state.tasks}
               defects={state.defects}
               selectedReleaseId={selectedReleaseId}
+              currentDateStr={currentDateStr}
               onSelectRelease={setSelectedReleaseId}
               onAddStory={handleAddStory}
               onUpdateStory={handleUpdateStory}
               onDeleteStory={handleDeleteStory}
+              onAddTask={handleAddTask}
+              onToggleTaskStatus={handleToggleTaskStatus}
+              onDeleteTask={handleDeleteTask}
             />
           )}
 
+          {/* Test cases section commented out per user request
           {activeView === 'testCases' && (
             <TestCasesView
               testCases={state.testCases || []}
@@ -915,7 +956,7 @@ export const App: React.FC = () => {
               onUpdateTestCase={handleUpdateTestCase}
               onDeleteTestCase={handleDeleteTestCase}
             />
-          )}
+          )} */}
 
           {activeView === 'defects' && (
             <DefectsView
@@ -924,14 +965,20 @@ export const App: React.FC = () => {
               userStories={state.userStories}
               team={state.team}
               selectedReleaseId={selectedReleaseId}
+              tasks={state.tasks}
               dualAdoConfig={state.dualAdoConfig}
               adoConfig={state.adoConfig}
               currentUserId={state.currentUserId}
               users={state.users}
+              currentDateStr={currentDateStr}
               onSelectRelease={setSelectedReleaseId}
               onAddDefect={handleAddDefect}
               onUpdateDefect={handleUpdateDefect}
               onDeleteDefect={handleDeleteDefect}
+              onAddTask={handleAddTask}
+              onToggleTaskStatus={handleToggleTaskStatus}
+              onDeleteTask={handleDeleteTask}
+              onOpenEmailModal={handleOpenEmailModal}
             />
           )}
 
@@ -975,6 +1022,7 @@ export const App: React.FC = () => {
               onDeleteRelease={handleDeleteRelease}
               onSyncData={handleSyncAdoData}
               onOpenAdoModal={() => setAdoModalOpen(true)}
+              onOpenEmailModal={handleOpenEmailModal}
             />
           )}
 
@@ -1008,6 +1056,7 @@ export const App: React.FC = () => {
               currentUserId={state.currentUserId}
               dualAdoConfig={state.dualAdoConfig}
               adoConfig={state.adoConfig}
+              geminiApiKey={state.settings?.geminiApiKey}
               absences={state.absences || []}
               roasts={state.roasts || []}
               onAddMember={handleAddMember}
@@ -1024,6 +1073,9 @@ export const App: React.FC = () => {
               onUpdateAbsence={handleUpdateAbsence}
               onDeleteAbsence={handleDeleteAbsence}
               onSaveRoast={handleSaveRoast}
+              onUpdateTask={handleUpdateTask}
+              onUpdateStory={handleUpdateStory}
+              onUpdateDefect={handleUpdateDefect}
             />
           )}
 
@@ -1053,6 +1105,7 @@ export const App: React.FC = () => {
         onOpenNewTask={() => setNewTaskModalOpen(true)}
         onOpenAdoModal={() => setAdoModalOpen(true)}
         onOpenEmailModal={() => handleOpenEmailModal('standup')}
+        onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
         state={state}
       />
 
@@ -1089,6 +1142,9 @@ export const App: React.FC = () => {
         onClose={() => setEmailModalOpen(false)}
         state={state}
         initialTab={emailInitialTab}
+        initialDefectId={emailModalDefectId}
+        initialReleaseId={emailModalReleaseId}
+        onUpdateState={setState}
       />
 
       <AiDuplicateScannerModal
@@ -1099,6 +1155,16 @@ export const App: React.FC = () => {
         tasks={state.tasks}
         releases={state.releases}
         selectedReleaseId={selectedReleaseId}
+      />
+
+      <TechnicalDebtImpactModal
+        isOpen={techDebtModalOpen}
+        onClose={() => setTechDebtModalOpen(false)}
+        defects={state.defects || []}
+        releases={state.releases || []}
+        team={state.team || []}
+        selectedReleaseId={selectedReleaseId}
+        onSelectRelease={setSelectedReleaseId}
       />
     </div>
   );
