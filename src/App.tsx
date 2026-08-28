@@ -41,8 +41,6 @@ import { RetrospectiveView } from './components/retrospective/RetrospectiveView'
 import { PeopleReviewView } from './components/people/PeopleReviewView';
 import { BlueprintView } from './components/blueprint/BlueprintView';
 import { SettingsView } from './components/settings/SettingsView';
-import { ApiAutomationView } from './components/apiAutomation/ApiAutomationView';
-import { ApiAutomationCollection, ApiEnvironment, ApiTestExecutionRun } from './types/apiAutomation';
 
 // Modals
 import { AdoSyncModal } from './components/ado/AdoSyncModal';
@@ -820,35 +818,6 @@ export const App: React.FC = () => {
     setState(fresh);
   };
 
-  // API Automation State Handlers
-  const handleUpdateApiCollections = (apiCollections: ApiAutomationCollection[]) => {
-    setState(prev => ({
-      ...prev,
-      apiCollections
-    }));
-  };
-
-  const handleUpdateApiEnvironments = (apiEnvironments: ApiEnvironment[]) => {
-    setState(prev => ({
-      ...prev,
-      apiEnvironments
-    }));
-  };
-
-  const handleSaveApiExecutionRun = (run: ApiTestExecutionRun) => {
-    setState(prev => ({
-      ...prev,
-      apiExecutionRuns: [run, ...(prev.apiExecutionRuns || [])]
-    }));
-  };
-
-  const handleSelectApiEnvironment = (activeApiEnvironmentId: string) => {
-    setState(prev => ({
-      ...prev,
-      activeApiEnvironmentId
-    }));
-  };
-
   // Email helper triggers
   const handleOpenEmailModal = (template: string = 'daily_standup', defectId?: string, releaseId?: string) => {
     setEmailInitialTab(template);
@@ -937,6 +906,7 @@ export const App: React.FC = () => {
               onUpdateStory={handleUpdateStory}
               onDeleteStory={handleDeleteStory}
               onAddTask={handleAddTask}
+              onUpdateTask={handleUpdateTask}
               onToggleTaskStatus={handleToggleTaskStatus}
               onDeleteTask={handleDeleteTask}
             />
@@ -976,6 +946,7 @@ export const App: React.FC = () => {
               onUpdateDefect={handleUpdateDefect}
               onDeleteDefect={handleDeleteDefect}
               onAddTask={handleAddTask}
+              onUpdateTask={handleUpdateTask}
               onToggleTaskStatus={handleToggleTaskStatus}
               onDeleteTask={handleDeleteTask}
               onOpenEmailModal={handleOpenEmailModal}
@@ -992,19 +963,6 @@ export const App: React.FC = () => {
               state={state}
               selectedReleaseId={selectedReleaseId}
               onOpenQaStatusEmail={() => handleOpenEmailModal('qa')}
-            />
-          )}
-
-          {activeView === 'apiAutomation' && (
-            <ApiAutomationView
-              collections={state.apiCollections || []}
-              environments={state.apiEnvironments || []}
-              executionRuns={state.apiExecutionRuns || []}
-              activeEnvironmentId={state.activeApiEnvironmentId || 'env-local'}
-              onUpdateCollections={handleUpdateApiCollections}
-              onUpdateEnvironments={handleUpdateApiEnvironments}
-              onSaveExecutionRun={handleSaveApiExecutionRun}
-              onSelectEnvironment={handleSelectApiEnvironment}
             />
           )}
 

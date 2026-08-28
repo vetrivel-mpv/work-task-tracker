@@ -64,7 +64,6 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
     // { id: 'testCases' as AppView, title: 'Test Cases & Execution', category: 'Navigation', icon: FileCheck2, desc: 'QA test repository, design steps & pass/fail runs' },
     { id: 'defects' as AppView, title: 'Defects & Bug Tracking', category: 'Navigation', icon: Bug, desc: 'Live bug triage, root-cause AI & ADO sync' },
     { id: 'qa_dashboard' as AppView, title: 'QA Analytics & Metrics', category: 'Navigation', icon: BarChart3, desc: 'Quality velocity, defect aging & test coverage' },
-    { id: 'apiAutomation' as AppView, title: 'API Automation & Collection Runner', category: 'Navigation', icon: Zap, desc: 'Trigger API test suites, assertion gates, Newman CI/CD & Playwright scripts' },
     { id: 'releases' as AppView, title: 'Releases & Scope Planning', category: 'Navigation', icon: Rocket, desc: 'Release milestones, staging status & AI release notes' },
     { id: 'standup' as AppView, title: 'Standup Room & AI Insights', category: 'Navigation', icon: Users, desc: 'Daily blockers, yesterday/today notes & AI digest' },
     { id: 'retrospective' as AppView, title: 'Retrospective Board (Keep / Stop / Start)', category: 'Navigation', icon: MessageSquareQuote, desc: 'Sprint reflections, anonymous feedback & action commitments' },

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Mail,
   X,
@@ -20,7 +20,8 @@ import {
   CheckCircle2,
   ExternalLink,
   Sliders,
-  BellRing
+  BellRing,
+  ShieldCheck
 } from 'lucide-react';
 import { AppState, EmailTemplateType, EmailScheduleConfig, EmailDispatchLog } from '../../types';
 import {
@@ -28,7 +29,12 @@ import {
   copyHtmlAsRichText,
   EmailRenderOutput
 } from '../../services/emailService';
+import {
+  generateSystemTestingDailyReport,
+  SystemTestingAiReport
+} from '../../services/aiService';
 import { formatDisplayDate } from '../../utils/date';
+import { formatReleaseDisplayName } from '../../utils/adoPaths';
 
 interface EmailAutomationHubModalProps {
   isOpen: boolean;
@@ -44,7 +50,7 @@ export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = (
   isOpen,
   onClose,
   state,
-  initialTemplate = 'daily_standup',
+  initialTemplate = 'system_testing_daily',
   initialDefectId,
   initialReleaseId,
   onUpdateState
@@ -67,16 +73,69 @@ export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = (
   const [ccRecipients, setCcRecipients] = useState<string>('');
   const [customSubject, setCustomSubject] = useState<string>('');
 
-  // AI Polisher
+  // AI Polisher & Auto-Drafter
   const [aiTone, setAiTone] = useState<'executive' | 'urgent' | 'casual' | 'formal'>('executive');
   const [isAiPolishing, setIsAiPolishing] = useState(false);
+  const [isAiDrafting, setIsAiDrafting] = useState(false);
   const [aiHighlights, setAiHighlights] = useState<string[]>([]);
+  const [aiDraftVerdict, setAiDraftVerdict] = useState<string | null>(null);
+  const [aiDraftMetrics, setAiDraftMetrics] = useState<SystemTestingAiReport['metrics'] | null>(null);
+  const [aiDraftModel, setAiDraftModel] = useState<string | null>(null);
 
   // Dispatch & Action state
   const [isSending, setIsSending] = useState(false);
   const [sendSuccess, setSendSuccess] = useState<string | null>(null);
   const [copiedRich, setCopiedRich] = useState(false);
   const [copiedMd, setCopiedMd] = useState(false);
+
+  // Auto-Draft Trigger
+  const handleAutoDraft = useCallback(async (targetRelId?: string) => {
+    setIsAiDrafting(true);
+    const effectiveRelId = targetRelId || selectedReleaseId || state.selectedReleaseId || state.releases[0]?.id;
+    try {
+      const response = await generateSystemTestingDailyReport(
+        state,
+        effectiveRelId,
+        undefined,
+        aiTone,
+        state.settings?.geminiApiKey
+      );
+      if (response.ok && response.report) {
+        const rep = response.report;
+        setEmailData({
+          subject: rep.subject,
+          markdown: rep.markdown,
+          html: rep.html || generateEmailByType('system_testing_daily', state, { releaseId: effectiveRelId }).html,
+          mailtoUrl: `mailto:${[state.settings.qaTeamEmail, state.settings.emailRecipient, state.settings.releaseManagerEmail].filter(Boolean).join(',')}?subject=${encodeURIComponent(rep.subject)}&body=${encodeURIComponent(rep.markdown)}`,
+          suggestedRecipients: [
+            state.settings.qaTeamEmail,
+            state.settings.emailRecipient,
+            state.settings.releaseManagerEmail
+          ].filter(Boolean) as string[]
+        });
+        setCustomSubject(rep.subject);
+        setRecipients(
+          [state.settings.qaTeamEmail, state.settings.emailRecipient, state.settings.releaseManagerEmail]
+            .filter(Boolean)
+            .join(', ') || state.settings.emailRecipient || ''
+        );
+        setAiHighlights(rep.keyHighlights || []);
+        setAiDraftVerdict(rep.overallVerdict || null);
+        setAiDraftMetrics(rep.metrics || null);
+        setAiDraftModel(response.model || 'Gemini 3.7 Flash');
+      }
+    } catch (e: any) {
+      console.warn('[AutoDraft] Error during Gemini report generation:', e);
+    } finally {
+      setIsAiDrafting(false);
+    }
+  }, [state, selectedReleaseId, aiTone]);
+
+  useEffect(() => {
+    if (isOpen && initialTemplate === 'system_testing_daily') {
+      handleAutoDraft(initialReleaseId);
+    }
+  }, [isOpen]);
 
   // Automation Schedules State
   const [schedules, setSchedules] = useState<EmailScheduleConfig[]>(() => state.settings.emailSchedules || [
@@ -90,6 +149,28 @@ export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = (
       recipients: [state.settings.emailRecipient || 'engineering-leads@careflow.io'],
       enabled: true,
       includeAiSummary: true
+    },
+    {
+      id: 'sched-system-testing-daily',
+      templateType: 'system_testing_daily',
+      title: 'System Testing Daily Progress (Stories & Release)',
+      frequency: 'daily',
+      targetDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+      timeStr: '17:30',
+      recipients: [state.settings.qaTeamEmail || 'qa-leads@careflow.io', state.settings.emailRecipient || 'engineering-leads@careflow.io'],
+      enabled: true,
+      includeAiSummary: false
+    },
+    {
+      id: 'sched-dev-to-dev-int',
+      templateType: 'dev_to_dev_integration',
+      title: 'Dev-to-Dev Component Integration Testing Report',
+      frequency: 'daily',
+      targetDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+      timeStr: '16:30',
+      recipients: [state.settings.devLeadEmail || state.settings.emailRecipient || 'dev-leads@careflow.io', state.settings.managerEmail || 'engineering-managers@careflow.io'],
+      enabled: true,
+      includeAiSummary: false
     },
     {
       id: 'sched-qa-gate',
@@ -137,6 +218,18 @@ export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = (
       title: 'Daily Standup Digest',
       desc: 'Member check-ins, tasks done %, blockers & OOO leaves',
       icon: Calendar
+    },
+    {
+      type: 'system_testing_daily',
+      title: 'System Testing Daily Report',
+      desc: 'Story-wise test execution %, defect blockers & daily release progress',
+      icon: CheckCircle2
+    },
+    {
+      type: 'dev_to_dev_integration',
+      title: 'Dev-to-Dev Integration Testing',
+      desc: 'Cross-component API contracts, microservice interfaces & QA handover',
+      icon: Layers
     },
     {
       type: 'qa_gate',
@@ -318,7 +411,7 @@ export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = (
               <div className="flex items-center gap-2">
                 <h2 className="text-base sm:text-lg font-bold text-[var(--text-primary)]">Email Automation & Dispatch Center</h2>
                 <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                  6 Production Formats
+                  8 Production Formats
                 </span>
               </div>
               <p className="text-xs text-[var(--text-secondary)] font-medium">
@@ -381,9 +474,9 @@ export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = (
                 Context Parameters
               </label>
 
-              {(selectedTemplate === 'qa_gate' || selectedTemplate === 'release_signoff') && (
+              {(selectedTemplate === 'qa_gate' || selectedTemplate === 'release_signoff' || selectedTemplate === 'system_testing_daily' || selectedTemplate === 'dev_to_dev_integration') && (
                 <div>
-                  <label className="text-[11px] font-semibold text-[var(--text-secondary)] block mb-1">Target Release</label>
+                  <label className="text-[11px] font-semibold text-[var(--text-secondary)] block mb-1">Target Release Scope</label>
                   <select
                     value={selectedReleaseId}
                     onChange={(e) => setSelectedReleaseId(e.target.value)}

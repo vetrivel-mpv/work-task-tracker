@@ -1032,6 +1032,16 @@ export const ReleasesView: React.FC<ReleasesViewProps> = ({
                   >
                     <Sparkles size={13} />
                   </button>
+
+                  {onOpenEmailModal && (
+                    <button
+                      onClick={() => onOpenEmailModal('system_testing_daily', undefined, rel.id)}
+                      className="p-2 rounded-xl text-[var(--text-secondary)] hover:text-indigo-600 hover:bg-indigo-500/10 border border-[var(--border)] transition-colors cursor-pointer"
+                      title={`Draft AI System Testing Daily Report for ${rel.name}`}
+                    >
+                      <Mail size={13} />
+                    </button>
+                  )}
                 </div>
               </div>
             );

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { 
   DualAdoConfig, 
   UserStory, 
-  TestCase,
+  TestCase, 
   Defect, 
   Release, 
   Task,
@@ -35,7 +35,11 @@ import {
   Check,
   Building2,
   Sliders,
-  Play
+  Play,
+  ExternalLink,
+  KeyRound,
+  HelpCircle,
+  Info
 } from 'lucide-react';
 import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber, parseAdoTarget, formatAdoUrl, normalizeAdoTarget } from '../../utils/adoPaths';
 import { generateId, toDateStr } from '../../utils/date';
@@ -49,6 +53,8 @@ import {
 import { AdoSyncDiagnosticOverlay } from './AdoSyncDiagnosticOverlay';
 import { WiqlEditorTab } from './WiqlEditorTab';
 import { isTestCaseItem, isDefectItem, convertStoryToTestCase } from '../../utils/itemClassification';
+import { getAcmPresetData } from '../../utils/acmDataset';
+import { setStoredAdoPat } from '../../utils/authClient';
 
 interface AdoSyncModalProps {
   isOpen: boolean;
@@ -261,6 +267,54 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
     setTimeout(() => setCreatedReleaseName(null), 3000);
   };
 
+  const handlePatChange = (val: string) => {
+    setPat(val);
+    setStoredAdoPat(val);
+  };
+
+  const handleLoadAcmOfflinePreset = () => {
+    const dataset = getAcmPresetData();
+    if (onSyncData) {
+      onSyncData({
+        stories: dataset.userStories,
+        testCases: dataset.testCases,
+        defects: dataset.defects,
+        tasks: dataset.tasks,
+        releases: dataset.releases,
+        teamMembers: dataset.team
+      });
+    }
+
+    const presetIters: AdoIterationDto[] = [
+      { id: 'acm-d5', name: 'D5 R 2026.09', path: 'ACM\\D5 R 2026.09', startDate: '2026-05-15', finishDate: '2026-09-17', timeFrame: 'current', isCurrent: true, level: 1 },
+      { id: 'acm-r08', name: 'R 2026.08 - Migration', path: 'ACM\\R 2026.08 - Migration', startDate: '2026-06-30', finishDate: '2026-08-20', timeFrame: 'current', level: 1 },
+      { id: 'acm-d6', name: 'D6 R 2026.10', path: 'ACM\\D6 R 2026.10', startDate: '2026-08-01', finishDate: '2026-10-31', timeFrame: 'future', level: 1 },
+      { id: 'acm-d4', name: 'D4 R 2026.07', path: 'ACM\\D4 R 2026.07', startDate: '2026-03-20', finishDate: '2026-07-23', timeFrame: 'past', level: 1 }
+    ];
+
+    const presetAreas: AdoAreaDto[] = [
+      { id: '1', name: 'ACM', path: 'ACM', level: 0 },
+      { id: '2', name: 'Delivery', path: 'ACM\\Delivery', level: 1 },
+      { id: '3', name: 'Core', path: 'ACM\\Core', level: 1 },
+      { id: '4', name: 'Integrations', path: 'ACM\\Integrations', level: 1 }
+    ];
+
+    setDiscoveredIterations(presetIters);
+    setDiscoveredAreas(presetAreas);
+    setIterationPath('ACM\\D5 R 2026.09');
+    setAreaPath('ACM\\Delivery');
+
+    setTestResult({
+      success: true,
+      message: 'Offline ACM Dataset loaded successfully! Populated 5 User Stories, 5 Test Cases, 3 Defects, 4 Tasks, and 4 Releases.'
+    });
+
+    setSyncLogs(prev => [
+      ...prev,
+      `[${new Date().toLocaleTimeString()}] [OFFLINE-PRESET] Successfully populated realistic AT&T Connection Manager (ACM) data into local workspace.`
+    ]);
+  };
+
   const handleTestConnection = async () => {
     const target = parseAdoTarget(org, project);
     if (!target.cleanOrg || !target.cleanProject) {
@@ -271,6 +325,7 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
       return;
     }
 
+    setStoredAdoPat(pat);
     setTestResult(null);
     const now = new Date().toLocaleTimeString();
     setSyncLogs(prev => [...prev, `[${now}] Running PAT health check against https://dev.azure.com/${target.cleanOrg}/${target.cleanProject}...`]);
@@ -455,6 +510,16 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={handleLoadAcmOfflinePreset}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Load realistic pre-configured ACM delivery dataset into local workspace"
+            >
+              <Sparkles size={13} className="text-amber-500" />
+              <span>Load ACM Offline Dataset</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setShowDiagnosticsOverlay(true)}
               className="px-3 py-1.5 rounded-xl text-xs font-bold bg-[var(--surface-hover)] hover:bg-[var(--border)] text-[var(--text-primary)] border border-[var(--border)] flex items-center gap-1.5 transition-colors cursor-pointer"
             >
@@ -589,7 +654,7 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
                         type="password"
                         placeholder={serverConfig?.hasServerPat ? "Using server-side PAT (or override here)" : "••••••••••••••••"}
                         value={pat}
-                        onChange={(e) => setPat(e.target.value)}
+                        onChange={(e) => handlePatChange(e.target.value)}
                         className="w-full text-xs pl-8.5 pr-3 py-2 bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)] font-medium"
                       />
                     </div>
@@ -599,26 +664,89 @@ export const AdoSyncModal: React.FC<AdoSyncModalProps> = ({
                 {/* Connection Test Action */}
                 <div className="flex items-center justify-between pt-2 border-t border-[var(--border)] flex-wrap gap-2">
                   <div className="text-[11px] text-[var(--text-secondary)]">
-                    Requires <code className="text-[var(--primary)] font-mono">vso.work</code> (Work Items Read) permission.
+                    Requires <code className="text-[var(--primary)] font-mono">vso.work</code> (Work Items Read) and <code className="text-[var(--primary)] font-mono">vso.project</code> permissions.
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleTestConnection}
-                    className="px-4 py-1.5 rounded-xl text-xs font-bold text-[var(--primary)] bg-[var(--primary-light)] hover:bg-[var(--primary)] hover:text-white transition-all cursor-pointer flex items-center gap-1.5"
-                  >
-                    <RefreshCw size={13} />
-                    <span>Verify Connection</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleLoadAcmOfflinePreset}
+                      className="px-3 py-1.5 rounded-xl text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-300 dark:border-amber-700 transition-all cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Sparkles size={13} className="text-amber-500" />
+                      <span>Load ACM Preset (Offline)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleTestConnection}
+                      className="px-4 py-1.5 rounded-xl text-xs font-bold text-[var(--primary)] bg-[var(--primary-light)] hover:bg-[var(--primary)] hover:text-white transition-all cursor-pointer flex items-center gap-1.5"
+                    >
+                      <RefreshCw size={13} />
+                      <span>Verify Connection</span>
+                    </button>
+                  </div>
                 </div>
 
                 {testResult && (
-                  <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
-                    testResult.success 
-                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
-                      : 'bg-red-50 text-red-800 border border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800'
-                  }`}>
-                    {testResult.success ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-                    <span>{testResult.message}</span>
+                  <div className="flex flex-col gap-2">
+                    <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+                      testResult.success 
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                        : 'bg-red-50 text-red-800 border border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800'
+                    }`}>
+                      {testResult.success ? <CheckCircle2 size={16} className="shrink-0" /> : <AlertCircle size={16} className="shrink-0" />}
+                      <span className="flex-1">{testResult.message}</span>
+                    </div>
+
+                    {/* Dedicated 401 Assistant Card */}
+                    {(!testResult.success && (testResult.details?.httpStatus === 401 || testResult.details?.status === 'unauthenticated' || testResult.message?.includes('401') || testResult.message?.includes('Unauthorized'))) && (
+                      <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-300/60 dark:border-amber-700/60 flex flex-col gap-3 text-xs">
+                        <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 font-bold">
+                          <KeyRound size={16} className="text-amber-600 dark:text-amber-400" />
+                          <span>Azure DevOps Authentication & Scope Assistant</span>
+                        </div>
+                        
+                        <p className="text-[var(--text-secondary)] text-[11px] leading-relaxed">
+                          Azure DevOps returned <strong className="text-[var(--text-primary)]">HTTP 401 (Unauthorized)</strong> for <code className="font-mono text-amber-700 dark:text-amber-300">https://dev.azure.com/{currentTarget.cleanOrg || 'simetricwdh'}/{currentTarget.cleanProject || 'ACM'}</code>. This indicates that a valid Personal Access Token (PAT) is required to query live work items.
+                        </p>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                          <div className="p-2.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] flex flex-col gap-1">
+                            <span className="font-bold text-[var(--text-primary)]">Required PAT Scopes:</span>
+                            <ul className="list-disc list-inside text-[var(--text-secondary)] space-y-0.5">
+                              <li><strong>Work Items:</strong> Read & Write</li>
+                              <li><strong>Project & Team:</strong> Read</li>
+                            </ul>
+                          </div>
+
+                          <div className="p-2.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] flex flex-col justify-between gap-2">
+                            <span className="font-bold text-[var(--text-primary)]">Generate Live PAT:</span>
+                            <a
+                              href={`https://dev.azure.com/${currentTarget.cleanOrg || 'simetricwdh'}/_usersSettings/tokens`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--primary)] text-white font-bold text-[11px] hover:opacity-90 transition-opacity"
+                            >
+                              <span>Open ADO Token Generator</span>
+                              <ExternalLink size={12} />
+                            </a>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2 border-t border-amber-300/40 dark:border-amber-700/40 flex-wrap gap-2">
+                          <span className="text-[10px] text-[var(--text-muted)]">
+                            Tip: You can continue testing all features (Kanban, QA Burndown, Daily Reports, AI Summary) right now using pre-loaded ACM data.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleLoadAcmOfflinePreset}
+                            className="px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-800 dark:text-amber-200 font-bold text-[11px] transition-colors cursor-pointer flex items-center gap-1"
+                          >
+                            <Sparkles size={12} />
+                            <span>Load ACM Offline Dataset</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

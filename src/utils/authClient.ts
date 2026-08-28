@@ -1,8 +1,58 @@
 import { AppUser, UserRole, ROLE_CONFIGS } from '../types';
 
 const TOKEN_STORAGE_KEY = 'northstar_delivery_jwt_session_v2';
+const ADO_PAT_STORAGE_KEY = 'northstar_ado_pat_v1';
 
 let cachedToken: string | null = null;
+let cachedAdoPat: string | null = null;
+
+/**
+ * Retrieves the stored Personal Access Token (PAT) for Azure DevOps
+ */
+export function getStoredAdoPat(): string {
+  if (cachedAdoPat) return cachedAdoPat;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      // 1. Direct PAT storage key
+      const direct = window.localStorage.getItem(ADO_PAT_STORAGE_KEY);
+      if (direct && direct.trim()) {
+        cachedAdoPat = direct.trim();
+        return cachedAdoPat;
+      }
+      // 2. Fallback to AppState in localStorage
+      const rawState = window.localStorage.getItem('northstar_delivery_app_state_v2');
+      if (rawState) {
+        const parsed = JSON.parse(rawState);
+        const statePat = parsed?.dualAdoConfig?.internal?.pat || parsed?.settings?.adoPat || parsed?.settings?.azureDevOpsPat;
+        if (statePat && typeof statePat === 'string' && statePat.trim()) {
+          cachedAdoPat = statePat.trim();
+          return cachedAdoPat;
+        }
+      }
+    }
+  } catch {
+    // Ignore storage parse error
+  }
+  return cachedAdoPat || '';
+}
+
+/**
+ * Stores the Azure DevOps Personal Access Token (PAT)
+ */
+export function setStoredAdoPat(pat: string | null): void {
+  cachedAdoPat = pat ? pat.trim() : null;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      if (pat && pat.trim()) {
+        window.localStorage.setItem(ADO_PAT_STORAGE_KEY, pat.trim());
+      } else {
+        window.localStorage.removeItem(ADO_PAT_STORAGE_KEY);
+      }
+    }
+  } catch {
+    // Ignore storage quota or sandbox errors
+  }
+}
 
 /**
  * Retrieves the active JWT token from memory or localStorage
@@ -40,13 +90,18 @@ export function setAuthToken(token: string | null): void {
 /**
  * Generates authentication headers for API requests (ADO proxy, AI sync, etc.)
  */
-export function getAuthHeaders(userHint?: Partial<AppUser>): Record<string, string> {
+export function getAuthHeaders(userHint?: Partial<AppUser>, explicitPat?: string): Record<string, string> {
   const token = getAuthToken();
   const headers: Record<string, string> = {};
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
     headers['X-Auth-Token'] = token;
+  }
+
+  const pat = explicitPat || getStoredAdoPat();
+  if (pat) {
+    headers['X-ADO-PAT'] = pat;
   }
 
   // Also pass explicit user identity hints for backend proxy fallback

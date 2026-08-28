@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Mail,
   X,
@@ -20,7 +20,12 @@ import {
   CheckCircle2,
   ExternalLink,
   Sliders,
-  BellRing
+  BellRing,
+  CheckSquare,
+  Bug,
+  ListTodo,
+  ShieldCheck,
+  Sparkle
 } from 'lucide-react';
 import { AppState, EmailTemplateType, EmailScheduleConfig, EmailDispatchLog } from '../../types';
 import {
@@ -28,7 +33,12 @@ import {
   copyHtmlAsRichText,
   EmailRenderOutput
 } from '../../services/emailService';
-import { formatDisplayDate } from '../../utils/date';
+import {
+  generateSystemTestingDailyReport,
+  SystemTestingAiReport
+} from '../../services/aiService';
+import { formatDisplayDate, formatLongDate } from '../../utils/date';
+import { formatReleaseDisplayName } from '../../utils/adoPaths';
 
 interface EmailBroadcastModalProps {
   isOpen: boolean;
@@ -54,12 +64,14 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
   // Map legacy tab names to EmailTemplateType
   const resolveInitialTemplate = (): EmailTemplateType => {
     if (initialTemplate) return initialTemplate;
+    if (initialTab === 'system_testing' || initialTab === 'system_testing_daily' || initialTab === 'system-testing') return 'system_testing_daily';
+    if (initialTab === 'dev_to_dev' || initialTab === 'dev_to_dev_integration' || initialTab === 'integration') return 'dev_to_dev_integration';
     if (initialTab === 'qa') return 'qa_gate';
     if (initialTab === 'dashboard') return 'executive_pulse';
     if (initialTab === 'capacity' || initialTab === 'resource') return 'resource_capacity';
     if (initialTab === 'defect') return 'defect_escalation';
     if (initialTab === 'signoff' || initialTab === 'release') return 'release_signoff';
-    return 'daily_standup';
+    return 'system_testing_daily';
   };
 
   const [selectedTemplate, setSelectedTemplate] = useState<EmailTemplateType>(resolveInitialTemplate);
@@ -84,10 +96,16 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
   const [ccRecipients, setCcRecipients] = useState<string>('');
   const [customSubject, setCustomSubject] = useState<string>('');
 
-  // AI Polisher
+  // AI Polisher & Auto-Drafter
   const [aiTone, setAiTone] = useState<'executive' | 'urgent' | 'casual' | 'formal'>('executive');
   const [isAiPolishing, setIsAiPolishing] = useState(false);
+  const [isAiDrafting, setIsAiDrafting] = useState(false);
   const [aiHighlights, setAiHighlights] = useState<string[]>([]);
+  const [aiDraftVerdict, setAiDraftVerdict] = useState<string | null>(null);
+  const [aiDraftMetrics, setAiDraftMetrics] = useState<SystemTestingAiReport['metrics'] | null>(null);
+  const [aiDraftModel, setAiDraftModel] = useState<string | null>(null);
+  const [customAiPrompt, setCustomAiPrompt] = useState<string>('');
+  const [showPromptDrawer, setShowPromptDrawer] = useState<boolean>(false);
 
   // Dispatch & Action state
   const [isSending, setIsSending] = useState(false);
@@ -97,6 +115,17 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
 
   // Automation Schedules State
   const [schedules, setSchedules] = useState<EmailScheduleConfig[]>(() => state.settings.emailSchedules || [
+    {
+      id: 'sched-system-testing-daily',
+      templateType: 'system_testing_daily',
+      title: 'System Testing Daily Progress (Stories & Release)',
+      frequency: 'daily',
+      targetDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+      timeStr: '17:30',
+      recipients: [state.settings.qaTeamEmail || 'qa-leads@careflow.io', state.settings.emailRecipient || 'engineering-leads@careflow.io'],
+      enabled: true,
+      includeAiSummary: true
+    },
     {
       id: 'sched-standup-daily',
       templateType: 'daily_standup',
@@ -134,6 +163,51 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
 
   const [dispatchLogs, setDispatchLogs] = useState<EmailDispatchLog[]>(state.settings.emailLogs || []);
 
+  // AI Auto-Draft Trigger for System Testing Report
+  const handleAutoDraftSystemTesting = useCallback(async (targetRelId?: string, promptOverride?: string) => {
+    setIsAiDrafting(true);
+    const effectiveRelId = targetRelId || selectedReleaseId || state.selectedReleaseId || state.releases[0]?.id;
+    
+    try {
+      const response = await generateSystemTestingDailyReport(
+        state,
+        effectiveRelId,
+        promptOverride || customAiPrompt,
+        aiTone,
+        state.settings?.geminiApiKey
+      );
+
+      if (response.ok && response.report) {
+        const rep = response.report;
+        setEmailData({
+          subject: rep.subject,
+          markdown: rep.markdown,
+          html: rep.html || generateEmailByType('system_testing_daily', state, { releaseId: effectiveRelId }).html,
+          mailtoUrl: `mailto:${[state.settings.qaTeamEmail, state.settings.emailRecipient, state.settings.releaseManagerEmail].filter(Boolean).join(',')}?subject=${encodeURIComponent(rep.subject)}&body=${encodeURIComponent(rep.markdown)}`,
+          suggestedRecipients: [
+            state.settings.qaTeamEmail,
+            state.settings.emailRecipient,
+            state.settings.releaseManagerEmail
+          ].filter(Boolean) as string[]
+        });
+        setCustomSubject(rep.subject);
+        setRecipients(
+          [state.settings.qaTeamEmail, state.settings.emailRecipient, state.settings.releaseManagerEmail]
+            .filter(Boolean)
+            .join(', ') || state.settings.emailRecipient || ''
+        );
+        setAiHighlights(rep.keyHighlights || []);
+        setAiDraftVerdict(rep.overallVerdict || null);
+        setAiDraftMetrics(rep.metrics || null);
+        setAiDraftModel(response.model || 'Gemini 3.7 Flash');
+      }
+    } catch (e: any) {
+      console.warn('[AutoDraft] Error during Gemini report generation:', e);
+    } finally {
+      setIsAiDrafting(false);
+    }
+  }, [state, selectedReleaseId, customAiPrompt, aiTone]);
+
   // Update selection if prop initialTab changes when opening
   useEffect(() => {
     if (isOpen) {
@@ -141,29 +215,55 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
       setSelectedTemplate(tpl);
       if (initialDefectId) setSelectedDefectId(initialDefectId);
       if (initialReleaseId) setSelectedReleaseId(initialReleaseId);
+
+      // Auto-draft if opened on system testing daily report
+      if (tpl === 'system_testing_daily') {
+        handleAutoDraftSystemTesting(initialReleaseId);
+      }
     }
   }, [isOpen, initialTab, initialTemplate, initialDefectId, initialReleaseId]);
 
-  // Sync template generation whenever parameters change
+  // Sync template generation whenever parameters change (for non-AI auto-draft templates)
   useEffect(() => {
-    const rendered = generateEmailByType(selectedTemplate, state, {
-      releaseId: selectedReleaseId || undefined,
-      defectId: selectedDefectId || undefined
-    });
-    setEmailData(rendered);
-    setCustomSubject(rendered.subject);
-    setRecipients(rendered.suggestedRecipients.join(', ') || state.settings.emailRecipient || '');
-    setAiHighlights([]);
-  }, [selectedTemplate, selectedReleaseId, selectedDefectId, state]);
+    if (selectedTemplate === 'system_testing_daily') {
+      // Trigger AI auto-draft on template selection or release change
+      handleAutoDraftSystemTesting(selectedReleaseId);
+    } else {
+      const rendered = generateEmailByType(selectedTemplate, state, {
+        releaseId: selectedReleaseId || undefined,
+        defectId: selectedDefectId || undefined
+      });
+      setEmailData(rendered);
+      setCustomSubject(rendered.subject);
+      setRecipients(rendered.suggestedRecipients.join(', ') || state.settings.emailRecipient || '');
+      setAiHighlights([]);
+      setAiDraftVerdict(null);
+      setAiDraftMetrics(null);
+      setAiDraftModel(null);
+    }
+  }, [selectedTemplate, selectedReleaseId, selectedDefectId]);
 
   if (!isOpen) return null;
 
-  const templatesList: { type: EmailTemplateType; title: string; desc: string; icon: React.FC<{ size?: number; className?: string }> }[] = [
+  const templatesList: { type: EmailTemplateType; title: string; desc: string; icon: React.FC<{ size?: number; className?: string }>; badge?: string }[] = [
+    {
+      type: 'system_testing_daily',
+      title: 'System Testing Daily Report',
+      desc: 'Gemini AI auto-draft of story test pass %, task throughput & defect triage',
+      icon: ShieldCheck,
+      badge: 'Gemini AI'
+    },
     {
       type: 'daily_standup',
       title: 'Daily Standup Digest',
       desc: 'Member check-ins, task counts, active blockers & leaves',
       icon: Calendar
+    },
+    {
+      type: 'dev_to_dev_integration',
+      title: 'Dev-to-Dev Integration Testing',
+      desc: 'Inter-component API contracts, stub validations & integration coverage',
+      icon: Layers
     },
     {
       type: 'qa_gate',
@@ -331,6 +431,8 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
     }).catch(console.error);
   };
 
+  const activeReleaseObj = state.releases.find(r => r.id === selectedReleaseId) || state.releases[0];
+
   return (
     <div 
       id="email-automation-hub-backdrop"
@@ -351,11 +453,15 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
               <div className="flex items-center gap-2">
                 <h2 className="text-base sm:text-lg font-bold text-[var(--text-primary)]">Email Automation & Dispatch Center</h2>
                 <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                  6 Production Formats
+                  8 Professional Formats
+                </span>
+                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+                  <Sparkles size={11} />
+                  Gemini API Powered
                 </span>
               </div>
               <p className="text-xs text-[var(--text-secondary)] font-medium">
-                Generate, AI-polish, schedule, and dispatch executive-grade delivery & QA reports
+                Auto-draft, AI-polish, schedule, and dispatch executive-grade System Testing & Delivery reports
               </p>
             </div>
           </div>
@@ -395,8 +501,15 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                         <Icon size={15} />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className={`text-xs ${isSelected ? 'font-bold text-[var(--primary)]' : 'font-semibold text-[var(--text-primary)]'}`}>
-                          {tpl.title}
+                        <div className="flex items-center justify-between gap-1">
+                          <div className={`text-xs ${isSelected ? 'font-bold text-[var(--primary)]' : 'font-semibold text-[var(--text-primary)]'}`}>
+                            {tpl.title}
+                          </div>
+                          {tpl.badge && (
+                            <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-700 dark:text-indigo-300">
+                              {tpl.badge}
+                            </span>
+                          )}
                         </div>
                         <div className="text-[10px] text-[var(--text-muted)] truncate mt-0.5">
                           {tpl.desc}
@@ -414,9 +527,16 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                 Context Parameters
               </label>
 
-              {(selectedTemplate === 'qa_gate' || selectedTemplate === 'release_signoff') && (
+              {(selectedTemplate === 'system_testing_daily' || selectedTemplate === 'dev_to_dev_integration' || selectedTemplate === 'qa_gate' || selectedTemplate === 'release_signoff') && (
                 <div>
-                  <label className="text-[11px] font-semibold text-[var(--text-secondary)] block mb-1">Target Release</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-semibold text-[var(--text-secondary)]">Target Release</label>
+                    {selectedTemplate === 'system_testing_daily' && (
+                      <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
+                        {state.tasks.length} tasks &bull; {state.defects.length} bugs
+                      </span>
+                    )}
+                  </div>
                   <select
                     value={selectedReleaseId}
                     onChange={(e) => setSelectedReleaseId(e.target.value)}
@@ -424,7 +544,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                   >
                     {state.releases.map(r => (
                       <option key={r.id} value={r.id}>
-                        {r.name} ({r.targetDate})
+                        {formatReleaseDisplayName(r.name, r.releaseNumber)} ({r.targetDate})
                       </option>
                     ))}
                   </select>
@@ -448,36 +568,97 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                 </div>
               )}
 
-              {/* AI Executive Tone Polish Box */}
-              <div className="bg-[var(--primary-light)]/50 border border-[var(--primary)]/20 p-3 rounded-xl flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-[var(--primary)]">
-                    <Sparkles size={14} />
-                    <span>Gemini Tone Polish</span>
+              {/* Gemini AI Auto-Draft Quick Actions Box for System Testing */}
+              {selectedTemplate === 'system_testing_daily' ? (
+                <div className="bg-gradient-to-br from-indigo-500/10 via-purple-500/10 to-blue-500/10 border border-indigo-500/20 p-3 rounded-xl flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-700 dark:text-indigo-300">
+                      <Sparkles size={14} className="text-indigo-600 animate-pulse" />
+                      <span>Gemini Auto-Drafter</span>
+                    </div>
+                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-700 dark:text-indigo-300">
+                      {aiDraftModel || 'gemini-3.7-flash'}
+                    </span>
                   </div>
-                  <select
-                    value={aiTone}
-                    onChange={(e: any) => setAiTone(e.target.value)}
-                    className="text-[10px] font-bold px-2 py-0.5 bg-[var(--surface)] border border-[var(--primary)]/30 rounded text-[var(--primary)] outline-none"
-                  >
-                    <option value="executive">Executive Crisp</option>
-                    <option value="urgent">Urgent Escalation</option>
-                    <option value="casual">Agile Casual</option>
-                    <option value="formal">Formal Sign-off</option>
-                  </select>
+                  
+                  <p className="text-[10.5px] text-[var(--text-secondary)] leading-relaxed">
+                    Auto-synthesizes live tasks progress, story test coverage, and defect triage into an executive daily report.
+                  </p>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleAutoDraftSystemTesting()}
+                      disabled={isAiDrafting}
+                      className="flex-1 py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw size={12} className={isAiDrafting ? 'animate-spin' : ''} />
+                      <span>{isAiDrafting ? 'Drafting with AI…' : 'Re-Draft with AI'}</span>
+                    </button>
+                    <button
+                      onClick={() => setShowPromptDrawer(prev => !prev)}
+                      className={`p-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                        showPromptDrawer
+                          ? 'bg-indigo-500 text-white border-indigo-600'
+                          : 'bg-[var(--surface)] text-[var(--text-secondary)] border-[var(--border)] hover:text-[var(--text-primary)]'
+                      }`}
+                      title="Customize prompt instructions"
+                    >
+                      <Sliders size={13} />
+                    </button>
+                  </div>
+
+                  {showPromptDrawer && (
+                    <div className="flex flex-col gap-1.5 pt-1 animate-in fade-in">
+                      <label className="text-[10px] font-bold uppercase text-[var(--text-muted)]">Custom Focus / Instructions</label>
+                      <textarea
+                        rows={2}
+                        value={customAiPrompt}
+                        onChange={(e) => setCustomAiPrompt(e.target.value)}
+                        placeholder="e.g. Highlight P0 blocker resolution on roaming sockets; emphasize staging gate readiness"
+                        className="w-full text-xs p-2 bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] outline-none"
+                      />
+                      <button
+                        onClick={() => handleAutoDraftSystemTesting(undefined, customAiPrompt)}
+                        disabled={isAiDrafting}
+                        className="py-1 px-2 bg-[var(--primary)] text-white text-[11px] font-bold rounded-lg cursor-pointer"
+                      >
+                        Apply & Re-Draft
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <p className="text-[10.5px] text-[var(--text-secondary)] leading-tight">
-                  Auto-rewrite summary into executive language with high-impact key highlights.
-                </p>
-                <button
-                  onClick={handleAiPolish}
-                  disabled={isAiPolishing}
-                  className="w-full py-1.5 px-2.5 bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  <Sparkles size={12} />
-                  <span>{isAiPolishing ? 'Polishing…' : 'Polish Tone'}</span>
-                </button>
-              </div>
+              ) : (
+                /* AI Tone Polish Box for other templates */
+                <div className="bg-[var(--primary-light)]/50 border border-[var(--primary)]/20 p-3 rounded-xl flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-[var(--primary)]">
+                      <Sparkles size={14} />
+                      <span>Gemini Tone Polish</span>
+                    </div>
+                    <select
+                      value={aiTone}
+                      onChange={(e: any) => setAiTone(e.target.value)}
+                      className="text-[10px] font-bold px-2 py-0.5 bg-[var(--surface)] border border-[var(--primary)]/30 rounded text-[var(--primary)] outline-none"
+                    >
+                      <option value="executive">Executive Crisp</option>
+                      <option value="urgent">Urgent Escalation</option>
+                      <option value="casual">Agile Casual</option>
+                      <option value="formal">Formal Sign-off</option>
+                    </select>
+                  </div>
+                  <p className="text-[10.5px] text-[var(--text-secondary)] leading-tight">
+                    Auto-rewrite summary into executive language with high-impact key highlights.
+                  </p>
+                  <button
+                    onClick={handleAiPolish}
+                    disabled={isAiPolishing}
+                    className="w-full py-1.5 px-2.5 bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <Sparkles size={12} />
+                    <span>{isAiPolishing ? 'Polishing…' : 'Polish Tone'}</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -493,7 +674,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                     type="text"
                     value={recipients}
                     onChange={(e) => setRecipients(e.target.value)}
-                    placeholder="engineering-leads@careflow.io, stakeholders@careflow.io"
+                    placeholder="qa-leads@careflow.io, engineering-leads@careflow.io"
                     className="w-full text-xs font-medium px-3 py-1.5 bg-[var(--surface-hover)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
                   />
                 </div>
@@ -503,7 +684,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                     type="text"
                     value={ccRecipients}
                     onChange={(e) => setCcRecipients(e.target.value)}
-                    placeholder="release-managers@careflow.io"
+                    placeholder="release-managers@careflow.io, managers@careflow.io"
                     className="w-full text-xs font-medium px-3 py-1.5 bg-[var(--surface-hover)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
                   />
                 </div>
@@ -612,11 +793,85 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
               {/* TAB 1: HTML VISUAL PREVIEW */}
               {activeViewMode === 'preview' && (
                 <div className="flex flex-col gap-4 max-w-3xl mx-auto">
+                  
+                  {/* AI Drafting Loading Banner */}
+                  {isAiDrafting && (
+                    <div className="bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-pink-500/10 border border-indigo-500/30 p-4 rounded-2xl flex items-center gap-3 animate-pulse">
+                      <div className="p-2 rounded-xl bg-indigo-500 text-white">
+                        <Sparkles size={18} className="animate-spin" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-xs font-bold text-indigo-700 dark:text-indigo-300">
+                          Gemini API is drafting the System Testing Daily Report...
+                        </div>
+                        <div className="text-[11px] text-[var(--text-secondary)]">
+                          Analyzing {state.tasks.length} tasks, {state.defects.length} defects, and user stories for {activeReleaseObj ? activeReleaseObj.name : 'release'}.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* System Testing AI Telemetry & Verdict Banner */}
+                  {selectedTemplate === 'system_testing_daily' && !isAiDrafting && (
+                    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 shadow-2xs flex flex-col gap-3">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse" />
+                          <span className="text-xs font-bold text-[var(--text-primary)]">
+                            System Testing Telemetry &middot; {activeReleaseObj?.name || 'Release Scope'}
+                          </span>
+                        </div>
+                        {aiDraftVerdict && (
+                          <span className={`text-[10px] font-extrabold uppercase px-2.5 py-0.5 rounded-full ${
+                            aiDraftVerdict === 'ON_TRACK'
+                              ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/30'
+                              : aiDraftVerdict === 'NEEDS_ATTENTION'
+                              ? 'bg-amber-500/10 text-amber-600 border border-amber-500/30'
+                              : 'bg-rose-500/10 text-rose-600 border border-rose-500/30'
+                          }`}>
+                            Verdict: {aiDraftVerdict.replace('_', ' ')}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Quick telemetry chips */}
+                      {aiDraftMetrics && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                          <div className="p-2 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
+                            <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Story Pass Rate</div>
+                            <div className="text-sm font-extrabold text-emerald-600 dark:text-emerald-400">
+                              {aiDraftMetrics.storyPassPct}% ({aiDraftMetrics.storyPassed}/{aiDraftMetrics.storyTotal})
+                            </div>
+                          </div>
+                          <div className="p-2 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
+                            <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Task Throughput</div>
+                            <div className="text-sm font-extrabold text-[var(--primary)]">
+                              {aiDraftMetrics.taskCompletionPct}% ({aiDraftMetrics.tasksCompleted}/{aiDraftMetrics.tasksTotal})
+                            </div>
+                          </div>
+                          <div className="p-2 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
+                            <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Open Defects</div>
+                            <div className="text-sm font-extrabold text-amber-600 dark:text-amber-400">
+                              {aiDraftMetrics.openDefects} Active
+                            </div>
+                          </div>
+                          <div className="p-2 rounded-xl bg-[var(--surface-hover)] border border-[var(--border)]">
+                            <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Critical Blockers</div>
+                            <div className={`text-sm font-extrabold ${aiDraftMetrics.criticalDefects > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {aiDraftMetrics.criticalDefects} P0/P1
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* AI Highlights Card */}
                   {aiHighlights.length > 0 && (
-                    <div className="bg-[var(--primary-light)] border border-[var(--primary)]/30 p-3.5 rounded-xl">
-                      <div className="flex items-center gap-2 text-xs font-bold text-[var(--primary)] mb-1.5">
-                        <Sparkles size={14} />
-                        <span>AI Executive Highlights</span>
+                    <div className="bg-gradient-to-br from-indigo-500/10 via-purple-500/5 to-transparent border border-indigo-500/30 p-3.5 rounded-2xl">
+                      <div className="flex items-center gap-2 text-xs font-bold text-indigo-700 dark:text-indigo-300 mb-1.5">
+                        <Sparkles size={14} className="text-indigo-600" />
+                        <span>Gemini AI Key Highlights</span>
                       </div>
                       <ul className="text-xs text-[var(--text-primary)] space-y-1 list-disc pl-4 font-medium">
                         {aiHighlights.map((h, i) => (
@@ -635,12 +890,19 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
 
               {/* TAB 2: MARKDOWN / PLAIN TEXT */}
               {activeViewMode === 'markdown' && (
-                <div className="max-w-3xl mx-auto">
+                <div className="max-w-3xl mx-auto flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[var(--text-secondary)]">Editable Plain Text & Markdown Source</span>
+                    <span className="text-[11px] font-mono text-[var(--text-muted)]">{emailData.markdown.length} characters</span>
+                  </div>
                   <textarea
-                    rows={20}
+                    rows={22}
                     value={emailData.markdown}
-                    readOnly
-                    className="w-full text-xs font-mono p-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl text-[var(--text-primary)] leading-relaxed outline-none"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setEmailData(prev => ({ ...prev, markdown: val }));
+                    }}
+                    className="w-full text-xs font-mono p-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl text-[var(--text-primary)] leading-relaxed outline-none focus:border-[var(--primary)]"
                   />
                 </div>
               )}
@@ -748,6 +1010,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
 
             </div>
           </div>
+
         </div>
 
       </div>

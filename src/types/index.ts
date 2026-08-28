@@ -1,10 +1,3 @@
-export * from './apiAutomation';
-import { 
-  ApiAutomationCollection, 
-  ApiEnvironment, 
-  ApiTestExecutionRun 
-} from './apiAutomation';
-
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 export type TaskStatus = 'pending' | 'partial' | 'complete';
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
@@ -27,8 +20,6 @@ export type AppView =
   | 'defects' 
   | 'qa_dashboard'
   | 'defectsDashboard' 
-  | 'apiAutomation'
-  | 'api_automation'
   | 'releases' 
   | 'standup' 
   | 'retrospective'
@@ -39,6 +30,20 @@ export type AppView =
   | 'settings';
 
 export type NavView = AppView;
+
+export interface ExecutionMetrics {
+  totalTestCases: number;
+  completedTestCases: number;
+  passedTestCases: number;
+  blockedTestCases: number;
+  failedTestCases: number;
+  openDefects: number;
+  statusLabel?: 'Passed' | 'In Progress' | 'Blocked' | 'Not Applicable' | 'Failed' | 'Pending';
+  remarks?: string;
+  notes?: string;
+  source?: 'task_comment' | 'story_comment' | 'manual' | 'parsed';
+  assessedAt?: string;
+}
 
 export interface Task {
   id: string;
@@ -63,6 +68,9 @@ export interface Task {
   releaseId?: string | null;
   dependsOnTaskIds?: string[];
   comments?: TaskComment[];
+  latestComment?: string;
+  todayActivityComment?: string;
+  executionMetrics?: ExecutionMetrics;
   adoId?: number;
   adoWorkItemType?: string;
   adoUrl?: string;
@@ -257,6 +265,10 @@ export interface UserStory {
   tags?: string[];
   sourceInstance?: 'internal' | 'external';
   testPlanRef?: TestPlanRef;
+  comments?: TaskComment[];
+  latestComment?: string;
+  todayActivityComment?: string;
+  executionMetrics?: ExecutionMetrics;
   adoId?: number;
   adoUrl?: string;
   createdAt: string;
@@ -519,6 +531,8 @@ export type LayoutDensity = 'compact' | 'comfortable';
 
 export type EmailTemplateType = 
   | 'daily_standup'
+  | 'system_testing_daily'
+  | 'dev_to_dev_integration'
   | 'qa_gate'
   | 'executive_pulse'
   | 'resource_capacity'
@@ -556,10 +570,13 @@ export interface AppSettings {
   clientName?: string;
   customPresets?: any[];
   emailRecipient?: string;
+  devLeadEmail?: string;
+  devIntegrationEmail?: string;
   managerEmail?: string;
   qaTeamEmail?: string;
   releaseManagerEmail?: string;
   executivesEmail?: string;
+  executiveEmail?: string;
   onCallEmail?: string;
   emailSchedules?: EmailScheduleConfig[];
   emailLogs?: EmailDispatchLog[];
@@ -567,6 +584,14 @@ export interface AppSettings {
   smtpPort?: number;
   smtpUser?: string;
   smtpSenderName?: string;
+  smtpConfig?: {
+    host?: string;
+    port?: number;
+    user?: string;
+    password?: string;
+    fromAddress?: string;
+    secure?: boolean;
+  };
   yourName?: string;
   carryForward?: boolean;
   selectedReleaseId?: string | null;
@@ -646,10 +671,6 @@ export interface AppState {
   retroActionItems?: RetroActionItem[];
   retroSessions?: RetroSession[];
   activeRetroSessionId?: string | null;
-  apiCollections?: ApiAutomationCollection[];
-  apiEnvironments?: ApiEnvironment[];
-  apiExecutionRuns?: ApiTestExecutionRun[];
-  activeApiEnvironmentId?: string | null;
   blueprintSchedule: BlueprintItem[];
   settings: AppSettings;
   activeView: AppView;

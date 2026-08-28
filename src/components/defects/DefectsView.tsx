@@ -74,6 +74,7 @@ interface DefectsViewProps {
   onUpdateDefect: (defect: Defect) => void;
   onDeleteDefect: (defectId: string) => void;
   onAddTask?: (task: Partial<Task>) => void;
+  onUpdateTask?: (task: Task) => void;
   onToggleTaskStatus?: (taskId: string) => void;
   onDeleteTask?: (taskId: string) => void;
   onOpenEmailModal?: (template?: string, defectId?: string, releaseId?: string) => void;
@@ -112,6 +113,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
   onUpdateDefect,
   onDeleteDefect,
   onAddTask,
+  onUpdateTask,
   onToggleTaskStatus,
   onDeleteTask,
   onOpenEmailModal
@@ -314,6 +316,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
         environment,
         tags: tagsList,
         rootCause: rootCause.trim() || undefined,
+        closedAt: status === 'Closed' ? (editingDefect.closedAt || now) : undefined,
         updatedAt: now
       });
     } else {
@@ -339,6 +342,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
         tags: tagsList,
         rootCause: rootCause.trim() || undefined,
         createdAt: now,
+        closedAt: status === 'Closed' ? now : undefined,
         updatedAt: now
       });
     }
@@ -1007,6 +1011,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                         currentDateStr={currentDateStr}
                         onToggleStatus={onToggleTaskStatus}
                         onAddTask={onAddTask}
+                        onUpdateTask={onUpdateTask}
                         onDeleteTask={onDeleteTask}
                         defaultExpanded={false}
                       />
@@ -1028,7 +1033,7 @@ export const DefectsView: React.FC<DefectsViewProps> = ({
                     )}
                     {onOpenEmailModal && (
                       <button
-                        onClick={() => onOpenEmailModal('defect_escalation', defect.id, defect.releaseId)}
+                        onClick={() => onOpenEmailModal('defect_escalation', defect.id, defect.releaseId || undefined)}
                         className="p-1.5 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 rounded-lg cursor-pointer transition-all"
                         title="Escalate Defect via Email Automation Hub"
                       >

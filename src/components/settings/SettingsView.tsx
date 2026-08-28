@@ -195,6 +195,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [clientName, setClientName] = useState(state.settings.clientName || 'AT&T');
   const [emailRecipient, setEmailRecipient] = useState(state.settings.emailRecipient || 'engineering-leads@careflow.io');
   const [qaTeamEmail, setQaTeamEmail] = useState(state.settings.qaTeamEmail || 'qa-leads@careflow.io');
+  const [devLeadEmail, setDevLeadEmail] = useState(state.settings.devLeadEmail || 'dev-leads@careflow.io');
+  const [releaseManagerEmail, setReleaseManagerEmail] = useState(state.settings.releaseManagerEmail || 'release-managers@careflow.io');
   const [managerEmail, setManagerEmail] = useState(state.settings.managerEmail || 'engineering-managers@careflow.io');
   const [executiveEmail, setExecutiveEmail] = useState(state.settings.executiveEmail || 'executives@careflow.io');
   const [onCallEmail, setOnCallEmail] = useState(state.settings.onCallEmail || 'oncall@careflow.io');
@@ -320,6 +322,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         customPresets,
         emailRecipient,
         qaTeamEmail,
+        devLeadEmail,
+        releaseManagerEmail,
         managerEmail,
         executiveEmail,
         onCallEmail,
@@ -769,13 +773,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
             <div>
               <label className="block text-[11px] font-bold text-[var(--text-primary)] mb-1">
-                QA Leads & Quality Gatekeeper Recipient
+                QA Leads & System Testing Daily Recipient
               </label>
               <input
                 type="text"
                 value={qaTeamEmail}
                 onChange={(e) => setQaTeamEmail(e.target.value)}
                 placeholder="qa-leads@careflow.io, release-managers@careflow.io"
+                className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[var(--text-primary)] mb-1">
+                Dev Leads & Dev-to-Dev Integration Testing Recipient
+              </label>
+              <input
+                type="text"
+                value={devLeadEmail}
+                onChange={(e) => setDevLeadEmail(e.target.value)}
+                placeholder="dev-leads@careflow.io, component-owners@careflow.io"
+                className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[var(--text-primary)] mb-1">
+                Release Managers & Go/No-Go Sign-Off Recipient
+              </label>
+              <input
+                type="text"
+                value={releaseManagerEmail}
+                onChange={(e) => setReleaseManagerEmail(e.target.value)}
+                placeholder="release-managers@careflow.io, pmo@careflow.io"
                 className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
               />
             </div>

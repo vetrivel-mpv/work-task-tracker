@@ -90,11 +90,6 @@ export const PortalSummaryStrip: React.FC<PortalSummaryStripProps> = ({
       subtitle: 'Real-time defect arrival, test run coverage, and SLA compliance metrics',
       icon: Sparkles
     },
-    apiAutomation: {
-      title: 'API Automation Studio & CI/CD Runner',
-      subtitle: `${(state.apiCollections || []).length} active API suites • Live collection trigger, Postman/Newman & Playwright integration`,
-      icon: Zap
-    },
     defectsDashboard: {
       title: 'QA Delivery Analytics & Velocity Intelligence',
       subtitle: 'Real-time defect arrival, test run coverage, and SLA compliance metrics',

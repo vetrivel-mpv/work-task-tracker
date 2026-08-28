@@ -18,11 +18,6 @@ import {
   INITIAL_RETRO_SESSIONS,
   getInitialTasks
 } from './demoData';
-import {
-  INITIAL_API_COLLECTIONS,
-  INITIAL_API_ENVIRONMENTS,
-  INITIAL_API_EXECUTION_RUNS
-} from './apiAutomationDemoData';
 
 const STORAGE_KEY_PREFIX = 'northstar:';
 const STATE_STORAGE_KEY = `${STORAGE_KEY_PREFIX}state:v4`;
@@ -147,10 +142,6 @@ export function getFreshDemoState(): AppState {
     retroActionItems: [],
     retroSessions: INITIAL_RETRO_SESSIONS,
     activeRetroSessionId: 'retro-session-current',
-    apiCollections: INITIAL_API_COLLECTIONS,
-    apiEnvironments: INITIAL_API_ENVIRONMENTS,
-    apiExecutionRuns: INITIAL_API_EXECUTION_RUNS,
-    activeApiEnvironmentId: 'env-local',
     blueprintSchedule: INITIAL_BLUEPRINT,
     settings: INITIAL_SETTINGS,
     activeView: 'board',
@@ -248,10 +239,6 @@ export function loadStoredState(): AppState {
           retroActionItems: Array.isArray(parsed.retroActionItems) ? parsed.retroActionItems : [],
           retroSessions: Array.isArray(parsed.retroSessions) ? parsed.retroSessions : INITIAL_RETRO_SESSIONS,
           activeRetroSessionId: parsed.activeRetroSessionId || 'retro-session-current',
-          apiCollections: Array.isArray(parsed.apiCollections) ? parsed.apiCollections : INITIAL_API_COLLECTIONS,
-          apiEnvironments: Array.isArray(parsed.apiEnvironments) ? parsed.apiEnvironments : INITIAL_API_ENVIRONMENTS,
-          apiExecutionRuns: Array.isArray(parsed.apiExecutionRuns) ? parsed.apiExecutionRuns : INITIAL_API_EXECUTION_RUNS,
-          activeApiEnvironmentId: parsed.activeApiEnvironmentId || 'env-local',
           blueprintSchedule: Array.isArray(parsed.blueprintSchedule) ? parsed.blueprintSchedule : [],
           settings: { ...INITIAL_SETTINGS, ...(parsed.settings || {}) },
           activeView: parsed.activeView || 'board',

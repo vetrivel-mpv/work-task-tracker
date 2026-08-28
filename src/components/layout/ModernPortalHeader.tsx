@@ -58,7 +58,7 @@ interface ModernPortalHeaderProps {
   onSelectRelease: (id: string | null) => void;
   onOpenNewTaskModal: () => void;
   onOpenAdoModal: () => void;
-  onOpenEmailModal: (tab?: 'standup' | 'qa' | 'dashboard') => void;
+  onOpenEmailModal: (template?: string) => void;
   onOpenCommandPalette: () => void;
   onOpenTechDebtModal?: () => void;
   dualAdoConfig?: DualAdoConfig;
@@ -123,7 +123,6 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
     // 'testCases', // Commented out per user request
     'defects',
     'qa_dashboard',
-    'apiAutomation',
     'releases',
     'standup',
     'retrospective',
@@ -343,14 +342,6 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
       icon: BarChart3,
       badge: null,
       badgeType: 'neutral',
-      group: 'quality'
-    },
-    apiAutomation: {
-      id: 'apiAutomation' as AppView,
-      label: 'API Automation',
-      icon: Zap,
-      badge: (state.apiCollections || []).length > 0 ? String((state.apiCollections || []).length) : 'New',
-      badgeType: 'accent',
       group: 'quality'
     },
     releases: {
@@ -732,8 +723,7 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
                   const isActive = activeView === tab.id ||
                     (tab.id === 'stories' && activeView === 'userStories') ||
                     (tab.id === 'qa_dashboard' && activeView === 'defectsDashboard') ||
-                    (tab.id === 'people' && activeView === 'peopleReview') ||
-                    (tab.id === 'apiAutomation' && activeView === 'api_automation');
+                    (tab.id === 'people' && activeView === 'peopleReview');
 
                   return (
                     <div
@@ -910,8 +900,7 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
                       const isActive = activeView === tab.id ||
                         (tab.id === 'stories' && activeView === 'userStories') ||
                         (tab.id === 'qa_dashboard' && activeView === 'defectsDashboard') ||
-                        (tab.id === 'people' && activeView === 'peopleReview') ||
-                        (tab.id === 'apiAutomation' && activeView === 'api_automation');
+                        (tab.id === 'people' && activeView === 'peopleReview');
 
                       return (
                         <div
