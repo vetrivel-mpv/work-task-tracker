@@ -29,7 +29,10 @@ import {
   X,
   MessageSquare,
   Activity,
-  CheckCheck
+  CheckCheck,
+  RefreshCw,
+  Send,
+  Sparkles
 } from 'lucide-react';
 import { getWorkItemAssignee, matchesAssigneeFilter } from '../../utils/assigneeUtils';
 import { generateId, toDateStr } from '../../utils/date';
@@ -40,7 +43,8 @@ import { useWorkItemFilters } from '../../utils/useWorkItemFilters';
 import { isTestCaseItem, filterPureUserStories } from '../../utils/itemClassification';
 import { HighlightText } from '../common/HighlightText';
 import { StoryBugTaskTracker } from '../common/StoryBugTaskTracker';
-import { assessStoryTestStatus, getLatestCommentText } from '../../utils/executionCommentParser';
+import { assessStoryTestStatus, getLatestCommentText, getLatestCommentDetail, parseExecutionMetricsFromText, generateExecutionCommentTemplate } from '../../utils/executionCommentParser';
+import { adoService } from '../../services/adoService';
 
 interface UserStoriesViewProps {
   userStories: UserStory[];
@@ -209,6 +213,10 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     setModalOpen(false);
   };
 
+  const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
+  const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
+  const [syncingComments, setSyncingComments] = useState<Record<string, boolean>>({});
+
   const toggleCriteria = (id: string) => {
     setExpandedCriteria(prev => {
       const next = new Set(prev);
@@ -216,6 +224,107 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
       else next.add(id);
       return next;
     });
+  };
+
+  const toggleComments = (id: string) => {
+    setExpandedComments(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleRefreshStoryComments = async (story: UserStory) => {
+    if (!story.adoId) return;
+    setSyncingComments(prev => ({ ...prev, [story.id]: true }));
+    try {
+      const res = await adoService.getWorkItemComments(story.adoId);
+      if (res.ok && Array.isArray(res.comments)) {
+        const mappedComments = res.comments.map(c => ({
+          id: String(c.id || Date.now()),
+          author: c.author || story.assigneeName || 'Contributor',
+          text: c.text,
+          createdAt: c.createdAt || new Date().toISOString()
+        }));
+
+        const latestTxt = mappedComments[0]?.text || '';
+        const parsedMetrics = latestTxt ? parseExecutionMetricsFromText(latestTxt) : null;
+
+        let nextStatus = story.status;
+        if (parsedMetrics) {
+          if (parsedMetrics.statusLabel === 'Passed' && story.status !== 'Done') nextStatus = 'QA Passed';
+          else if (parsedMetrics.statusLabel === 'Blocked') nextStatus = 'Blocked';
+        }
+
+        onUpdateStory({
+          ...story,
+          comments: mappedComments,
+          latestComment: latestTxt || story.latestComment,
+          todayActivityComment: latestTxt || story.todayActivityComment,
+          executionMetrics: parsedMetrics || story.executionMetrics,
+          status: nextStatus
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to refresh comments from ADO:', e);
+    } finally {
+      setSyncingComments(prev => ({ ...prev, [story.id]: false }));
+    }
+  };
+
+  const handleSaveStoryComment = async (story: UserStory) => {
+    const text = (commentInputs[story.id] || '').trim();
+    if (!text) return;
+
+    const assignedMember = team.find(m => m.id === story.assigneeId);
+    const newComment = {
+      id: `c-${Date.now()}`,
+      author: assignedMember?.name || 'QA Engineer',
+      text: text,
+      createdAt: new Date().toISOString()
+    };
+
+    const updatedComments = [newComment, ...(story.comments || [])];
+    const metrics = parseExecutionMetricsFromText(text);
+
+    let nextStatus = story.status;
+    if (metrics) {
+      if (metrics.statusLabel === 'Passed' && story.status !== 'Done') nextStatus = 'QA Passed';
+      else if (metrics.statusLabel === 'Blocked') nextStatus = 'Blocked';
+    }
+
+    onUpdateStory({
+      ...story,
+      comments: updatedComments,
+      latestComment: text,
+      todayActivityComment: text,
+      executionMetrics: metrics || story.executionMetrics,
+      status: nextStatus
+    });
+
+    setCommentInputs(prev => ({ ...prev, [story.id]: '' }));
+
+    // Post to Azure DevOps in background if story has adoId
+    if (story.adoId) {
+      adoService.addWorkItemComment(story.adoId, text).catch(e => {
+        console.warn('Could not post comment to ADO:', e);
+      });
+    }
+  };
+
+  const applyStoryCommentTemplate = (storyId: string, templateType: 'all_passed' | 'partial' | 'blocked' | 'not_applicable') => {
+    let tpl = '';
+    if (templateType === 'all_passed') {
+      tpl = 'Today Activity: Full regression test execution completed. Total Test Cases: 10 | Completed: 10 | Blocked: 0 | Failed: 0 | Open Defects: 0. All scenarios verified passed.';
+    } else if (templateType === 'partial') {
+      tpl = 'Today Activity: User story test execution in progress. Total Test Cases: 12 | Completed: 8 | Blocked: 0 | Failed: 1 | Open Defects: 1 (Logged DEF for payload mismatch).';
+    } else if (templateType === 'blocked') {
+      tpl = 'Today Activity: Test execution blocked. Total Test Cases: 6 | Completed: 2 | Blocked: 4 | Failed: 0 | Open Defects: 1. Blocked due to external telemetry API timeout.';
+    } else if (templateType === 'not_applicable') {
+      tpl = 'Status: Not Applicable | Total Test Cases: 0 | Completed: 0 | Blocked: 0 | Failed: 0 | Open Defects: 0. No QA testing required (Architecture/Design review only).';
+    }
+    setCommentInputs(prev => ({ ...prev, [storyId]: tpl }));
   };
 
   // Filter stories based on Iteration Path, Assignee, Status, and search query
@@ -658,6 +767,123 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                           </div>
                         );
                       })()}
+
+                      {/* Comments / Discussion Section Accordion */}
+                      <div className="mt-2.5 pt-2.5 border-t border-[var(--border)]">
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleComments(story.id)}
+                            className="inline-flex items-center gap-1.5 text-xs font-bold text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+                          >
+                            <MessageSquare size={13} className="text-[var(--primary)]" />
+                            <span>Comments & QA Notes ({(story.comments || []).length})</span>
+                            {expandedComments.has(story.id) ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                          </button>
+
+                          <div className="flex items-center gap-2">
+                            {story.adoId && (
+                              <button
+                                type="button"
+                                disabled={syncingComments[story.id]}
+                                onClick={() => handleRefreshStoryComments(story)}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-[var(--primary)] bg-[var(--primary-light)] hover:bg-[var(--primary)] hover:text-white rounded-lg transition-all cursor-pointer disabled:opacity-50"
+                                title="Fetch latest discussion comments from Azure DevOps"
+                              >
+                                <RefreshCw size={11} className={syncingComments[story.id] ? 'animate-spin' : ''} />
+                                <span>{syncingComments[story.id] ? 'Syncing...' : 'Sync ADO Comments'}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {expandedComments.has(story.id) && (
+                          <div className="mt-2.5 flex flex-col gap-2.5 animate-fadeIn">
+                            {/* Existing Comments list */}
+                            {(story.comments || []).length > 0 ? (
+                              <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1">
+                                {(story.comments || []).map((c, idx) => (
+                                  <div
+                                    key={c.id || idx}
+                                    className="p-2 rounded-lg bg-[var(--surface-hover)] border border-[var(--border)] text-xs flex flex-col gap-1"
+                                  >
+                                    <div className="flex items-center justify-between text-[10.5px] text-[var(--text-muted)]">
+                                      <span className="font-semibold text-[var(--text-secondary)]">{c.author || 'Contributor'}</span>
+                                      {c.createdAt && <span>{c.createdAt.slice(0, 16).replace('T', ' ')}</span>}
+                                    </div>
+                                    <p className="text-[var(--text-primary)] leading-relaxed whitespace-pre-wrap">{c.text}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-[11.5px] text-[var(--text-muted)] italic">
+                                No comments logged yet on this User Story. Add execution updates below or click "Sync ADO Comments".
+                              </p>
+                            )}
+
+                            {/* Quick Execution Template Presets */}
+                            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                              <span className="text-[10px] font-bold text-[var(--text-muted)] flex items-center gap-1 uppercase tracking-wider">
+                                <Sparkles size={11} className="text-amber-500" /> Quick Templates:
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => applyStoryCommentTemplate(story.id, 'all_passed')}
+                                className="px-2 py-0.5 text-[10.5px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 rounded-md border border-emerald-500/20 cursor-pointer"
+                              >
+                                ✅ 100% Passed
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => applyStoryCommentTemplate(story.id, 'partial')}
+                                className="px-2 py-0.5 text-[10.5px] font-semibold bg-blue-500/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 rounded-md border border-blue-500/20 cursor-pointer"
+                              >
+                                ⏳ In Progress
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => applyStoryCommentTemplate(story.id, 'blocked')}
+                                className="px-2 py-0.5 text-[10.5px] font-semibold bg-red-500/10 text-red-700 dark:text-red-300 hover:bg-red-500/20 rounded-md border border-red-500/20 cursor-pointer"
+                              >
+                                🔴 Blocked
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => applyStoryCommentTemplate(story.id, 'not_applicable')}
+                                className="px-2 py-0.5 text-[10.5px] font-semibold bg-slate-500/10 text-slate-700 dark:text-slate-300 hover:bg-slate-500/20 rounded-md border border-slate-500/20 cursor-pointer"
+                              >
+                                ⚪ Not Applicable
+                              </button>
+                            </div>
+
+                            {/* Add Comment Input */}
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                value={commentInputs[story.id] || ''}
+                                onChange={(e) => setCommentInputs(prev => ({ ...prev, [story.id]: e.target.value }))}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSaveStoryComment(story);
+                                  }
+                                }}
+                                placeholder="Add QA note or test execution status update (Enter to post)..."
+                                className="flex-1 px-3 py-1.5 text-xs bg-[var(--surface-hover)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--primary)]"
+                              />
+                              <button
+                                type="button"
+                                disabled={!(commentInputs[story.id] || '').trim()}
+                                onClick={() => handleSaveStoryComment(story)}
+                                className="px-3 py-1.5 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] disabled:opacity-40 rounded-lg inline-flex items-center gap-1 cursor-pointer transition-all shadow-2xs"
+                              >
+                                <Send size={12} />
+                                <span>Post</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
 
                       {/* Interactive Embedded Task Tracker */}
                       <StoryBugTaskTracker

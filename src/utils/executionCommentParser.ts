@@ -199,6 +199,80 @@ export function parseExecutionMetricsFromText(text?: string | null): ExecutionMe
   };
 }
 
+export interface LatestCommentDetail {
+  text: string;
+  author?: string;
+  createdAt?: string;
+  id?: string;
+}
+
+/**
+ * Returns detailed latest comment information from an item, prioritizing chronological newest
+ */
+export function getLatestCommentDetail(item?: {
+  comments?: TaskComment[];
+  latestComment?: string;
+  todayActivityComment?: string;
+  standupDiscussionNotes?: string;
+  assigneeName?: string;
+} | null): LatestCommentDetail | null {
+  if (!item) return null;
+
+  // 1. If comments array exists, find the latest comment by createdAt timestamp
+  if (item.comments && Array.isArray(item.comments) && item.comments.length > 0) {
+    const valid = item.comments.filter(c => c && c.text && c.text.trim());
+    if (valid.length > 0) {
+      const sorted = [...valid].sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (timeA && timeB && !isNaN(timeA) && !isNaN(timeB)) {
+          return timeB - timeA; // Descending: newest first
+        }
+        return 0;
+      });
+
+      const newest = sorted[0];
+      if (newest && newest.text && newest.text.trim()) {
+        return {
+          id: String(newest.id || ''),
+          text: cleanAdoHtml(newest.text.trim()),
+          author: newest.author || item.assigneeName || 'Contributor',
+          createdAt: newest.createdAt
+        };
+      }
+    }
+  }
+
+  // 2. Today Activity Comment
+  if (item.todayActivityComment && item.todayActivityComment.trim()) {
+    return {
+      text: cleanAdoHtml(item.todayActivityComment.trim()),
+      author: item.assigneeName,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  // 3. latestComment field
+  if (item.latestComment && item.latestComment.trim()) {
+    return {
+      text: cleanAdoHtml(item.latestComment.trim()),
+      author: item.assigneeName,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  // 4. standupDiscussionNotes
+  if (item.standupDiscussionNotes && item.standupDiscussionNotes.trim()) {
+    return {
+      text: cleanAdoHtml(item.standupDiscussionNotes.trim()),
+      author: item.assigneeName,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  return null;
+}
+
 /**
  * Returns the most recent comment text from an item
  */
@@ -208,28 +282,8 @@ export function getLatestCommentText(item?: {
   todayActivityComment?: string;
   standupDiscussionNotes?: string;
 } | null): string {
-  if (!item) return '';
-
-  if (item.todayActivityComment && item.todayActivityComment.trim()) {
-    return cleanAdoHtml(item.todayActivityComment.trim());
-  }
-
-  if (item.latestComment && item.latestComment.trim()) {
-    return cleanAdoHtml(item.latestComment.trim());
-  }
-
-  if (item.comments && item.comments.length > 0) {
-    const last = item.comments[item.comments.length - 1];
-    if (last && last.text && last.text.trim()) {
-      return cleanAdoHtml(last.text.trim());
-    }
-  }
-
-  if (item.standupDiscussionNotes && item.standupDiscussionNotes.trim()) {
-    return cleanAdoHtml(item.standupDiscussionNotes.trim());
-  }
-
-  return '';
+  const detail = getLatestCommentDetail(item as any);
+  return detail ? detail.text : '';
 }
 
 /**
@@ -358,20 +412,44 @@ export function assessStoryTestStatus(
   const latestTask = sortedTasks[0];
   const isTaskClosedToday = todayTasks.some(t => t.status === 'complete');
 
-  // 2. Extract latest comment text: first priority is latest linked task's comment for today's activity, then story's own latest comment
-  let taskCommentText = '';
-  let taskAuthor: string | undefined;
+  // 2. Compare User Story direct comments vs linked Task comments to find the most recent
+  const storyDetail = getLatestCommentDetail(story as any);
+  const taskDetail = latestTask ? getLatestCommentDetail(latestTask as any) : null;
 
-  if (latestTask) {
-    taskCommentText = getLatestCommentText(latestTask);
-    if (latestTask.comments && latestTask.comments.length > 0) {
-      taskAuthor = latestTask.comments[latestTask.comments.length - 1]?.author;
+  let winningDetail: LatestCommentDetail | null = null;
+  let sourceKind: 'story_comment' | 'task_comment' | 'preconfigured' | 'manual' = 'story_comment';
+
+  if (storyDetail && taskDetail) {
+    const storyTime = storyDetail.createdAt ? new Date(storyDetail.createdAt).getTime() : 0;
+    const taskTime = taskDetail.createdAt ? new Date(taskDetail.createdAt).getTime() : 0;
+
+    const storyParsed = parseExecutionMetricsFromText(storyDetail.text);
+    const taskParsed = parseExecutionMetricsFromText(taskDetail.text);
+
+    // If story has explicit test metrics and task does not, prioritize story
+    if (storyParsed && !taskParsed) {
+      winningDetail = storyDetail;
+      sourceKind = 'story_comment';
+    } else if (taskParsed && !storyParsed) {
+      winningDetail = taskDetail;
+      sourceKind = 'task_comment';
+    } else if (storyTime >= taskTime || isNaN(taskTime)) {
+      winningDetail = storyDetail;
+      sourceKind = 'story_comment';
+    } else {
+      winningDetail = taskDetail;
+      sourceKind = 'task_comment';
     }
+  } else if (storyDetail) {
+    winningDetail = storyDetail;
+    sourceKind = 'story_comment';
+  } else if (taskDetail) {
+    winningDetail = taskDetail;
+    sourceKind = 'task_comment';
   }
 
-  const storyCommentText = getLatestCommentText(story);
-  const effectiveComment = taskCommentText || storyCommentText || '';
-  const commentAuthor = taskAuthor || (story.comments && story.comments.length > 0 ? story.comments[story.comments.length - 1]?.author : story.assigneeName);
+  const effectiveComment = winningDetail ? winningDetail.text : '';
+  const commentAuthor = winningDetail ? (winningDetail.author || story.assigneeName) : story.assigneeName;
 
   // 3. Parse execution metrics from comment
   const parsedFromComment = parseExecutionMetricsFromText(effectiveComment);
@@ -392,11 +470,11 @@ export function assessStoryTestStatus(
   if (parsedFromComment) {
     finalMetrics = {
       ...parsedFromComment,
-      source: latestTask ? 'task_comment' : 'story_comment'
+      source: sourceKind
     };
-    sourceDescription = latestTask 
-      ? `Assessed from Task #${latestTask.adoId || latestTask.id.slice(0, 6)} latest execution comment`
-      : `Assessed from User Story latest discussion comment`;
+    sourceDescription = sourceKind === 'story_comment'
+      ? `Assessed from User Story latest comment`
+      : `Assessed from Task #${latestTask?.adoId || latestTask?.id?.slice(0, 6)} latest execution comment`;
   } else if (story.executionMetrics) {
     finalMetrics = { ...story.executionMetrics };
     sourceDescription = 'Pre-configured execution metrics';
