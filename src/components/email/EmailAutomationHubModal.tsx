@@ -21,7 +21,8 @@ import {
   ExternalLink,
   Sliders,
   BellRing,
-  ShieldCheck
+  ShieldCheck,
+  ShieldAlert
 } from 'lucide-react';
 import { AppState, EmailTemplateType, EmailScheduleConfig, EmailDispatchLog } from '../../types';
 import {
@@ -213,6 +214,12 @@ export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = (
   if (!isOpen) return null;
 
   const templatesList: { type: EmailTemplateType; title: string; desc: string; icon: React.FC<{ size?: number; className?: string }> }[] = [
+    {
+      type: 'client_qa_status',
+      title: 'Client QA Status & Blockers',
+      desc: 'Client-facing report: story-by-story blockers, delivery readiness & where we stand',
+      icon: ShieldAlert
+    },
     {
       type: 'daily_standup',
       title: 'Daily Standup Digest',
@@ -474,7 +481,7 @@ export const EmailAutomationHubModal: React.FC<EmailAutomationHubModalProps> = (
                 Context Parameters
               </label>
 
-              {(selectedTemplate === 'qa_gate' || selectedTemplate === 'release_signoff' || selectedTemplate === 'system_testing_daily' || selectedTemplate === 'dev_to_dev_integration') && (
+              {(selectedTemplate === 'client_qa_status' || selectedTemplate === 'qa_gate' || selectedTemplate === 'release_signoff' || selectedTemplate === 'system_testing_daily' || selectedTemplate === 'dev_to_dev_integration') && (
                 <div>
                   <label className="text-[11px] font-semibold text-[var(--text-secondary)] block mb-1">Target Release Scope</label>
                   <select
