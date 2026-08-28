@@ -29,8 +29,15 @@ import {
   X,
   MessageSquare,
   Activity,
-  CheckCheck
+  CheckCheck,
+  RefreshCw,
+  Send,
+  Sparkles,
+  Clock,
+  User,
+  Check
 } from 'lucide-react';
+import { adoService } from '../../services/adoService';
 import { getWorkItemAssignee, matchesAssigneeFilter } from '../../utils/assigneeUtils';
 import { generateId, toDateStr } from '../../utils/date';
 import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber, matchesReleaseOrIteration, formatReleaseDisplayName } from '../../utils/adoPaths';
@@ -40,7 +47,7 @@ import { useWorkItemFilters } from '../../utils/useWorkItemFilters';
 import { isTestCaseItem, filterPureUserStories } from '../../utils/itemClassification';
 import { HighlightText } from '../common/HighlightText';
 import { StoryBugTaskTracker } from '../common/StoryBugTaskTracker';
-import { assessStoryTestStatus, getLatestCommentText } from '../../utils/executionCommentParser';
+import { assessStoryTestStatus, getLatestCommentText, getLatestCommentDetail, parseExecutionMetricsFromText, generateExecutionCommentTemplate } from '../../utils/executionCommentParser';
 
 interface UserStoriesViewProps {
   userStories: UserStory[];
@@ -115,6 +122,13 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
   const [editingStory, setEditingStory] = useState<UserStory | null>(null);
   const [expandedCriteria, setExpandedCriteria] = useState<Set<string>>(new Set());
 
+  // Interactive Story Comments & Test Status Update state
+  const [expandedCommentsStoryId, setExpandedCommentsStoryId] = useState<string | null>(null);
+  const [storyCommentInput, setStoryCommentInput] = useState('');
+  const [activeCommentStoryId, setActiveCommentStoryId] = useState<string | null>(null);
+  const [isRefreshingCommentsId, setIsRefreshingCommentsId] = useState<string | null>(null);
+  const [syncStatusMsg, setSyncStatusMsg] = useState<{ storyId: string; text: string; isError?: boolean } | null>(null);
+
   // Form state for new / edit story
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -125,6 +139,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
   const [assigneeId, setAssigneeId] = useState<string>('');
   const [iterationPath, setIterationPath] = useState<string>('');
   const [criteriaText, setCriteriaText] = useState<string>('');
+  const [modalInitialComment, setModalInitialComment] = useState<string>('');
 
   // Core Requirement: Iterations for ACM
   const returnedIterationPaths = getIterationPathsForArea('ACM', releases, pureStories, defects);
@@ -146,6 +161,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     setIterationPath(firstIter ? firstIter.iterationPath : (releases[0]?.iterationPath || ''));
     setAssigneeId('');
     setCriteriaText('');
+    setModalInitialComment('');
     setModalOpen(true);
   };
 
@@ -161,6 +177,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
     setAssigneeId(story.assigneeId || '');
     setIterationPath(story.iterationPath || '');
     setCriteriaText((story.acceptanceCriteria || []).join('\n'));
+    setModalInitialComment(story.latestComment || '');
     setModalOpen(true);
   };
 
@@ -174,8 +191,25 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
       .filter(Boolean);
 
     const now = toDateStr(new Date());
+    const assignedMember = team.find(m => m.id === assigneeId);
 
     if (editingStory) {
+      let updatedComments = editingStory.comments || [];
+      let updatedLatest = editingStory.latestComment;
+      let updatedMetrics = editingStory.executionMetrics;
+
+      if (modalInitialComment.trim() && modalInitialComment.trim() !== editingStory.latestComment) {
+        const newC = {
+          id: `c-${Date.now()}`,
+          author: assignedMember?.name || 'QA Lead',
+          text: modalInitialComment.trim(),
+          createdAt: new Date().toISOString()
+        };
+        updatedComments = [newC, ...updatedComments];
+        updatedLatest = modalInitialComment.trim();
+        updatedMetrics = parseExecutionMetricsFromText(modalInitialComment.trim()) || updatedMetrics;
+      }
+
       onUpdateStory({
         ...editingStory,
         title: title.trim(),
@@ -187,9 +221,21 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
         assigneeId: assigneeId || null,
         iterationPath: iterationPath.trim(),
         acceptanceCriteria: criteriaList,
+        comments: updatedComments,
+        latestComment: updatedLatest,
+        executionMetrics: updatedMetrics,
         updatedAt: now
       });
     } else {
+      const initialCommentsList = modalInitialComment.trim() ? [{
+        id: `c-${Date.now()}`,
+        author: assignedMember?.name || 'QA Lead',
+        text: modalInitialComment.trim(),
+        createdAt: new Date().toISOString()
+      }] : [];
+
+      const parsedMetrics = modalInitialComment.trim() ? parseExecutionMetricsFromText(modalInitialComment.trim()) : undefined;
+
       onAddStory({
         id: generateId('us'),
         title: title.trim(),
@@ -201,12 +247,147 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
         assigneeId: assigneeId || null,
         iterationPath: iterationPath.trim(),
         acceptanceCriteria: criteriaList,
+        comments: initialCommentsList,
+        latestComment: modalInitialComment.trim() || undefined,
+        executionMetrics: parsedMetrics || undefined,
         createdAt: now,
         updatedAt: now
       });
     }
 
     setModalOpen(false);
+  };
+
+  const handleOpenComments = (storyId: string) => {
+    if (expandedCommentsStoryId === storyId) {
+      setExpandedCommentsStoryId(null);
+      setActiveCommentStoryId(null);
+      setStoryCommentInput('');
+    } else {
+      setExpandedCommentsStoryId(storyId);
+      const story = userStories.find(s => s.id === storyId);
+      const detail = story ? getLatestCommentDetail(story as any) : null;
+      setStoryCommentInput(detail ? detail.text : '');
+      setActiveCommentStoryId(storyId);
+    }
+  };
+
+  const handleRefreshStoryComments = async (story: UserStory) => {
+    if (!story.adoId) return;
+    setIsRefreshingCommentsId(story.id);
+    setSyncStatusMsg({ storyId: story.id, text: 'Fetching latest comments from Azure DevOps...' });
+    try {
+      const res = await adoService.getWorkItemComments(story.adoId);
+      if (res.ok && res.comments) {
+        const rawComments = res.comments;
+        const mapped = rawComments.map((c: any) => ({
+          id: c.id || `c-${Date.now()}`,
+          author: c.author || 'ADO User',
+          text: c.text || '',
+          createdAt: c.createdAt || new Date().toISOString()
+        }));
+        const latestText = mapped[0]?.text || '';
+        const parsedMetrics = latestText ? parseExecutionMetricsFromText(latestText) : null;
+
+        let newStatus = story.status;
+        if (parsedMetrics?.statusLabel === 'Passed' && story.status !== 'Done') {
+          newStatus = 'QA Passed';
+        } else if (parsedMetrics?.statusLabel === 'Blocked') {
+          newStatus = 'Blocked';
+        } else if (parsedMetrics?.statusLabel === 'In Progress' && story.status === 'To Do') {
+          newStatus = 'QA In Progress';
+        }
+
+        const updated: UserStory = {
+          ...story,
+          comments: mapped,
+          latestComment: latestText,
+          todayActivityComment: latestText,
+          executionMetrics: parsedMetrics || story.executionMetrics,
+          status: newStatus,
+          updatedAt: toDateStr(new Date())
+        };
+        onUpdateStory(updated);
+        setSyncStatusMsg({ storyId: story.id, text: `Synced ${mapped.length} comments from ADO.` });
+      } else {
+        setSyncStatusMsg({ storyId: story.id, text: res.error || 'No comments found on ADO.', isError: true });
+      }
+    } catch (err: any) {
+      setSyncStatusMsg({ storyId: story.id, text: err.message || 'Failed to fetch comments', isError: true });
+    } finally {
+      setIsRefreshingCommentsId(null);
+      setTimeout(() => setSyncStatusMsg(null), 4000);
+    }
+  };
+
+  const handleSaveStoryComment = async (story: UserStory) => {
+    if (!storyCommentInput.trim()) return;
+
+    const trimmedComment = storyCommentInput.trim();
+    const parsedMetrics = parseExecutionMetricsFromText(trimmedComment);
+    const assignedMember = team.find(m => m.id === story.assigneeId);
+    const authorName = assignedMember?.name || 'QA Lead';
+
+    const newComment = {
+      id: `c-${Date.now()}`,
+      author: authorName,
+      text: trimmedComment,
+      createdAt: new Date().toISOString()
+    };
+
+    const existingComments = story.comments || [];
+    const updatedComments = [newComment, ...existingComments.filter(c => c.text !== trimmedComment)];
+
+    let newStatus = story.status;
+    if (parsedMetrics?.statusLabel === 'Passed' && story.status !== 'Done') {
+      newStatus = 'QA Passed';
+    } else if (parsedMetrics?.statusLabel === 'Blocked') {
+      newStatus = 'Blocked';
+    } else if (parsedMetrics?.statusLabel === 'In Progress' && (story.status === 'To Do' || story.status === 'QA Ready')) {
+      newStatus = 'QA In Progress';
+    }
+
+    const updatedStory: UserStory = {
+      ...story,
+      comments: updatedComments,
+      latestComment: trimmedComment,
+      todayActivityComment: trimmedComment,
+      executionMetrics: parsedMetrics || story.executionMetrics,
+      status: newStatus,
+      updatedAt: toDateStr(new Date())
+    };
+
+    onUpdateStory(updatedStory);
+    setSyncStatusMsg({ storyId: story.id, text: 'Test status and comment updated successfully!' });
+
+    // If ADO story, attempt to push comment to ADO in background
+    if (story.adoId) {
+      try {
+        await adoService.addWorkItemComment(story.adoId, trimmedComment);
+      } catch (err) {
+        console.warn('[ADO comment push note]:', err);
+      }
+    }
+
+    setTimeout(() => setSyncStatusMsg(null), 3000);
+  };
+
+  const applyStoryCommentTemplate = (type: 'all_passed' | 'partial' | 'blocked' | 'not_applicable') => {
+    let tpl = '';
+    if (type === 'all_passed') {
+      tpl = `Total Test Cases: 10 | Completed: 10 | Blocked: 0 | Failed: 0 | Open Defects: 0
+Execution Notes: All acceptance criteria and edge cases verified. 100% passed with zero defects.`;
+    } else if (type === 'partial') {
+      tpl = `Total Test Cases: 10 | Completed: 6 | Blocked: 0 | Failed: 0 | Open Defects: 0
+Execution Notes: QA verification in progress. Core flows passed; roaming & telemetry scenarios underway.`;
+    } else if (type === 'blocked') {
+      tpl = `Total Test Cases: 10 | Completed: 3 | Blocked: 2 | Failed: 1 | Open Defects: 1
+Execution Notes: Execution blocked due to network handshake timeout. Logged defect for investigation.`;
+    } else if (type === 'not_applicable') {
+      tpl = `Status: Not Applicable
+Remarks: Scope does not require QA testing. Backend schema sync verified via automated contract tests.`;
+    }
+    setStoryCommentInput(tpl);
   };
 
   const toggleCriteria = (id: string) => {
@@ -509,6 +690,28 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                             {story.iterationPath || release?.name}
                           </span>
                         )}
+
+                        {/* Comments & Test Notes Button */}
+                        {(() => {
+                          const commentsCount = story.comments?.length || (story.latestComment ? 1 : 0);
+                          const isCommentsOpen = expandedCommentsStoryId === story.id;
+                          return (
+                            <button
+                              onClick={() => handleOpenComments(story.id)}
+                              className={`text-[11px] font-semibold px-2 py-0.5 rounded-md flex items-center gap-1.5 cursor-pointer transition-all border ${
+                                isCommentsOpen
+                                  ? 'bg-[var(--primary)] text-white border-[var(--primary)] shadow-2xs'
+                                  : commentsCount > 0
+                                  ? 'bg-[var(--primary-light)] text-[var(--primary)] border-[var(--border)] hover:border-[var(--primary)]'
+                                  : 'bg-[var(--surface-hover)] text-[var(--text-muted)] border-[var(--border)] hover:text-[var(--text-primary)]'
+                              }`}
+                              title="View comments, log execution notes, or update test status"
+                            >
+                              <MessageSquare size={11} />
+                              <span>{commentsCount > 0 ? `${commentsCount} comment${commentsCount > 1 ? 's' : ''}` : 'Test Note'}</span>
+                            </button>
+                          );
+                        })()}
                       </div>
 
                       <h3 className="text-sm font-bold text-[var(--text-primary)] leading-snug">
@@ -577,7 +780,7 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
 
                       {/* Assessed Test Execution Status from Latest Comment / Tasks */}
                       {(() => {
-                        const assessed = assessStoryTestStatus(story, tasks);
+                        const assessed = assessStoryTestStatus(story, tasks, defects);
                         const hasMetrics = assessed.metrics.totalTestCases > 0 || assessed.metrics.completedTestCases > 0 || assessed.metrics.openDefects > 0;
                         const hasComment = Boolean(assessed.latestCommentText);
 
@@ -644,20 +847,205 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                             </div>
 
                             {assessed.latestCommentText && (
-                              <div className={`text-[11.5px] px-2.5 py-1.5 rounded-lg border leading-relaxed ${
-                                assessed.statusLabel === 'Blocked'
-                                  ? 'bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-300'
-                                  : assessed.statusLabel === 'Not Applicable'
-                                  ? 'bg-slate-500/10 border-slate-500/20 text-slate-700 dark:text-slate-300'
-                                  : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-secondary)]'
-                              }`}>
-                                <span className="font-semibold not-italic">Latest Execution Note: </span>
-                                <em>"{assessed.latestCommentText}"</em>
+                              <div
+                                onClick={() => handleOpenComments(story.id)}
+                                className={`text-[11.5px] px-2.5 py-1.5 rounded-lg border leading-relaxed cursor-pointer transition-all hover:opacity-90 ${
+                                  assessed.statusLabel === 'Blocked'
+                                    ? 'bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-300'
+                                    : assessed.statusLabel === 'Not Applicable'
+                                    ? 'bg-slate-500/10 border-slate-500/20 text-slate-700 dark:text-slate-300'
+                                    : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-secondary)]'
+                                }`}
+                                title="Click to view full comment discussion & update"
+                              >
+                                <div className="flex items-center justify-between gap-2 mb-0.5">
+                                  <span className="font-semibold text-[10.5px] uppercase tracking-wider text-[var(--primary)]">
+                                    {assessed.sourceDescription || 'Latest Execution Comment'}
+                                    {assessed.commentAuthor && ` by ${assessed.commentAuthor}`}:
+                                  </span>
+                                  <span className="text-[10px] text-[var(--text-muted)] underline">Edit / View</span>
+                                </div>
+                                <p className="italic">"{assessed.latestCommentText}"</p>
                               </div>
                             )}
                           </div>
                         );
                       })()}
+
+                      {/* Interactive Comments & Test Status Update Accordion */}
+                      {expandedCommentsStoryId === story.id && (
+                        <div className="mt-3 p-3.5 bg-[var(--surface-hover)] border border-[var(--border)] rounded-xl flex flex-col gap-3 animate-in fade-in duration-150">
+                          <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] pb-2.5">
+                            <div className="flex items-center gap-2 text-xs font-bold text-[var(--text-primary)]">
+                              <MessageSquare size={14} className="text-[var(--primary)]" />
+                              <span>User Story Discussion & Execution Comments</span>
+                              {story.comments && story.comments.length > 0 && (
+                                <span className="px-1.5 py-0.2 rounded-full bg-[var(--primary-light)] text-[var(--primary)] text-[10px]">
+                                  {story.comments.length}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              {story.adoId && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRefreshStoryComments(story)}
+                                  disabled={isRefreshingCommentsId === story.id}
+                                  className="px-2 py-1 text-[11px] font-semibold text-[var(--primary)] bg-[var(--surface)] border border-[var(--border)] hover:border-[var(--primary)] rounded-lg inline-flex items-center gap-1 cursor-pointer transition-all disabled:opacity-50"
+                                  title="Fetch live comments from Azure DevOps work item"
+                                >
+                                  <RefreshCw size={11} className={isRefreshingCommentsId === story.id ? 'animate-spin' : ''} />
+                                  <span>{isRefreshingCommentsId === story.id ? 'Syncing...' : 'Sync ADO'}</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setExpandedCommentsStoryId(null)}
+                                className="text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1 cursor-pointer"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          </div>
+
+                          {syncStatusMsg && syncStatusMsg.storyId === story.id && (
+                            <div className={`text-[11px] px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 ${
+                              syncStatusMsg.isError
+                                ? 'bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-300'
+                                : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                            }`}>
+                              <Check size={12} />
+                              <span>{syncStatusMsg.text}</span>
+                            </div>
+                          )}
+
+                          {/* Existing Comments List */}
+                          {story.comments && story.comments.length > 0 ? (
+                            <div className="flex flex-col gap-2 max-h-48 overflow-y-auto pr-1">
+                              {story.comments.map((c, idx) => (
+                                <div key={c.id || idx} className="p-2.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] flex flex-col gap-1 text-xs">
+                                  <div className="flex items-center justify-between text-[10.5px] text-[var(--text-muted)]">
+                                    <div className="flex items-center gap-1.5 font-semibold text-[var(--text-primary)]">
+                                      <User size={11} className="text-[var(--primary)]" />
+                                      <span>{c.author || 'Contributor'}</span>
+                                    </div>
+                                    {c.createdAt && (
+                                      <div className="flex items-center gap-1 text-[10px]">
+                                        <Clock size={10} />
+                                        <span>{c.createdAt.includes('T') ? new Date(c.createdAt).toLocaleDateString() + ' ' + new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : c.createdAt}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
+                                    {c.text}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-center py-2 text-xs text-[var(--text-muted)] italic">
+                              No comment history logged yet. Enter today's test execution notes below to update test metrics.
+                            </div>
+                          )}
+
+                          {/* Comment Input & Test Status Update Form */}
+                          <div className="pt-2 border-t border-[var(--border)] flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-1 flex-wrap">
+                              <span className="text-[11px] font-bold text-[var(--text-primary)] flex items-center gap-1">
+                                <Sparkles size={11} className="text-[var(--primary)]" />
+                                <span>Log Test Status / EOD Execution Note:</span>
+                              </span>
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() => applyStoryCommentTemplate('all_passed')}
+                                  className="px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 rounded-md hover:bg-emerald-500/20 cursor-pointer"
+                                >
+                                  ✅ 100% Passed
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => applyStoryCommentTemplate('partial')}
+                                  className="px-2 py-0.5 text-[10px] font-semibold bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/30 rounded-md hover:bg-blue-500/20 cursor-pointer"
+                                >
+                                  🔄 In Progress
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => applyStoryCommentTemplate('blocked')}
+                                  className="px-2 py-0.5 text-[10px] font-semibold bg-red-500/10 text-red-700 dark:text-red-300 border border-red-500/30 rounded-md hover:bg-red-500/20 cursor-pointer"
+                                >
+                                  ⛔ Blocked
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => applyStoryCommentTemplate('not_applicable')}
+                                  className="px-2 py-0.5 text-[10px] font-semibold bg-slate-500/10 text-slate-700 dark:text-slate-300 border border-slate-500/30 rounded-md hover:bg-slate-500/20 cursor-pointer"
+                                >
+                                  ⚪ N/A
+                                </button>
+                              </div>
+                            </div>
+
+                            <textarea
+                              rows={3}
+                              placeholder="e.g. Total Test Cases: 12 | Completed: 12 | Blocked: 0 | Failed: 0 | Open Defects: 0&#10;Execution Notes: Verified all test scenarios."
+                              value={storyCommentInput}
+                              onChange={(e) => setStoryCommentInput(e.target.value)}
+                              className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)] font-mono"
+                            />
+
+                            {/* Real-time Parsed Test Status Preview */}
+                            {storyCommentInput.trim() && (() => {
+                              const liveParsed = parseExecutionMetricsFromText(storyCommentInput);
+                              if (!liveParsed) return null;
+                              return (
+                                <div className="p-2 rounded-lg bg-[var(--surface)] border border-[var(--primary)]/30 flex items-center justify-between gap-2 text-xs flex-wrap">
+                                  <div className="flex items-center gap-1.5 font-bold text-[var(--primary)] text-[11px]">
+                                    <Activity size={12} />
+                                    <span>Live Assessment:</span>
+                                    {liveParsed.statusLabel && (
+                                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-[var(--primary-light)] text-[var(--primary)] border border-[var(--primary)]/30">
+                                        {liveParsed.statusLabel}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 text-[10.5px] font-mono">
+                                    <span className="text-blue-600">Total: {liveParsed.totalTestCases}</span>
+                                    <span className="text-emerald-600">Done: {liveParsed.completedTestCases}</span>
+                                    {liveParsed.blockedTestCases > 0 && <span className="text-red-600">Blocked: {liveParsed.blockedTestCases}</span>}
+                                    {liveParsed.failedTestCases > 0 && <span className="text-red-600">Failed: {liveParsed.failedTestCases}</span>}
+                                    {liveParsed.openDefects > 0 && <span className="text-amber-600">Defects: {liveParsed.openDefects}</span>}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+
+                            <div className="flex items-center justify-end gap-2 mt-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setExpandedCommentsStoryId(null);
+                                  setStoryCommentInput('');
+                                }}
+                                className="px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:bg-[var(--surface)] rounded-lg cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSaveStoryComment(story)}
+                                disabled={!storyCommentInput.trim()}
+                                className="px-4 py-1.5 text-xs font-bold text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] rounded-xl shadow-xs inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                              >
+                                <Send size={12} />
+                                <span>Save Comment & Update Status</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Interactive Embedded Task Tracker */}
                       <StoryBugTaskTracker
@@ -845,6 +1233,20 @@ export const UserStoriesView: React.FC<UserStoriesViewProps> = ({
                   placeholder="1. Real-time slot update pushes within 250ms&#10;2. Fallback to polling on disconnect&#10;3. Handles timezone offsets"
                   value={criteriaText}
                   onChange={(e) => setCriteriaText(e.target.value)}
+                  className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none font-mono text-[var(--text-primary)]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[var(--text-primary)] mb-1 flex items-center justify-between">
+                  <span>Initial Test Execution Note / Comment (Optional)</span>
+                  <span className="text-[10px] text-[var(--text-muted)]">Auto-updates test metrics</span>
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="e.g. Total Test Cases: 10 | Completed: 10 | Blocked: 0 | Failed: 0 | Open Defects: 0"
+                  value={modalInitialComment}
+                  onChange={(e) => setModalInitialComment(e.target.value)}
                   className="w-full text-xs px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none font-mono text-[var(--text-primary)]"
                 />
               </div>

@@ -3528,6 +3528,38 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       }
     }
 
+    // Enrich User Stories with live comments from Azure DevOps (concurrent batch requests)
+    try {
+      const commentPromises = fetchedStories.map(async (story) => {
+        if (!story.adoId) return;
+        try {
+          const cUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/workItems/${story.adoId}/comments?order=desc&$top=10&api-version=7.0`;
+          const cResp = await fetch(cUrl, { headers });
+          if (cResp.ok) {
+            const cData = await cResp.json();
+            const rawComments = cData.comments || [];
+            if (rawComments.length > 0) {
+              const mapped = rawComments.map(c => ({
+                id: `c-${c.id || Date.now()}`,
+                author: c.createdBy?.displayName || c.createdBy?.uniqueName || 'ADO User',
+                text: sanitizeAdoRichText(c.text || ''),
+                createdAt: c.createdDate || c.modifiedDate || new Date().toISOString()
+              }));
+              story.comments = mapped;
+              story.latestComment = mapped[0]?.text || '';
+              story.todayActivityComment = mapped[0]?.text || '';
+            }
+          }
+        } catch (cErr) {
+          // Silently skip if individual comment fetch fails
+        }
+      });
+
+      await Promise.allSettled(commentPromises);
+    } catch (enrichErr) {
+      console.warn('[Comments Enrichment note]:', enrichErr.message);
+    }
+
     return res.json({
       ok: true,
       stories: fetchedStories,
@@ -3634,6 +3666,131 @@ app.get('/api/ado/workitems/:id', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+});
+
+// 10b. Work Item Comments Fetch
+app.get('/api/ado/workitems/:id/comments', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { org, project, pat, top = 20 } = req.query;
+    const { cleanOrg, cleanProject, pat: effectivePat } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!cleanOrg || !effectivePat) {
+      return res.status(400).json({ ok: false, error: 'Org and Personal Access Token (PAT) are required.' });
+    }
+
+    const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+    if (!scopeCheck.allowed) {
+      return res.status(403).json({ ok: false, error: scopeCheck.reason });
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const headers = {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/json'
+    };
+    const commentsUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${id}/comments?order=desc&$top=${top}&api-version=7.0`;
+
+    let response = await fetch(commentsUrl, { headers });
+
+    if (!response.ok) {
+      // Try fallback to preview version
+      const fallbackUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${id}/comments?api-version=6.0-preview.3`;
+      response = await fetch(fallbackUrl, { headers });
+    }
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ ok: false, error: `ADO comments API returned HTTP ${response.status}: ${errText.slice(0, 200)}`, comments: [] });
+    }
+
+    const data = await response.json();
+    const rawComments = data.comments || [];
+    const mapped = rawComments.map(c => ({
+      id: `c-${c.id || Date.now()}`,
+      author: c.createdBy?.displayName || c.createdBy?.uniqueName || 'ADO User',
+      text: sanitizeAdoRichText(c.text || ''),
+      createdAt: c.createdDate || c.modifiedDate || new Date().toISOString()
+    }));
+
+    res.json({
+      ok: true,
+      comments: mapped,
+      latestComment: mapped[0]?.text || '',
+      totalCount: data.totalCount || mapped.length
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, comments: [] });
+  }
+});
+
+// 10c. Work Item Add Comment
+app.post('/api/ado/workitems/:id/comments', requirePermission('canEditWorkItems'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { org, project, pat, text } = req.body;
+    const { cleanOrg, cleanProject, pat: effectivePat } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!cleanOrg || !effectivePat || !text) {
+      return res.status(400).json({ ok: false, error: 'Org, PAT, and comment text are required.' });
+    }
+
+    const scopeCheck = checkScopeAccess(req.auth, cleanOrg, cleanProject);
+    if (!scopeCheck.allowed) {
+      return res.status(403).json({ ok: false, error: scopeCheck.reason });
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const commentsUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${id}/comments?api-version=7.0`;
+
+    const response = await fetch(commentsUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text })
+    });
+
+    if (!response.ok) {
+      // Fallback: update work item with System.History patch
+      const patchUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workitems/${id}?api-version=7.0`;
+      const patchResp = await fetch(patchUrl, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json-patch+json'
+        },
+        body: JSON.stringify([{ op: 'add', path: '/fields/System.History', value: text }])
+      });
+      if (!patchResp.ok) {
+        const errText = await response.text();
+        return res.status(response.status).json({ ok: false, error: `Failed to add comment: ${errText.slice(0, 200)}` });
+      }
+      return res.json({
+        ok: true,
+        comment: {
+          id: `c-${Date.now()}`,
+          author: req.auth.name || 'Current User',
+          text: sanitizeAdoRichText(text),
+          createdAt: new Date().toISOString()
+        }
+      });
+    }
+
+    const data = await response.json();
+    res.json({
+      ok: true,
+      comment: {
+        id: `c-${data.id || Date.now()}`,
+        author: data.createdBy?.displayName || req.auth.name || 'Current User',
+        text: sanitizeAdoRichText(data.text || text),
+        createdAt: data.createdDate || new Date().toISOString()
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 

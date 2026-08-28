@@ -1,4 +1,4 @@
-import { Task, UserStory, Defect, TestCase, ExecutionMetrics, TaskComment } from '../types';
+import { Task, UserStory, Defect, TestCase, ExecutionMetrics, TaskComment } from '../types/index.ts';
 
 /**
  * Strips HTML formatting from Azure DevOps work item comments
@@ -49,46 +49,90 @@ export function parseExecutionMetricsFromText(text?: string | null): ExecutionMe
   const isNotApplicable = 
     lowerClean.includes('not applicable') ||
     lowerClean.includes('n/a') ||
-    lowerClean.includes('na ') ||
+    /\bna\b/i.test(lowerClean) ||
     lowerClean.includes('status: na') ||
     lowerClean.includes('status: not applicable') ||
     lowerClean.includes('testing not applicable') ||
     lowerClean.includes('qa not applicable') ||
     lowerClean.includes('scope: not applicable') ||
     lowerClean.includes('no qa required') ||
-    lowerClean.includes('no test cases needed');
+    lowerClean.includes('no testing required') ||
+    lowerClean.includes('no test cases needed') ||
+    lowerClean.includes('not in qa scope');
 
   // Detect explicit 'Blocked' keywords
   const isExplicitBlocked =
     lowerClean.includes('status: blocked') ||
+    lowerClean.includes('test status: blocked') ||
     lowerClean.includes('testing blocked') ||
     lowerClean.includes('qa blocked') ||
     lowerClean.includes('blocked by defect') ||
     lowerClean.includes('blocked by bug') ||
     lowerClean.includes('blocked due to') ||
     lowerClean.includes('blocked by dependency') ||
-    lowerClean.includes('currently blocked');
+    lowerClean.includes('currently blocked') ||
+    lowerClean.includes('[blocked]');
+
+  // Detect explicit 'Passed' / 'Sign-off' keywords
+  const isExplicitPassed =
+    lowerClean.includes('status: passed') ||
+    lowerClean.includes('status: pass') ||
+    lowerClean.includes('status: qa passed') ||
+    lowerClean.includes('test status: passed') ||
+    lowerClean.includes('test status: pass') ||
+    lowerClean.includes('qa status: passed') ||
+    lowerClean.includes('qa status: pass') ||
+    lowerClean.includes('all test cases passed') ||
+    lowerClean.includes('all test scenarios passed') ||
+    lowerClean.includes('all verification criteria passed') ||
+    lowerClean.includes('all tests passed') ||
+    lowerClean.includes('100% passed') ||
+    lowerClean.includes('100% pass') ||
+    lowerClean.includes('qa sign-off complete') ||
+    lowerClean.includes('qa signed off') ||
+    lowerClean.includes('tested and verified') ||
+    lowerClean.includes('tested & verified') ||
+    lowerClean.includes('verification complete') ||
+    lowerClean.includes('verification passed') ||
+    lowerClean.includes('[passed]');
+
+  // Detect explicit 'Failed' keywords
+  const isExplicitFailed =
+    lowerClean.includes('status: failed') ||
+    lowerClean.includes('status: fail') ||
+    lowerClean.includes('test status: failed') ||
+    lowerClean.includes('qa status: failed') ||
+    lowerClean.includes('[failed]');
+
+  // Detect explicit 'In Progress' keywords
+  const isExplicitInProgress =
+    lowerClean.includes('status: in progress') ||
+    lowerClean.includes('test status: in progress') ||
+    lowerClean.includes('testing in progress') ||
+    lowerClean.includes('qa in progress') ||
+    lowerClean.includes('verification in progress') ||
+    lowerClean.includes('[in progress]');
 
   // Extract explicit Remarks or Activity notes
-  const remarksMatch = clean.match(/(?:remarks?|notes?|details?|reason|activity|execution notes?)\s*[:=]\s*([^|\n]+)/i);
+  const remarksMatch = clean.match(/(?:remarks?|notes?|details?|reason|activity|execution notes?|today activity)\s*[:=]\s*([^|\n;]+)/i);
   if (remarksMatch && remarksMatch[1]) {
     remarks = remarksMatch[1].trim();
   }
 
-  // 1. Structured Pipe/Colon Syntax (e.g. "Total Test Cases: 15 | Completed: 12 | Blocked: 1 | Failed: 2 | Open Defects: 2")
+  // 1. Structured Pipe/Colon/Comma/Newline Syntax (e.g. "Total Test Cases: 15 | Completed: 12 | Blocked: 1 | Failed: 2 | Open Defects: 2")
   const totalMatch = clean.match(/(?:total(?:\s+test(?:\s*cases?)?)?|test\s*cases?|scenarios?|tests|tc\s*total)\s*[:=]\s*(\d+)/i);
   if (totalMatch) {
     totalTestCases = parseInt(totalMatch[1], 10);
     matched = true;
   }
 
-  const completedMatch = clean.match(/(?:completed(?:\s+test(?:\s*cases?)?)?|executed|done|pass(?:\s*rate)?)\s*[:=]\s*(\d+)/i);
+  const completedMatch = clean.match(/(?:completed(?:\s+test(?:\s*cases?)?)?|executed(?:\s+test(?:\s*cases?)?)?|done|exec)\s*[:=]\s*(\d+)/i);
   if (completedMatch) {
     completedTestCases = parseInt(completedMatch[1], 10);
     matched = true;
   }
 
-  const passedMatch = clean.match(/(?:passed(?:\s+test(?:\s*cases?)?)?|pass)\s*[:=]\s*(\d+)/i);
+  const passedMatch = clean.match(/(?:passed(?:\s+test(?:\s*cases?)?)?|pass(?:es)?)\s*[:=]\s*(\d+)/i);
   if (passedMatch) {
     passedTestCases = parseInt(passedMatch[1], 10);
     if (!completedMatch) completedTestCases = passedTestCases;
@@ -101,7 +145,7 @@ export function parseExecutionMetricsFromText(text?: string | null): ExecutionMe
     matched = true;
   }
 
-  const failedMatch = clean.match(/(?:failed(?:\s+test(?:\s*cases?)?)?|failures?|fail)\s*[:=]\s*(\d+)/i);
+  const failedMatch = clean.match(/(?:failed(?:\s+test(?:\s*cases?)?)?|failures?|fail(?:s)?)\s*[:=]\s*(\d+)/i);
   if (failedMatch) {
     failedTestCases = parseInt(failedMatch[1], 10);
     matched = true;
@@ -157,6 +201,13 @@ export function parseExecutionMetricsFromText(text?: string | null): ExecutionMe
     }
   }
 
+  if (totalTestCases < completedTestCases) {
+    totalTestCases = completedTestCases + blockedTestCases;
+  }
+  if (!passedTestCases && completedTestCases >= failedTestCases) {
+    passedTestCases = Math.max(0, completedTestCases - failedTestCases);
+  }
+
   // Determine explicit Status Label
   if (isNotApplicable) {
     statusLabel = 'Not Applicable';
@@ -165,9 +216,19 @@ export function parseExecutionMetricsFromText(text?: string | null): ExecutionMe
     statusLabel = 'Blocked';
     if (!blockedTestCases) blockedTestCases = 1;
     matched = true;
-  } else if (failedTestCases > 0) {
+  } else if (isExplicitFailed || failedTestCases > 0) {
     statusLabel = 'Failed';
-  } else if (totalTestCases > 0 && completedTestCases >= totalTestCases && passedTestCases === totalTestCases) {
+    matched = true;
+  } else if (isExplicitPassed) {
+    statusLabel = 'Passed';
+    if (totalTestCases === 0) totalTestCases = Math.max(completedTestCases, 8);
+    if (completedTestCases === 0) completedTestCases = totalTestCases;
+    if (passedTestCases === 0) passedTestCases = completedTestCases;
+    matched = true;
+  } else if (isExplicitInProgress) {
+    statusLabel = 'In Progress';
+    matched = true;
+  } else if (totalTestCases > 0 && completedTestCases >= totalTestCases && passedTestCases === totalTestCases && failedTestCases === 0 && blockedTestCases === 0) {
     statusLabel = 'Passed';
   } else if (completedTestCases > 0 || totalTestCases > 0) {
     statusLabel = 'In Progress';
@@ -175,13 +236,6 @@ export function parseExecutionMetricsFromText(text?: string | null): ExecutionMe
 
   if (!matched && totalTestCases === 0 && completedTestCases === 0 && openDefects === 0 && !statusLabel) {
     return null;
-  }
-
-  if (totalTestCases < completedTestCases) {
-    totalTestCases = completedTestCases + blockedTestCases;
-  }
-  if (!passedTestCases && completedTestCases >= failedTestCases) {
-    passedTestCases = Math.max(0, completedTestCases - failedTestCases);
   }
 
   return {
@@ -192,11 +246,83 @@ export function parseExecutionMetricsFromText(text?: string | null): ExecutionMe
     failedTestCases,
     openDefects,
     statusLabel,
-    remarks: remarks || (isNotApplicable ? 'Not Applicable for Testing' : isExplicitBlocked ? 'Execution Blocked' : undefined),
+    remarks: remarks || (isNotApplicable ? 'Not Applicable for Testing' : isExplicitBlocked ? 'Execution Blocked' : isExplicitPassed ? 'All scenarios validated' : undefined),
     notes: clean.slice(0, 300),
     source: 'parsed',
     assessedAt: new Date().toISOString()
   };
+}
+
+export interface LatestCommentDetail {
+  text: string;
+  author?: string;
+  createdAt?: string;
+  id?: string;
+}
+
+/**
+ * Returns detailed latest comment information from an item, prioritizing chronological newest
+ */
+export function getLatestCommentDetail(item?: {
+  comments?: TaskComment[];
+  latestComment?: string;
+  todayActivityComment?: string;
+  standupDiscussionNotes?: string;
+  assigneeName?: string;
+} | null): LatestCommentDetail | null {
+  if (!item) return null;
+
+  // 1. If comments array exists, find the latest comment by createdAt or last element
+  if (item.comments && item.comments.length > 0) {
+    // Sort comments by timestamp if parseable, otherwise preserve order (last is newest)
+    const sorted = [...item.comments].sort((a, b) => {
+      const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      if (timeA && timeB && !isNaN(timeA) && !isNaN(timeB)) {
+        return timeA - timeB;
+      }
+      return 0; // maintain insertion order
+    });
+
+    const newest = sorted[sorted.length - 1];
+    if (newest && newest.text && newest.text.trim()) {
+      return {
+        id: newest.id,
+        text: cleanAdoHtml(newest.text.trim()),
+        author: newest.author || item.assigneeName,
+        createdAt: newest.createdAt
+      };
+    }
+  }
+
+  // 2. Today Activity Comment
+  if (item.todayActivityComment && item.todayActivityComment.trim()) {
+    return {
+      text: cleanAdoHtml(item.todayActivityComment.trim()),
+      author: item.assigneeName,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  // 3. latestComment field
+  if (item.latestComment && item.latestComment.trim()) {
+    return {
+      text: cleanAdoHtml(item.latestComment.trim()),
+      author: item.assigneeName,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  // 4. standupDiscussionNotes
+  if (item.standupDiscussionNotes && item.standupDiscussionNotes.trim()) {
+    return {
+      text: cleanAdoHtml(item.standupDiscussionNotes.trim()),
+      author: item.assigneeName,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -208,28 +334,8 @@ export function getLatestCommentText(item?: {
   todayActivityComment?: string;
   standupDiscussionNotes?: string;
 } | null): string {
-  if (!item) return '';
-
-  if (item.todayActivityComment && item.todayActivityComment.trim()) {
-    return cleanAdoHtml(item.todayActivityComment.trim());
-  }
-
-  if (item.latestComment && item.latestComment.trim()) {
-    return cleanAdoHtml(item.latestComment.trim());
-  }
-
-  if (item.comments && item.comments.length > 0) {
-    const last = item.comments[item.comments.length - 1];
-    if (last && last.text && last.text.trim()) {
-      return cleanAdoHtml(last.text.trim());
-    }
-  }
-
-  if (item.standupDiscussionNotes && item.standupDiscussionNotes.trim()) {
-    return cleanAdoHtml(item.standupDiscussionNotes.trim());
-  }
-
-  return '';
+  const detail = getLatestCommentDetail(item as any);
+  return detail ? detail.text : '';
 }
 
 /**
@@ -358,22 +464,46 @@ export function assessStoryTestStatus(
   const latestTask = sortedTasks[0];
   const isTaskClosedToday = todayTasks.some(t => t.status === 'complete');
 
-  // 2. Extract latest comment text: first priority is latest linked task's comment for today's activity, then story's own latest comment
-  let taskCommentText = '';
-  let taskAuthor: string | undefined;
+  // 2. Extract latest comment: compare User Story direct comments vs linked Task comments to find the most recent
+  const storyDetail = getLatestCommentDetail(story as any);
+  const taskDetail = latestTask ? getLatestCommentDetail(latestTask as any) : null;
 
-  if (latestTask) {
-    taskCommentText = getLatestCommentText(latestTask);
-    if (latestTask.comments && latestTask.comments.length > 0) {
-      taskAuthor = latestTask.comments[latestTask.comments.length - 1]?.author;
+  let winningDetail: LatestCommentDetail | null = null;
+  let sourceKind: 'story_comment' | 'task_comment' | 'preconfigured' | 'manual' = 'story_comment';
+
+  if (storyDetail && taskDetail) {
+    const storyTime = storyDetail.createdAt ? new Date(storyDetail.createdAt).getTime() : 0;
+    const taskTime = taskDetail.createdAt ? new Date(taskDetail.createdAt).getTime() : 0;
+
+    const storyParsed = parseExecutionMetricsFromText(storyDetail.text);
+    const taskParsed = parseExecutionMetricsFromText(taskDetail.text);
+
+    // If story has explicit metrics and task does not, prioritize story
+    if (storyParsed && !taskParsed) {
+      winningDetail = storyDetail;
+      sourceKind = 'story_comment';
+    } else if (taskParsed && !storyParsed) {
+      winningDetail = taskDetail;
+      sourceKind = 'task_comment';
+    } else if (storyTime >= taskTime || isNaN(taskTime)) {
+      winningDetail = storyDetail;
+      sourceKind = 'story_comment';
+    } else {
+      winningDetail = taskDetail;
+      sourceKind = 'task_comment';
     }
+  } else if (storyDetail) {
+    winningDetail = storyDetail;
+    sourceKind = 'story_comment';
+  } else if (taskDetail) {
+    winningDetail = taskDetail;
+    sourceKind = 'task_comment';
   }
 
-  const storyCommentText = getLatestCommentText(story);
-  const effectiveComment = taskCommentText || storyCommentText || '';
-  const commentAuthor = taskAuthor || (story.comments && story.comments.length > 0 ? story.comments[story.comments.length - 1]?.author : story.assigneeName);
+  const effectiveComment = winningDetail ? winningDetail.text : '';
+  const commentAuthor = winningDetail ? (winningDetail.author || story.assigneeName) : story.assigneeName;
 
-  // 3. Parse execution metrics from comment
+  // 3. Parse execution metrics from the most recent comment
   const parsedFromComment = parseExecutionMetricsFromText(effectiveComment);
 
   // 4. Ground-truth fallback from linked test cases and defects if available
@@ -392,11 +522,11 @@ export function assessStoryTestStatus(
   if (parsedFromComment) {
     finalMetrics = {
       ...parsedFromComment,
-      source: latestTask ? 'task_comment' : 'story_comment'
+      source: sourceKind
     };
-    sourceDescription = latestTask 
-      ? `Assessed from Task #${latestTask.adoId || latestTask.id.slice(0, 6)} latest execution comment`
-      : `Assessed from User Story latest discussion comment`;
+    sourceDescription = sourceKind === 'story_comment'
+      ? `Assessed from User Story latest comment`
+      : `Assessed from Task #${latestTask?.adoId || latestTask?.id?.slice(0, 6)} latest execution comment`;
   } else if (story.executionMetrics) {
     finalMetrics = { ...story.executionMetrics };
     sourceDescription = 'Pre-configured execution metrics';
