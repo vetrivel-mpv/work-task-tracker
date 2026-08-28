@@ -373,47 +373,6 @@ export const adoService = {
     }
   },
 
-  async getWorkItemComments(id: number | string, params?: { org?: string; project?: string; pat?: string; top?: number }): Promise<{ ok: boolean; comments?: any[]; latestComment?: string; totalCount?: number; error?: string }> {
-    try {
-      const query = new URLSearchParams();
-      if (params?.org) query.set('org', params.org);
-      if (params?.project) query.set('project', params.project);
-      if (params?.pat) query.set('pat', params.pat);
-      if (params?.top) query.set('top', String(params.top));
-
-      const qs = query.toString();
-      const res = await fetch(`/api/ado/workitems/${id}/comments${qs ? `?${qs}` : ''}`, {
-        headers: {
-          ...getAuthHeaders()
-        }
-      });
-      return await res.json();
-    } catch (err: any) {
-      return { ok: false, error: err.message, comments: [] };
-    }
-  },
-
-  async addWorkItemComment(id: number | string, text: string, params?: { org?: string; project?: string; pat?: string }): Promise<{ ok: boolean; comment?: any; error?: string }> {
-    try {
-      const res = await fetch(`/api/ado/workitems/${id}/comments`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders()
-        },
-        body: JSON.stringify({
-          text,
-          org: params?.org,
-          project: params?.project,
-          pat: params?.pat
-        })
-      });
-      return await res.json();
-    } catch (err: any) {
-      return { ok: false, error: err.message };
-    }
-  },
-
   async proxyRequest(endpoint: string, options?: {
     method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
     data?: any;
