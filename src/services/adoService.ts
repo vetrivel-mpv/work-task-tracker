@@ -437,6 +437,51 @@ export const adoService = {
     }
   },
 
+  async getWorkItemComments(
+    id: number | string,
+    options?: { org?: string; project?: string; pat?: string }
+  ): Promise<{ ok: boolean; comments?: Array<{ id: string | number; text: string; author?: string; createdAt?: string }>; error?: string }> {
+    try {
+      const q = new URLSearchParams();
+      if (options?.org) q.set('org', options.org);
+      if (options?.project) q.set('project', options.project);
+      if (options?.pat) q.set('pat', options.pat);
+
+      const url = `/api/ado/workitems/${id}/comments${q.toString() ? `?${q.toString()}` : ''}`;
+      const res = await fetch(url, {
+        headers: getAuthHeaders()
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  },
+
+  async addWorkItemComment(
+    id: number | string,
+    text: string,
+    options?: { org?: string; project?: string; pat?: string }
+  ): Promise<{ ok: boolean; comment?: any; error?: string }> {
+    try {
+      const res = await fetch(`/api/ado/workitems/${id}/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({
+          text,
+          org: options?.org,
+          project: options?.project,
+          pat: options?.pat
+        })
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  },
+
   getStoredDiagnostics(): AdoSyncDiagnosticRecord[] {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);

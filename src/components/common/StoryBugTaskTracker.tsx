@@ -18,11 +18,13 @@ import {
   MessageSquare,
   Sparkles,
   Send,
-  CheckCheck
+  CheckCheck,
+  RefreshCw
 } from 'lucide-react';
 import { generateId, toDateStr } from '../../utils/date';
 import { getWorkItemAssignee } from '../../utils/assigneeUtils';
 import { parseExecutionMetricsFromText, getLatestCommentText } from '../../utils/executionCommentParser';
+import { adoService } from '../../services/adoService';
 
 interface StoryBugTaskTrackerProps {
   parentType: 'story' | 'bug';
@@ -64,6 +66,7 @@ export const StoryBugTaskTracker: React.FC<StoryBugTaskTrackerProps> = ({
   const [activeCommentTaskId, setActiveCommentTaskId] = useState<string | null>(null);
   const [commentInput, setCommentInput] = useState('');
   const [closeOnComment, setCloseOnComment] = useState(true);
+  const [syncingTaskId, setSyncingTaskId] = useState<string | null>(null);
 
   // Find all child tasks linked to this User Story or Bug
   const childTasks = tasks.filter(t => {
@@ -82,6 +85,37 @@ export const StoryBugTaskTracker: React.FC<StoryBugTaskTrackerProps> = ({
   const closedTasks = childTasks.filter(t => t.status === 'complete').length;
   const openTasks = totalTasks - closedTasks;
   const progressPercent = totalTasks > 0 ? Math.round((closedTasks / totalTasks) * 100) : 0;
+
+  const handleRefreshTaskComments = async (task: Task) => {
+    if (!task.adoId || !onUpdateTask) return;
+    setSyncingTaskId(task.id);
+    try {
+      const res = await adoService.getWorkItemComments(task.adoId);
+      if (res.ok && Array.isArray(res.comments)) {
+        const mappedComments: TaskComment[] = res.comments.map(c => ({
+          id: String(c.id || Date.now()),
+          author: c.author || task.assigneeName || 'Engineer',
+          text: c.text,
+          createdAt: c.createdAt || new Date().toISOString()
+        }));
+
+        const latestTxt = mappedComments[0]?.text || '';
+        const metrics = latestTxt ? parseExecutionMetricsFromText(latestTxt) : null;
+
+        onUpdateTask({
+          ...task,
+          comments: mappedComments,
+          latestComment: latestTxt || task.latestComment,
+          todayActivityComment: latestTxt || task.todayActivityComment,
+          executionMetrics: metrics || task.executionMetrics
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to fetch task comments from ADO:', e);
+    } finally {
+      setSyncingTaskId(null);
+    }
+  };
 
   const handleCreateTask = (e: React.FormEvent) => {
     e.preventDefault();
@@ -138,7 +172,7 @@ export const StoryBugTaskTracker: React.FC<StoryBugTaskTrackerProps> = ({
       createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    const updatedComments = [...(task.comments || []), newComment];
+    const updatedComments = [newComment, ...(task.comments || [])];
     const metrics = parseExecutionMetricsFromText(commentInput);
 
     const updatedTask: Task = {
@@ -154,6 +188,13 @@ export const StoryBugTaskTracker: React.FC<StoryBugTaskTrackerProps> = ({
     onUpdateTask(updatedTask);
     setActiveCommentTaskId(null);
     setCommentInput('');
+
+    // If task has adoId, also post comment to Azure DevOps
+    if (task.adoId) {
+      adoService.addWorkItemComment(task.adoId, commentInput.trim()).catch(e => {
+        console.warn('Could not post task comment to ADO:', e);
+      });
+    }
   };
 
   const applyExecutionTemplate = (templateType: 'all_passed' | 'partial' | 'blocked' | 'not_applicable') => {
@@ -426,6 +467,20 @@ export const StoryBugTaskTracker: React.FC<StoryBugTaskTrackerProps> = ({
                         <span className="text-[10px] text-[var(--text-muted)] italic hidden sm:inline">
                           Unassigned
                         </span>
+                      )}
+
+                      {/* Sync ADO comments button */}
+                      {task.adoId && onUpdateTask && (
+                        <button
+                          type="button"
+                          disabled={syncingTaskId === task.id}
+                          onClick={() => handleRefreshTaskComments(task)}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-semibold text-[var(--primary)] bg-[var(--primary-light)] hover:bg-[var(--primary)] hover:text-white transition-all cursor-pointer disabled:opacity-50"
+                          title="Fetch latest task comments from Azure DevOps"
+                        >
+                          <RefreshCw size={10} className={syncingTaskId === task.id ? 'animate-spin' : ''} />
+                          <span className="hidden sm:inline">{syncingTaskId === task.id ? 'Syncing...' : 'Sync ADO'}</span>
+                        </button>
                       )}
 
                       {/* Log EOD Execution Comment button */}

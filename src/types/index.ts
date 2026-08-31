@@ -532,6 +532,7 @@ export type LayoutDensity = 'compact' | 'comfortable';
 export type EmailTemplateType = 
   | 'daily_standup'
   | 'system_testing_daily'
+  | 'client_qa_status'
   | 'dev_to_dev_integration'
   | 'qa_gate'
   | 'executive_pulse'

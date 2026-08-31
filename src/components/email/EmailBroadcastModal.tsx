@@ -25,6 +25,7 @@ import {
   Bug,
   ListTodo,
   ShieldCheck,
+  ShieldAlert,
   Sparkle
 } from 'lucide-react';
 import { AppState, EmailTemplateType, EmailScheduleConfig, EmailDispatchLog } from '../../types';
@@ -64,14 +65,12 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
   // Map legacy tab names to EmailTemplateType
   const resolveInitialTemplate = (): EmailTemplateType => {
     if (initialTemplate) return initialTemplate;
-    if (initialTab === 'system_testing' || initialTab === 'system_testing_daily' || initialTab === 'system-testing') return 'system_testing_daily';
-    if (initialTab === 'dev_to_dev' || initialTab === 'dev_to_dev_integration' || initialTab === 'integration') return 'dev_to_dev_integration';
-    if (initialTab === 'qa') return 'qa_gate';
-    if (initialTab === 'dashboard') return 'executive_pulse';
-    if (initialTab === 'capacity' || initialTab === 'resource') return 'resource_capacity';
+    if (initialTab === 'standup') return 'daily_standup';
+    if (initialTab === 'status') return 'client_qa_status';
+    if (initialTab === 'system_testing' || initialTab === 'ai_report') return 'system_testing_daily';
     if (initialTab === 'defect') return 'defect_escalation';
-    if (initialTab === 'signoff' || initialTab === 'release') return 'release_signoff';
-    return 'system_testing_daily';
+    if (initialTab === 'retro') return 'release_signoff';
+    return 'client_qa_status';
   };
 
   const [selectedTemplate, setSelectedTemplate] = useState<EmailTemplateType>(resolveInitialTemplate);
@@ -81,13 +80,15 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
   const [selectedDefectId, setSelectedDefectId] = useState<string>(
     initialDefectId || state.defects[0]?.id || ''
   );
+  const [deliveryDeadline, setDeliveryDeadline] = useState<string>('Monday Delivery');
   const [activeViewMode, setActiveViewMode] = useState<'preview' | 'markdown' | 'schedules' | 'logs'>('preview');
 
   // Generated email bundle
   const [emailData, setEmailData] = useState<EmailRenderOutput>(() =>
     generateEmailByType(resolveInitialTemplate(), state, {
       releaseId: initialReleaseId || state.selectedReleaseId || undefined,
-      defectId: initialDefectId
+      defectId: initialDefectId,
+      deliveryTargetDate: 'Monday Delivery'
     })
   );
 
@@ -231,7 +232,8 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
     } else {
       const rendered = generateEmailByType(selectedTemplate, state, {
         releaseId: selectedReleaseId || undefined,
-        defectId: selectedDefectId || undefined
+        defectId: selectedDefectId || undefined,
+        deliveryTargetDate: deliveryDeadline
       });
       setEmailData(rendered);
       setCustomSubject(rendered.subject);
@@ -241,11 +243,18 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
       setAiDraftMetrics(null);
       setAiDraftModel(null);
     }
-  }, [selectedTemplate, selectedReleaseId, selectedDefectId]);
+  }, [selectedTemplate, selectedReleaseId, selectedDefectId, deliveryDeadline]);
 
   if (!isOpen) return null;
 
   const templatesList: { type: EmailTemplateType; title: string; desc: string; icon: React.FC<{ size?: number; className?: string }>; badge?: string }[] = [
+    {
+      type: 'client_qa_status',
+      title: 'Client QA Status & Blockers',
+      desc: 'Client-facing report: story-by-story blockers, delivery readiness & where we stand',
+      icon: ShieldAlert,
+      badge: 'Client Ready'
+    },
     {
       type: 'system_testing_daily',
       title: 'System Testing Daily Report',
@@ -527,10 +536,15 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                 Context Parameters
               </label>
 
-              {(selectedTemplate === 'system_testing_daily' || selectedTemplate === 'dev_to_dev_integration' || selectedTemplate === 'qa_gate' || selectedTemplate === 'release_signoff') && (
+              {(selectedTemplate === 'client_qa_status' || selectedTemplate === 'system_testing_daily' || selectedTemplate === 'dev_to_dev_integration' || selectedTemplate === 'qa_gate' || selectedTemplate === 'release_signoff') && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] font-semibold text-[var(--text-secondary)]">Target Release</label>
+                    {selectedTemplate === 'client_qa_status' && (
+                      <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">
+                        {state.userStories.length} stories &bull; {state.defects.length} bugs
+                      </span>
+                    )}
                     {selectedTemplate === 'system_testing_daily' && (
                       <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
                         {state.tasks.length} tasks &bull; {state.defects.length} bugs
@@ -548,6 +562,44 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                       </option>
                     ))}
                   </select>
+                </div>
+              )}
+
+              {selectedTemplate === 'client_qa_status' && (
+                <div className="bg-amber-500/10 border border-amber-500/25 p-3 rounded-xl flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
+                      <ShieldAlert size={13} className="text-amber-600" />
+                      <span>Delivery Target / Deadline</span>
+                    </label>
+                    <span className="text-[10px] text-amber-700 dark:text-amber-400 font-semibold">Client Target</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={deliveryDeadline}
+                    onChange={(e) => setDeliveryDeadline(e.target.value)}
+                    placeholder="e.g. Monday Delivery (Aug 31)"
+                    className="w-full text-xs font-semibold px-2.5 py-1.5 bg-[var(--surface)] border border-amber-500/30 rounded-lg text-[var(--text-primary)] outline-none"
+                  />
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setDeliveryDeadline('Monday Delivery')}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-amber-500/20 text-amber-800 dark:text-amber-200 rounded hover:bg-amber-500/30 cursor-pointer"
+                    >
+                      ⚡ Monday Delivery
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const activeRel = state.releases.find(r => r.id === selectedReleaseId);
+                        if (activeRel?.targetDate) setDeliveryDeadline(`Target: ${formatLongDate(activeRel.targetDate)}`);
+                      }}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-[var(--surface)] border border-[var(--border)] text-[var(--text-secondary)] rounded hover:bg-[var(--surface-hover)] cursor-pointer"
+                    >
+                      📅 Release Target Date
+                    </button>
+                  </div>
                 </div>
               )}
 

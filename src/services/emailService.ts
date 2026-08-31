@@ -640,6 +640,460 @@ export function buildSystemTestingDailyReport(state: AppState, releaseId?: strin
 }
 
 // -------------------------------------------------------------
+// 2b. CLIENT QA TEST STATUS & DELIVERY BLOCKERS REPORT (EXECUTIVE CLIENT FORMAT)
+// -------------------------------------------------------------
+export function buildClientQaStatusEmail(
+  state: AppState, 
+  releaseId?: string,
+  customDeliveryDate?: string
+): EmailRenderOutput {
+  const appName = state.settings?.appName || 'ACM Delivery';
+  const clientName = state.settings?.clientName || 'AT&T';
+  const dateFormatted = formatLongDate(state.dateStr);
+  const targetRelId = releaseId || state.selectedReleaseId;
+  const currentRelease = state.releases.find(r => r.id === targetRelId) || state.releases[0];
+  const releaseName = currentRelease ? formatReleaseDisplayName(currentRelease.name, currentRelease.releaseNumber) : 'Active Sprint Release';
+  
+  // Delivery deadline (e.g. "Monday Delivery" or Release Target Date)
+  const deliveryDeadline = customDeliveryDate || (currentRelease?.targetDate ? formatLongDate(currentRelease.targetDate) : 'Upcoming Monday Delivery');
+
+  // Filter stories belonging to this release
+  const relStories = currentRelease 
+    ? state.userStories.filter(s => s.releaseId === currentRelease.id || (currentRelease.iterationPath && s.iterationPath === currentRelease.iterationPath))
+    : state.userStories;
+
+  const storiesList = relStories.length > 0 ? relStories : state.userStories;
+
+  // Filter defects and test cases
+  const relDefects = state.defects.filter(d => 
+    d.status !== 'Closed' && 
+    (currentRelease ? (d.releaseId === currentRelease.id || (currentRelease.iterationPath && d.iterationPath === currentRelease.iterationPath)) : true)
+  );
+
+  const relTasks = currentRelease
+    ? state.tasks.filter(t => t.releaseId === currentRelease.id || (t.userStoryId && relStories.some(s => s.id === t.userStoryId)))
+    : state.tasks;
+
+  const relTestCases = currentRelease
+    ? state.testCases.filter(tc => tc.releaseId === currentRelease.id || (tc.userStoryId && relStories.some(s => s.id === tc.userStoryId)))
+    : state.testCases;
+
+  // Assess each story with complete execution details and blocker identification
+  const storyRows = storiesList.map(story => {
+    const devAssignee = state.team.find(t => t.id === story.assigneeId)?.name || story.assigneeName || 'Dev Unassigned';
+    
+    // Assess story status from execution comment parser & tasks
+    const assessed = assessStoryTestStatus(story, relTasks, relDefects, relTestCases, state.dateStr);
+
+    const linkedDefects = relDefects.filter(d => 
+      d.userStoryId === story.id || 
+      (story.adoId && d.userStoryId === String(story.adoId))
+    );
+
+    const criticalDefects = linkedDefects.filter(d => d.severity === 'critical' || d.severity === 'high');
+
+    const totalTc = assessed.metrics.totalTestCases;
+    const passedTc = assessed.metrics.passedTestCases;
+    const failedTc = assessed.metrics.failedTestCases;
+    const blockedTc = assessed.metrics.blockedTestCases;
+    const executedTc = assessed.metrics.completedTestCases;
+    const executionPct = assessed.executionPct;
+
+    // Determine testing status
+    let testingStatus: 'PASSED' | 'IN TESTING' | 'BLOCKED' | 'NOT APPLICABLE' | 'QA READY' | 'PENDING DEV' = 'PENDING DEV';
+    let isBlocked = false;
+
+    if (assessed.statusLabel === 'Not Applicable') {
+      testingStatus = 'NOT APPLICABLE';
+    } else if (assessed.statusLabel === 'Blocked' || story.status === 'Blocked' || criticalDefects.length > 0 || blockedTc > 0) {
+      testingStatus = 'BLOCKED';
+      isBlocked = true;
+    } else if (assessed.statusLabel === 'Passed' || story.status === 'QA Passed' || story.status === 'Done') {
+      testingStatus = 'PASSED';
+    } else if (assessed.statusLabel === 'Failed' || failedTc > 0) {
+      testingStatus = 'IN TESTING';
+      if (failedTc > 0 && criticalDefects.length > 0) isBlocked = true;
+    } else if (assessed.statusLabel === 'In Progress' || story.status === 'QA In Progress') {
+      testingStatus = 'IN TESTING';
+    } else if (story.status === 'QA Ready') {
+      testingStatus = 'QA READY';
+    } else {
+      testingStatus = 'PENDING DEV';
+    }
+
+    const qaAssignee = assessed.commentAuthor || 
+      state.testCases.find(tc => tc.userStoryId === story.id)?.assigneeName || 
+      state.team.find(t => t.role === 'QA Engineer' || String(t.role).includes('QA'))?.name || 
+      'QA Lead';
+
+    // Formulate explicit Blocker & Where We Stand details
+    let blockerText = '';
+    let blockerSeverity: 'CRITICAL' | 'HIGH' | 'NONE' = 'NONE';
+
+    if (isBlocked) {
+      blockerSeverity = criticalDefects.some(d => d.severity === 'critical') ? 'CRITICAL' : 'HIGH';
+      if (criticalDefects.length > 0) {
+        const defectSummaries = criticalDefects.map(d => `[DEF-${d.adoId || d.id}] ${d.title} (Assigned: ${state.team.find(t => t.id === d.assigneeId)?.name || 'Unassigned'})`).join('; ');
+        blockerText = `Blocked by open defect(s): ${defectSummaries}`;
+      } else if (assessed.latestCommentText) {
+        blockerText = assessed.latestCommentText.startsWith('BLOCKED') ? assessed.latestCommentText : `Impediment: ${assessed.latestCommentText}`;
+      } else {
+        blockerText = `Testing blocked due to dependency / environment issue. Dev resolution needed.`;
+      }
+    } else if (testingStatus === 'IN TESTING') {
+      if (assessed.latestCommentText) {
+        blockerText = `In progress: ${assessed.latestCommentText}`;
+      } else {
+        blockerText = `Active test execution in progress (${passedTc}/${totalTc} test cases passed). Zero hard blockers.`;
+      }
+    } else if (testingStatus === 'QA READY') {
+      blockerText = `Dev complete. Pending QA execution bandwidth.`;
+    } else if (testingStatus === 'PENDING DEV') {
+      blockerText = `In active development. Not yet handed over to QA.`;
+    } else if (testingStatus === 'NOT APPLICABLE') {
+      blockerText = `Scope excluded from QA verification.`;
+    } else {
+      blockerText = `Clean & verified. Zero blockers.`;
+    }
+
+    // Delivery Impact
+    let deliveryImpact = 'On Track';
+    let impactColor = '#16a34a';
+    if (isBlocked) {
+      deliveryImpact = 'BLOCKS DELIVERY';
+      impactColor = '#dc2626';
+    } else if (testingStatus === 'PENDING DEV' || testingStatus === 'QA READY') {
+      deliveryImpact = 'At Risk (Pending QA)';
+      impactColor = '#d97706';
+    } else if (testingStatus === 'IN TESTING') {
+      deliveryImpact = 'Underway';
+      impactColor = '#2563eb';
+    }
+
+    return {
+      story,
+      devAssignee,
+      qaAssignee,
+      totalTc,
+      executedTc,
+      passedTc,
+      failedTc,
+      blockedTc,
+      executionPct,
+      testingStatus,
+      isBlocked,
+      blockerText,
+      blockerSeverity,
+      deliveryImpact,
+      impactColor,
+      linkedDefects,
+      criticalDefects
+    };
+  });
+
+  // Roll-up statistics
+  const totalStories = storyRows.length;
+  const passedStories = storyRows.filter(r => r.testingStatus === 'PASSED').length;
+  const inTestingStories = storyRows.filter(r => r.testingStatus === 'IN TESTING').length;
+  const blockedStories = storyRows.filter(r => r.isBlocked).length;
+  const pendingStories = storyRows.filter(r => r.testingStatus === 'PENDING DEV' || r.testingStatus === 'QA READY').length;
+
+  const totalTcSum = storyRows.reduce((acc, r) => acc + r.totalTc, 0);
+  const executedTcSum = storyRows.reduce((acc, r) => acc + r.executedTc, 0);
+  const passedTcSum = storyRows.reduce((acc, r) => acc + r.passedTc, 0);
+  const failedTcSum = storyRows.reduce((acc, r) => acc + r.failedTc, 0);
+  const blockedTcSum = storyRows.reduce((acc, r) => acc + r.blockedTc, 0);
+
+  const storyPassPct = totalStories > 0 ? Math.round((passedStories / totalStories) * 100) : 0;
+  const tcExecutionPct = totalTcSum > 0 ? Math.round((executedTcSum / totalTcSum) * 100) : 0;
+
+  const criticalDefectList = relDefects.filter(d => d.severity === 'critical' || d.severity === 'high');
+  const totalOpenDefects = relDefects.length;
+
+  // Overall Delivery Health Verdict
+  let overallVerdict = 'DELIVERY READY';
+  let verdictBg = '#f0fdf4';
+  let verdictBorder = '#bbf7d0';
+  let verdictColor = '#16a34a';
+  let verdictDescription = `All ${totalStories} deliverables have passed QA verification with zero open blockers. Delivery is fully on track.`;
+
+  if (blockedStories > 0 || criticalDefectList.length > 0) {
+    overallVerdict = 'DELIVERY AT HIGH RISK — UNRESOLVED BLOCKERS';
+    verdictBg = '#fef2f2';
+    verdictBorder = '#fecaca';
+    verdictColor = '#dc2626';
+    verdictDescription = `Critical attention required: Target delivery (${deliveryDeadline}) is at risk. There are currently ${blockedStories} blocked user stories and ${criticalDefectList.length} open P0/P1 defects requiring urgent dev triage and resolution.`;
+  } else if (storyPassPct < 100 || inTestingStories > 0 || pendingStories > 0) {
+    overallVerdict = 'IN PROGRESS — PENDING QA COMPLETION';
+    verdictBg = '#fffbeb';
+    verdictBorder = '#fde68a';
+    verdictColor = '#d97706';
+    verdictDescription = `Testing is underway (${storyPassPct}% passed). ${inTestingStories + pendingStories} user stories are still undergoing verification or pending final sign-off prior to ${deliveryDeadline}.`;
+  }
+
+  const subject = `[QA Status & Delivery Risk Report] ${appName} — ${releaseName}: ${overallVerdict.split('—')[0].trim()} | Target: ${deliveryDeadline}`;
+
+  // Markdown (Text Format)
+  let md = `CLIENT QA TEST STATUS & DELIVERY READINESS REPORT\n`;
+  md += `======================================================================\n`;
+  md += `Project / Client: ${appName} (${clientName})\n`;
+  md += `Release Target:   ${releaseName}\n`;
+  md += `Delivery Target:  ${deliveryDeadline}\n`;
+  md += `Report Date:      ${dateFormatted}\n`;
+  md += `OVERALL STATUS:   ${overallVerdict}\n`;
+  md += `======================================================================\n\n`;
+
+  md += `EXECUTIVE SUMMARY & WHERE WE STAND:\n`;
+  md += `----------------------------------------------------------------------\n`;
+  md += `* Delivery Verdict:     ${verdictDescription}\n`;
+  md += `* User Story Status:    ${passedStories}/${totalStories} Passed (${storyPassPct}%) | ${blockedStories} Blocked | ${inTestingStories} In Testing | ${pendingStories} Pending\n`;
+  md += `* Test Scenarios:       ${passedTcSum}/${totalTcSum} Passed (${tcExecutionPct}% Executed, ${failedTcSum} Failed, ${blockedTcSum} Blocked)\n`;
+  md += `* Open Defects:         ${totalOpenDefects} Total (${relDefects.filter(d => d.severity === 'critical').length} Critical/P0, ${relDefects.filter(d => d.severity === 'high').length} High/P1)\n\n`;
+
+  if (blockedStories > 0 || criticalDefectList.length > 0) {
+    md += `[!] IMMEDIATE ESCALATION / DELIVERY BLOCKERS:\n`;
+    md += `----------------------------------------------------------------------\n`;
+    storyRows.filter(r => r.isBlocked).forEach(r => {
+      md += `* [BLOCKED] US-${r.story.adoId || r.story.id}: ${r.story.title}\n`;
+      md += `  - Module: ${r.story.areaPath || 'Core'} | Dev: ${r.devAssignee} | QA: ${r.qaAssignee}\n`;
+      md += `  - Blockage Details: ${r.blockerText}\n`;
+      md += `  - Delivery Impact: ${r.deliveryImpact}\n\n`;
+    });
+  }
+
+  md += `USER STORY-BY-STORY QA STAND & BLOCKERS BREAKDOWN:\n`;
+  md += `----------------------------------------------------------------------\n`;
+  storyRows.forEach(r => {
+    md += `* [${r.testingStatus}] US-${r.story.adoId || r.story.id}: ${r.story.title}\n`;
+    md += `  - Progress: ${r.passedTc}/${r.totalTc} Test Cases Passed (${r.executionPct}% Executed)\n`;
+    md += `  - Status / Blockers: ${r.blockerText}\n`;
+    md += `  - Delivery Impact: ${r.deliveryImpact} | Dev: ${r.devAssignee} | QA: ${r.qaAssignee}\n\n`;
+  });
+
+  if (criticalDefectList.length > 0) {
+    md += `OPEN CRITICAL & HIGH DEFECTS:\n`;
+    md += `----------------------------------------------------------------------\n`;
+    criticalDefectList.forEach(d => {
+      md += `* [DEF-${d.adoId || d.id}] [${d.severity.toUpperCase()}] ${d.title} | Status: ${d.status} | Owner: ${state.team.find(t => t.id === d.assigneeId)?.name || 'Unassigned'}\n`;
+    });
+    md += `\n`;
+  }
+
+  md += `IMMEDIATE ACTION PLAN FOR ${deliveryDeadline.toUpperCase()}:\n`;
+  md += `----------------------------------------------------------------------\n`;
+  if (blockedStories > 0 || criticalDefectList.length > 0) {
+    md += `1. Dev triage and emergency fixes for ${criticalDefectList.length} open P0/P1 defect(s).\n`;
+    md += `2. Deploy hotfix patch build to QA staging environment.\n`;
+    md += `3. Fast-track regression verification on ${blockedStories} blocked user stories.\n`;
+    md += `4. Conduct Go/No-Go readiness checkpoint with client leads.\n`;
+  } else {
+    md += `1. Complete final smoke test verification on pre-production build.\n`;
+    md += `2. Package release artifacts and documentation for handover.\n`;
+    md += `3. Obtain final client acceptance sign-off.\n`;
+  }
+
+  // Professional Corporate HTML
+  const html = `
+    <div style="${EMAIL_CONTAINER_STYLE}">
+      <!-- Header Banner -->
+      <div style="${HEADER_BANNER_STYLE}">
+        <table style="width: 100%; border: none;">
+          <tr>
+            <td style="vertical-align: middle;">
+              <div style="font-size: 19px; font-weight: 800; color: #1e3a8a; letter-spacing: -0.01em;">
+                ${appName} — Client QA Status & Delivery Readiness
+              </div>
+              <div style="font-size: 13px; color: #475569; margin-top: 3px;">
+                Client: <strong>${clientName}</strong> &bull; Release: <strong>${releaseName}</strong> &bull; Date: <strong>${dateFormatted}</strong>
+              </div>
+            </td>
+            <td style="text-align: right; vertical-align: middle;">
+              <div style="font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 700;">Target Delivery</div>
+              <div style="font-size: 14px; font-weight: 800; color: #1e3a8a; background: #e0e7ff; padding: 4px 10px; border: 1px solid #c7d2fe; display: inline-block; margin-top: 2px;">
+                ${deliveryDeadline}
+              </div>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Overall Health & Delivery Risk Banner -->
+      <div style="background-color: ${verdictBg}; border: 1.5px solid ${verdictBorder}; border-left: 6px solid ${verdictColor}; padding: 14px 16px; margin-bottom: 18px;">
+        <div style="font-size: 14px; font-weight: 800; color: ${verdictColor}; letter-spacing: 0.02em; margin-bottom: 4px; text-transform: uppercase;">
+          ${overallVerdict}
+        </div>
+        <div style="font-size: 13px; color: #1e293b; line-height: 1.5;">
+          ${verdictDescription}
+        </div>
+      </div>
+
+      <!-- Executive Status Snapshot (Where We Stand) -->
+      <div style="${SECTION_TITLE_STYLE}">Executive Status Snapshot &bull; Where We Stand</div>
+      <table style="${TABLE_STYLE}">
+        <thead>
+          <tr>
+            <th style="${TH_STYLE}; width: 25%; text-align: center;">User Story Pass Rate</th>
+            <th style="${TH_STYLE}; width: 25%; text-align: center;">Test Scenarios</th>
+            <th style="${TH_STYLE}; width: 25%; text-align: center;">Active Blockers</th>
+            <th style="${TH_STYLE}; width: 25%; text-align: center;">Open Defects</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="${TD_STYLE}; text-align: center; font-size: 15px; font-weight: 800; color: ${storyPassPct === 100 ? '#16a34a' : storyPassPct >= 70 ? '#2563eb' : '#dc2626'};">
+              ${passedStories} / ${totalStories}
+              <div style="font-size: 11px; font-weight: 600; color: #64748b;">${storyPassPct}% Stories Passed</div>
+            </td>
+            <td style="${TD_STYLE}; text-align: center; font-size: 15px; font-weight: 800; color: #1e3a8a;">
+              ${passedTcSum} / ${totalTcSum}
+              <div style="font-size: 11px; font-weight: 600; color: #64748b;">${tcExecutionPct}% Executed</div>
+            </td>
+            <td style="${TD_STYLE}; text-align: center; font-size: 15px; font-weight: 800; color: ${blockedStories > 0 ? '#dc2626' : '#16a34a'};">
+              ${blockedStories} Stories
+              <div style="font-size: 11px; font-weight: 600; color: ${blockedStories > 0 ? '#b91c1c' : '#16a34a'};">${blockedStories > 0 ? 'Requires Immediate Action' : 'Zero Hard Blockers'}</div>
+            </td>
+            <td style="${TD_STYLE}; text-align: center; font-size: 15px; font-weight: 800; color: ${criticalDefectList.length > 0 ? '#dc2626' : '#64748b'};">
+              ${totalOpenDefects} Total
+              <div style="font-size: 11px; font-weight: 600; color: ${criticalDefectList.length > 0 ? '#dc2626' : '#64748b'};">${criticalDefectList.length} Critical/P0</div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Detailed User Story Stand & Blockers Table -->
+      <div style="${SECTION_TITLE_STYLE}">User Story QA Status & Active Blockers Breakdown</div>
+      <table style="${TABLE_STYLE}">
+        <thead>
+          <tr>
+            <th style="${TH_STYLE}; width: 14%;">Story #</th>
+            <th style="${TH_STYLE}; width: 28%;">User Story Title</th>
+            <th style="${TH_STYLE}; width: 14%; text-align: center;">QA Status</th>
+            <th style="${TH_STYLE}; width: 14%; text-align: center;">Test Scenarios</th>
+            <th style="${TH_STYLE}; width: 30%;">Active Blockers & Current Stand</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${storyRows.map((r, idx) => `
+            <tr style="background-color: ${r.isBlocked ? '#fef2f2' : idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
+              <td style="${TD_STYLE}; font-family: monospace; font-weight: 700; font-size: 12px; color: ${r.isBlocked ? '#dc2626' : '#1e3a8a'};">
+                US-${r.story.adoId || r.story.id}
+                <div style="font-size: 10.5px; color: #64748b; font-weight: normal;">${r.story.areaPath || 'Core'} &bull; ${r.story.storyPoints || 0} pts</div>
+              </td>
+              <td style="${TD_STYLE}; font-weight: 600; font-size: 12.5px;">
+                ${r.story.title}
+                <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
+                  Dev: <strong>${r.devAssignee}</strong> | QA: <strong>${r.qaAssignee}</strong>
+                </div>
+              </td>
+              <td style="${TD_STYLE}; text-align: center; vertical-align: middle;">
+                <span style="display: inline-block; font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 3px; border: 1px solid ${r.isBlocked ? '#fecaca' : r.testingStatus === 'PASSED' ? '#bbf7d0' : '#bfdbfe'}; background-color: ${r.isBlocked ? '#fee2e2' : r.testingStatus === 'PASSED' ? '#f0fdf4' : '#eff6ff'}; color: ${r.isBlocked ? '#dc2626' : r.testingStatus === 'PASSED' ? '#16a34a' : '#2563eb'};">
+                  ${r.testingStatus}
+                </span>
+                <div style="font-size: 10px; font-weight: 700; color: ${r.impactColor}; margin-top: 3px;">
+                  ${r.deliveryImpact}
+                </div>
+              </td>
+              <td style="${TD_STYLE}; text-align: center; vertical-align: middle;">
+                <div style="font-weight: 700; font-size: 12.5px; color: ${r.passedTc === r.totalTc && r.totalTc > 0 ? '#16a34a' : '#1e3a8a'};">
+                  ${r.passedTc}/${r.totalTc}
+                </div>
+                <div style="font-size: 10.5px; color: #64748b;">${r.executionPct}% Executed</div>
+                ${r.blockedTc > 0 ? `<div style="font-size: 10px; font-weight: 700; color: #dc2626;">${r.blockedTc} Blocked</div>` : ''}
+                ${r.failedTc > 0 ? `<div style="font-size: 10px; font-weight: 700; color: #dc2626;">${r.failedTc} Failed</div>` : ''}
+              </td>
+              <td style="${TD_STYLE}; font-size: 12px; line-height: 1.45;">
+                ${r.isBlocked ? `
+                  <div style="color: #991b1b; font-weight: 700; margin-bottom: 2px;">⚠️ BLOCKER / IMPEDIMENT:</div>
+                  <div style="color: #b91c1c; font-weight: 500; background: #fff5f5; padding: 4px 6px; border: 1px solid #fed7d7;">
+                    ${r.blockerText}
+                  </div>
+                ` : `
+                  <div style="color: #334155;">${r.blockerText}</div>
+                `}
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+
+      ${criticalDefectList.length > 0 ? `
+        <!-- Critical & High Defect Escalations Table -->
+        <div style="${SECTION_TITLE_STYLE}; color: #991b1b;">Open Critical & High Defects Triage</div>
+        <table style="${TABLE_STYLE}">
+          <thead>
+            <tr>
+              <th style="${TH_STYLE}; width: 16%; color: #991b1b;">Defect #</th>
+              <th style="${TH_STYLE}; width: 12%; color: #991b1b;">Severity</th>
+              <th style="${TH_STYLE}; width: 44%; color: #991b1b;">Defect Description</th>
+              <th style="${TH_STYLE}; width: 14%;">Status</th>
+              <th style="${TH_STYLE}; width: 14%;">Assignee</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${criticalDefectList.map((d, idx) => `
+              <tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#fff5f5'};">
+                <td style="${TD_STYLE}; font-family: monospace; font-weight: 700; color: #dc2626;">DEF-${d.adoId || d.id}</td>
+                <td style="${TD_STYLE}; font-weight: 700; color: #b91c1c;">${d.severity.toUpperCase()}</td>
+                <td style="${TD_STYLE}; font-weight: 600;">${d.title}</td>
+                <td style="${TD_STYLE};">${d.status}</td>
+                <td style="${TD_STYLE}; font-size: 12px;">${state.team.find(t => t.id === d.assigneeId)?.name || 'Unassigned'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : ''}
+
+      <!-- Immediate Action Plan for Delivery -->
+      <div style="${SECTION_TITLE_STYLE}">Action Plan for ${deliveryDeadline} Delivery</div>
+      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 12px 16px; font-size: 12.5px; color: #334155; line-height: 1.55;">
+        ${blockedStories > 0 || criticalDefectList.length > 0 ? `
+          <ul style="margin: 0; padding-left: 20px;">
+            <li><strong style="color: #dc2626;">Urgent Dev Triage:</strong> Resolve the ${criticalDefectList.length} open P0/P1 defect(s) and deploy patch builds to the QA environment.</li>
+            <li><strong style="color: #b91c1c;">Unblock Testing:</strong> QA team will immediately execute retests on the ${blockedStories} blocked user stories upon fix deployment.</li>
+            <li><strong>Risk Mitigation:</strong> If fixes are not delivered by 12:00 PM tomorrow, scope adjustment will be recommended for the ${deliveryDeadline} release.</li>
+            <li><strong>Executive Standup:</strong> Daily check-in at 09:30 AM to review defect fix throughput and QA sign-off status.</li>
+          </ul>
+        ` : `
+          <ul style="margin: 0; padding-left: 20px;">
+            <li><strong>Final Verification:</strong> Complete remaining verification scenarios for stories currently in progress.</li>
+            <li><strong>Pre-Production Deployment:</strong> Prepare deployment manifest and release runbook for ${deliveryDeadline}.</li>
+            <li><strong>Client Sign-off:</strong> Submit formal sign-off report upon successful validation.</li>
+          </ul>
+        `}
+      </div>
+
+      <!-- Professional Footer -->
+      <div style="${FOOTER_STYLE}">
+        <strong>Quality Assurance & Release Management</strong> | ${appName}<br/>
+        Client QA Status & Delivery Readiness Report for ${clientName}. Generated on ${dateFormatted}.
+      </div>
+    </div>
+  `;
+
+  // Recipients
+  const primaryRecipients = [
+    state.settings.emailRecipient,
+    state.settings.qaTeamEmail,
+    state.settings.releaseManagerEmail
+  ].filter(Boolean) as string[];
+
+  const ccRecipients = [
+    state.settings.executivesEmail || state.settings.executiveEmail,
+    state.settings.managerEmail
+  ].filter(Boolean) as string[];
+
+  const allRecipients = primaryRecipients.length > 0 ? primaryRecipients : ['client-stakeholders@careflow.io', 'qa-leads@careflow.io'];
+
+  let mailtoUrl = `mailto:${allRecipients.join(',')}?subject=${encodeURIComponent(subject)}`;
+  if (ccRecipients.length > 0) {
+    mailtoUrl += `&cc=${encodeURIComponent(ccRecipients.join(','))}`;
+  }
+  mailtoUrl += `&body=${encodeURIComponent(md)}`;
+
+  return { subject, html, markdown: md, mailtoUrl, suggestedRecipients: allRecipients };
+}
+
+// -------------------------------------------------------------
 // 3. DEV-TO-DEV TESTING (COMPONENT INTEGRATION TESTING) REPORT (PROFESSIONAL FORMAT)
 // -------------------------------------------------------------
 export function buildDevToDevIntegrationReport(state: AppState, releaseId?: string): EmailRenderOutput {
@@ -1695,13 +2149,15 @@ export function buildReleaseSignOffEmail(state: AppState, releaseId?: string): E
 export function generateEmailByType(
   type: EmailTemplateType, 
   state: AppState, 
-  options?: { releaseId?: string; defectId?: string; weekDateStr?: string }
+  options?: { releaseId?: string; defectId?: string; weekDateStr?: string; deliveryTargetDate?: string }
 ): EmailRenderOutput {
   switch (type) {
     case 'daily_standup':
       return buildStandupEmail(state);
     case 'system_testing_daily':
       return buildSystemTestingDailyReport(state, options?.releaseId);
+    case 'client_qa_status':
+      return buildClientQaStatusEmail(state, options?.releaseId, options?.deliveryTargetDate);
     case 'dev_to_dev_integration':
       return buildDevToDevIntegrationReport(state, options?.releaseId);
     case 'qa_gate':

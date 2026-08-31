@@ -16,11 +16,17 @@ import {
   requireScope
 } from './permissionMiddleware.js';
 
+try {
+  process.loadEnvFile();
+} catch (e) {
+  // .env file optional
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const isDev = process.env.NODE_ENV !== 'production';
 
 app.use(cors());
@@ -3522,6 +3528,43 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       }
     }
 
+    // Enrich User Stories and Tasks with live comments from Azure DevOps (concurrent batch requests)
+    try {
+      const itemsToEnrich = [...fetchedStories, ...fetchedTasks];
+      const commentBatchSize = 15;
+      for (let i = 0; i < itemsToEnrich.length; i += commentBatchSize) {
+        const chunk = itemsToEnrich.slice(i, i + commentBatchSize);
+        await Promise.allSettled(chunk.map(async (item) => {
+          if (!item.adoId) return;
+          try {
+            const commentsUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/workItems/${item.adoId}/comments?order=desc&$top=10&api-version=7.0-preview.3`;
+            const cRes = await fetch(commentsUrl, { headers });
+            if (cRes.ok) {
+              const cData = await cRes.json();
+              if (cData && Array.isArray(cData.comments) && cData.comments.length > 0) {
+                const mappedComments = cData.comments.map(c => ({
+                  id: c.id || String(Date.now()),
+                  author: c.createdBy?.displayName || c.createdBy?.uniqueName || item.assigneeName || 'Contributor',
+                  text: sanitizeAdoRichText(c.text || ''),
+                  createdAt: c.createdDate || new Date().toISOString()
+                }));
+                item.comments = mappedComments;
+                const latestTxt = mappedComments[0]?.text || '';
+                if (latestTxt) {
+                  item.latestComment = latestTxt;
+                  item.todayActivityComment = latestTxt;
+                }
+              }
+            }
+          } catch (err) {
+            // non-fatal per-item error
+          }
+        }));
+      }
+    } catch (enrichErr) {
+      console.warn('[Comments Enrichment note]:', enrichErr.message);
+    }
+
     return res.json({
       ok: true,
       stories: fetchedStories,
@@ -3628,6 +3671,112 @@ app.get('/api/ado/workitems/:id', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, authSession: { role: req.auth.role, userId: req.auth.userId } });
+  }
+});
+
+// 10b. Work Item Comments Fetch
+app.get('/api/ado/workitems/:id/comments', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { org, project, pat } = req.query;
+    const { cleanOrg, cleanProject, pat: effectivePat } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!cleanOrg || !effectivePat) {
+      return res.status(400).json({ ok: false, error: 'Org and Personal Access Token (PAT) are required.' });
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const headers = {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/json'
+    };
+
+    // Query ADO work items comments REST API
+    let comments = [];
+    const commentsUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${id}/comments?order=desc&$top=20&api-version=7.0-preview.3`;
+
+    const response = await fetch(commentsUrl, { headers });
+    if (response.ok) {
+      const data = await response.json();
+      if (data && Array.isArray(data.comments)) {
+        comments = data.comments.map(c => ({
+          id: c.id,
+          text: sanitizeAdoRichText(c.text || ''),
+          author: c.createdBy?.displayName || c.createdBy?.uniqueName || 'Contributor',
+          createdAt: c.createdDate || c.modifiedDate
+        }));
+      }
+    } else {
+      // Fallback to 7.0 standard API
+      const fallbackUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${id}/comments?order=desc&$top=20&api-version=7.0`;
+      const fallbackRes = await fetch(fallbackUrl, { headers });
+      if (fallbackRes.ok) {
+        const data = await fallbackRes.json();
+        if (data && Array.isArray(data.comments)) {
+          comments = data.comments.map(c => ({
+            id: c.id,
+            text: sanitizeAdoRichText(c.text || ''),
+            author: c.createdBy?.displayName || c.createdBy?.uniqueName || 'Contributor',
+            createdAt: c.createdDate || c.modifiedDate
+          }));
+        }
+      }
+    }
+
+    return res.json({
+      ok: true,
+      comments,
+      count: comments.length
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 10c. Post New Comment to Azure DevOps Work Item
+app.post('/api/ado/workitems/:id/comments', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { org, project, pat, text } = req.body;
+    const { cleanOrg, cleanProject, pat: effectivePat } = resolveAdoCredentials(req, org, project, pat);
+
+    if (!cleanOrg || !effectivePat) {
+      return res.status(400).json({ ok: false, error: 'Org and Personal Access Token (PAT) are required.' });
+    }
+
+    if (!text || !text.trim()) {
+      return res.status(400).json({ ok: false, error: 'Comment text is required.' });
+    }
+
+    const auth = Buffer.from(`:${effectivePat}`).toString('base64');
+    const url = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${id}/comments?api-version=7.0-preview.3`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text: text.trim() })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(response.status).json({ ok: false, error: `Failed to post comment to ADO: ${errText.slice(0, 200)}` });
+    }
+
+    const data = await response.json();
+    return res.json({
+      ok: true,
+      comment: {
+        id: data.id,
+        text: sanitizeAdoRichText(data.text || text),
+        author: data.createdBy?.displayName || data.createdBy?.uniqueName || 'Contributor',
+        createdAt: data.createdDate || new Date().toISOString()
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
