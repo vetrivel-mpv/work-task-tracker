@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { 
   Layers, 
   CheckSquare, 
@@ -13,14 +13,17 @@ import {
   FolderGit2, 
   ChevronLeft, 
   ChevronRight, 
-  FileText,
-  Clock
+  Clock,
+  Mail,
+  Flame
 } from 'lucide-react';
 import { AppView } from '../../types';
 
 interface JiraSidebarProps {
   activeView: AppView;
   onNavigate: (view: AppView) => void;
+  onOpenEmailModal?: (template?: string) => void;
+  onOpenTechDebtModal?: () => void;
   projectName?: string;
   projectKey?: string;
   isCollapsed: boolean;
@@ -36,6 +39,8 @@ interface JiraSidebarProps {
 export const JiraSidebar: React.FC<JiraSidebarProps> = ({
   activeView,
   onNavigate,
+  onOpenEmailModal,
+  onOpenTechDebtModal,
   projectName = 'ACM Delivery',
   projectKey = 'ACM',
   isCollapsed,
@@ -149,7 +154,39 @@ export const JiraSidebar: React.FC<JiraSidebarProps> = ({
           })}
         </div>
 
-        {/* Section 3: OPERATIONS & SETTINGS */}
+        {/* Section 3: EXECUTIVE & EMAIL DISPATCH */}
+        {onOpenEmailModal && (
+          <div className="flex flex-col gap-0.5">
+            {!isCollapsed && (
+              <span className="px-3 py-1 text-[10px] font-bold text-[var(--text-muted)] tracking-wider uppercase">
+                Email & Reports
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => onOpenEmailModal('client_qa_status')}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] transition-all cursor-pointer group"
+              title={isCollapsed ? 'Client QA Status & Delivery Blockers Email' : undefined}
+            >
+              <Mail size={16} className="shrink-0 text-[#0052CC] group-hover:scale-110 transition-transform" />
+              {!isCollapsed && <span className="truncate">Email Dispatch Hub</span>}
+            </button>
+
+            {onOpenTechDebtModal && (
+              <button
+                type="button"
+                onClick={onOpenTechDebtModal}
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-all cursor-pointer group"
+                title={isCollapsed ? 'Technical Debt & Impact Matrix' : undefined}
+              >
+                <Flame size={16} className="shrink-0 text-rose-500 group-hover:scale-110 transition-transform" />
+                {!isCollapsed && <span className="truncate">Tech Debt Matrix</span>}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Section 4: OPERATIONS & SETTINGS */}
         <div className="flex flex-col gap-0.5">
           {!isCollapsed && (
             <span className="px-3 py-1 text-[10px] font-bold text-[var(--text-muted)] tracking-wider uppercase">

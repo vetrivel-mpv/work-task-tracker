@@ -920,6 +920,7 @@ export const App: React.FC = () => {
         onOpenCreateModal={() => setCreateIssueModalOpen(true)}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenAdoModal={() => setAdoModalOpen(true)}
+        onOpenEmailModal={(tab) => handleOpenEmailModal(tab || 'client_qa_status')}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         theme={state.settings.theme}
@@ -934,6 +935,8 @@ export const App: React.FC = () => {
         <JiraSidebar
           activeView={activeView}
           onNavigate={setActiveView}
+          onOpenEmailModal={(tab) => handleOpenEmailModal(tab || 'client_qa_status')}
+          onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
           projectName={state.settings.appName || 'ACM Delivery'}
           projectKey={state.settings.projectCode || 'ACM'}
           isCollapsed={sidebarCollapsed}

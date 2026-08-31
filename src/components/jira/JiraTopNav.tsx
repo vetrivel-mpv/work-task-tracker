@@ -26,7 +26,8 @@ import {
   Calendar,
   MessageSquareQuote,
   Award,
-  Check
+  Check,
+  Mail
 } from 'lucide-react';
 import { AppTheme, DualAdoConfig, AppView } from '../../types';
 
@@ -35,6 +36,7 @@ interface JiraTopNavProps {
   onOpenCreateModal: () => void;
   onOpenCommandPalette: () => void;
   onOpenAdoModal: () => void;
+  onOpenEmailModal: (template?: string) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   theme?: AppTheme;
@@ -49,6 +51,7 @@ export const JiraTopNav: React.FC<JiraTopNavProps> = ({
   onOpenCreateModal,
   onOpenCommandPalette,
   onOpenAdoModal,
+  onOpenEmailModal,
   searchQuery,
   onSearchChange,
   theme,
@@ -493,6 +496,17 @@ export const JiraTopNav: React.FC<JiraTopNavProps> = ({
           <FolderGit2 size={13} className="text-[#0052CC]" />
           <span className="hidden xl:inline">ADO Sync</span>
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+        </button>
+
+        {/* Email Automation Hub & Executive Dispatcher */}
+        <button
+          type="button"
+          onClick={() => onOpenEmailModal('client_qa_status')}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[var(--surface-hover)] hover:bg-[var(--surface-active)] border border-[var(--border)] text-[11px] font-bold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer"
+          title="Email Automation Hub — Client QA Status, Daily Standup & Delivery Blockers"
+        >
+          <Mail size={13} className="text-[#0052CC]" />
+          <span className="hidden xl:inline">Email Hub</span>
         </button>
 
         {/* Theme toggle */}
