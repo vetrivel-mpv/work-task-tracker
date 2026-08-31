@@ -1268,69 +1268,175 @@ ${s.automationRecommendations.map(e=>`• [${e.techStack}] ${e.title} (${e.impac
         Official test telemetry record generated on ${w(e.dateStr)}.
       </div>
     </div>
-  `,T=[e.settings.qaTeamEmail,e.settings.emailRecipient,e.settings.releaseManagerEmail].filter(Boolean),E=`mailto:${T.join(`,`)}?subject=${encodeURIComponent(b)}&body=${encodeURIComponent(x)}`;return{subject:b,html:S,markdown:x,mailtoUrl:E,suggestedRecipients:T}}function b$(e){let t=e.settings?.appName||`ACM Delivery`,n=e.settings?.clientName||`AT&T`,r=w(e.dateStr),i=`[Executive Status] ${t} Delivery Operations Briefing — ${C(e.dateStr)}`,a=e.tasks.filter(t=>t.dateStr===e.dateStr),o=a.filter(e=>e.status===`complete`),s=e.releases.filter(e=>e.status===`Active QA`||e.status===`Staging`||e.status===`Planning`),c=e.defects.filter(e=>e.status!==`Closed`),l=c.filter(e=>e.severity===`critical`),u=`EXECUTIVE DELIVERY BRIEFING: ${t}\n`;u+=`==================================================
-`,u+=`Client: ${n}\n`,u+=`Date: ${r}\n`,u+=`Tasks Done (Today): ${o.length}/${a.length}\n`,u+=`Tracked User Stories: ${e.userStories.length}\n`,u+=`Active Release Pipelines: ${s.length}\n`,u+=`Open Defects: ${c.length} (Critical: ${l.length})\n`,u+=`==================================================
+  `,T=[e.settings.qaTeamEmail,e.settings.emailRecipient,e.settings.releaseManagerEmail].filter(Boolean),E=`mailto:${T.join(`,`)}?subject=${encodeURIComponent(b)}&body=${encodeURIComponent(x)}`;return{subject:b,html:S,markdown:x,mailtoUrl:E,suggestedRecipients:T}}function b$(e){let t=e.settings?.appName||`ACM Delivery`,n=e.settings?.clientName||`AT&T`,r=w(e.dateStr),i=e.releases.filter(e=>e.status===`Active QA`||e.status===`Staging`||e.status===`Planning`),a=e.releases.find(t=>t.id===e.selectedReleaseId)||i[0]||e.releases[0],o=a?te(a.name,a.releaseNumber):`Active Release Pipeline`,s=a?.targetDate?w(a.targetDate):`Upcoming Milestone`,c=a?e.userStories.filter(e=>e.releaseId===a.id||a.iterationPath&&e.iterationPath===a.iterationPath):e.userStories,l=c.length>0?c:e.userStories,u=e.defects.filter(e=>e.status!==`Closed`&&(!a||e.releaseId===a.id||a.iterationPath&&e.iterationPath===a.iterationPath)),d=u.filter(e=>e.severity===`critical`||e.severity===`high`),f=e.tasks.filter(t=>t.dateStr===e.dateStr||a&&t.releaseId===a.id),p=f.filter(e=>e.status===`complete`),m=0,h=0,g=0,_=0,v=l.map(t=>{let n=Zh(t,e.tasks,u,e.testCases,e.dateStr);return m+=n.metrics.totalTestCases,h+=n.metrics.passedTestCases,g+=n.metrics.failedTestCases,_+=n.metrics.blockedTestCases,{story:t,assessed:n,devLead:e.team.find(e=>e.id===t.assigneeId)?.name||t.assigneeName||`Dev Lead`,qaLead:n.commentAuthor||`QA Lead`,isBlocked:n.statusLabel===`Blocked`||t.status===`Blocked`||_>0,statusLabel:n.statusLabel,latestComment:n.latestCommentText||`Active progress on track.`}}),y=l.length,b=v.filter(e=>e.statusLabel===`Passed`||e.story.status===`QA Passed`||e.story.status===`Done`).length,x=v.filter(e=>e.isBlocked).length,S=y-b-x,C=m>0?Math.round(h/m*100):y>0?Math.round(b/y*100):100,T=`🟢 ON TRACK (HIGH CONFIDENCE)`,E=`#f0fdf4`,D=`#bbf7d0`,O=`#16a34a`,k=`The ${o} delivery pipeline is executing on schedule with ${b}/${y} deliverables QA verified (${C}% test completion). Zero critical P0 blockers identified. On track for targeted delivery on ${s}.`;x>0||d.length>0?(T=`🔴 DELIVERY AT RISK — EXECUTIVE ACTION REQUIRED`,E=`#fef2f2`,D=`#fecaca`,O=`#dc2626`,k=`Target milestone (${s}) is currently compromised due to ${x} blocked work item(s) and ${d.length} open high-priority defect(s). Immediate developer triage and lead attention required to protect the delivery date.`):C<75&&(T=`🟡 IN FLIGHT — MODERATE CONFIDENCE`,E=`#fffbeb`,D=`#fde68a`,O=`#d97706`,k=`Active verification is underway at ${C}% completion. ${S} deliverables remaining in flight. Burn-down rate is currently aligned with target handover on ${s}.`);let A=`[Executive Brief] ${t} Delivery & Quality Status — ${T.split(`—`)[0].trim()} | ${s}`,j=`EXECUTIVE DELIVERY & QUALITY HEALTH BRIEFING
+`;j+=`======================================================================
+`,j+=`Program:          ${t} (${n})\n`,j+=`Target Release:   ${o} (Target: ${s})\n`,j+=`Date:             ${r}\n`,j+=`CONFIDENCE LEVEL: ${T}\n`,j+=`======================================================================
 
-`,u+=`ACTIVE RELEASES:
-`,s.forEach(e=>{u+=`* ${te(e.name,e.releaseNumber)} | Target: ${e.targetDate} | Status: ${e.status}\n`});let d=`
+`,j+=`EXECUTIVE SUMMARY (BLUF):
+`,j+=`${k}\n\n`,j+=`KEY PROGRAM METRICS (KPIs):
+`,j+=`* Scope Cleared:    ${b}/${y} Deliverables (${Math.round(b/Math.max(y,1)*100)}% Complete)\n`,j+=`* Test Scenarios:   ${h}/${m||1} Passed (${C}% Verification Velocity)\n`,j+=`* Open Impediments: ${x} Blocked Stories | ${d.length} P0/P1 Defects\n`,j+=`* Daily Execution:  ${p.length}/${f.length} Tasks Closed Today\n\n`,(x>0||d.length>0)&&(j+=`CRITICAL PATH IMPEDIMENTS & BLOCKERS:
+`,j+=`----------------------------------------------------------------------
+`,v.filter(e=>e.isBlocked).forEach(e=>{j+=`* [BLOCKED] US-${e.story.adoId||e.story.id}: ${e.story.title}\n`,j+=`  - Owner: Dev: ${e.devLead} | QA: ${e.qaLead}\n`,j+=`  - Latest Update: ${e.latestComment}\n\n`})),j+=`DELIVERABLES STATUS & CRITICAL PATH:
+`,j+=`----------------------------------------------------------------------
+`,v.forEach(e=>{j+=`* [${e.statusLabel.toUpperCase()}] US-${e.story.adoId||e.story.id}: ${e.story.title}\n`,j+=`  - Progress: Dev: ${e.devLead} | QA: ${e.qaLead} | Status: ${e.latestComment}\n\n`}),j+=`DECISIONS & ASKS FROM LEADERSHIP:
+`,j+=`----------------------------------------------------------------------
+`,x>0||d.length>0?(j+=`1. Engineering Lead bridge to resolve ${d.length} defect(s) by 12:00 PM tomorrow.\n`,j+=`2. Authorize QA priority re-testing on staging deployment.
+`):(j+=`1. Formal Go/No-Go signoff scheduled for ${s}.\n`,j+=`2. Client stakeholder alignment on release deployment window.
+`);let M=`
     <div style="${u$}">
+      <!-- Corporate Executive Header -->
       <div style="${d$}">
-        <div style="font-size: 18px; font-weight: 700; color: #1e3a8a;">${t} — Executive Delivery Briefing</div>
-        <div style="font-size: 12.5px; color: #475569; margin-top: 2px;">
-          Client: <strong>${n}</strong> | Date: <strong>${r}</strong>
+        <table style="width: 100%; border: none;">
+          <tr>
+            <td style="vertical-align: middle;">
+              <div style="font-size: 20px; font-weight: 800; color: #1e3a8a; letter-spacing: -0.01em;">
+                ${t} — Executive Delivery & Quality Brief
+              </div>
+              <div style="font-size: 13px; color: #475569; margin-top: 3px;">
+                Client: <strong>${n}</strong> &bull; Release: <strong>${o}</strong> &bull; Date: <strong>${r}</strong>
+              </div>
+            </td>
+            <td style="text-align: right; vertical-align: middle;">
+              <div style="font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 700;">Target Milestone</div>
+              <div style="font-size: 14px; font-weight: 800; color: #1e3a8a; background: #e0e7ff; padding: 4px 12px; border: 1px solid #c7d2fe; display: inline-block; margin-top: 2px; border-radius: 4px;">
+                ${s}
+              </div>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Executive BLUF Banner (Bottom Line Up Front) -->
+      <div style="background-color: ${E}; border: 1.5px solid ${D}; border-left: 6px solid ${O}; padding: 14px 16px; margin-bottom: 18px; border-radius: 4px;">
+        <div style="font-size: 14px; font-weight: 800; color: ${O}; letter-spacing: 0.02em; margin-bottom: 4px; text-transform: uppercase;">
+          ${T}
+        </div>
+        <div style="font-size: 13px; color: #1e293b; line-height: 1.55;">
+          ${k}
         </div>
       </div>
 
-      <div style="${p$}">Key Performance Indicators</div>
+      <!-- Executive KPI Cards Grid -->
+      <div style="${p$}">Executive Program Metrics (KPIs)</div>
       <table style="${f$}">
         <thead>
           <tr>
-            <th style="${Q}; width: 25%;">Daily Tasks Closed</th>
-            <th style="${Q}; width: 25%;">Total Stories Tracked</th>
-            <th style="${Q}; width: 25%;">Active Pipelines</th>
-            <th style="${Q}; width: 25%;">Open Defect Count</th>
+            <th style="${Q}; width: 25%; text-align: center;">Deliverables Scope</th>
+            <th style="${Q}; width: 25%; text-align: center;">Verification Progress</th>
+            <th style="${Q}; width: 25%; text-align: center;">Critical Impediments</th>
+            <th style="${Q}; width: 25%; text-align: center;">Target Delivery</th>
           </tr>
         </thead>
         <tbody>
-          <tr style="background-color: #ffffff; text-align: center;">
-            <td style="${$}; font-weight: 600; text-align: center;">${o.length}/${a.length}</td>
-            <td style="${$}; font-weight: 600; text-align: center;">${e.userStories.length}</td>
-            <td style="${$}; font-weight: 600; color: #1e3a8a; text-align: center;">${s.length}</td>
-            <td style="${$}; font-weight: 700; color: ${c.length>0?`#b91c1c`:`#16a34a`}; text-align: center;">
-              ${c.length} (${l.length} Critical)
+          <tr>
+            <td style="${$}; text-align: center; font-size: 16px; font-weight: 800; color: #1e3a8a;">
+              ${b} / ${y}
+              <div style="font-size: 11px; font-weight: 600; color: #64748b;">${Math.round(b/Math.max(y,1)*100)}% Stories Cleared</div>
+            </td>
+            <td style="${$}; text-align: center; font-size: 16px; font-weight: 800; color: ${C>=80?`#16a34a`:`#d97706`};">
+              ${h} / ${m||1}
+              <div style="font-size: 11px; font-weight: 600; color: #64748b;">${C}% Test Scenarios</div>
+            </td>
+            <td style="${$}; text-align: center; font-size: 16px; font-weight: 800; color: ${x>0||d.length>0?`#dc2626`:`#16a34a`};">
+              ${x} Blocked
+              <div style="font-size: 11px; font-weight: 600; color: ${x>0?`#b91c1c`:`#16a34a`};">${d.length} P0/P1 Defects</div>
+            </td>
+            <td style="${$}; text-align: center; font-size: 14px; font-weight: 800; color: #1e3a8a;">
+              ${s}
+              <div style="font-size: 11px; font-weight: 600; color: #64748b;">${o}</div>
             </td>
           </tr>
         </tbody>
       </table>
 
-      <div style="${p$}">Active Release Pipelines</div>
+      <!-- Critical Path & Deliverables Breakdown -->
+      <div style="${p$}">Deliverables Status & Critical Path Breakdown</div>
       <table style="${f$}">
         <thead>
           <tr>
-            <th style="${Q}; width: 35%;">Release Name</th>
-            <th style="${Q}; width: 25%;">Target Date</th>
-            <th style="${Q}; width: 20%;">Status</th>
-            <th style="${Q}; width: 20%;">Iteration Path</th>
+            <th style="${Q}; width: 15%;">Work Item</th>
+            <th style="${Q}; width: 30%;">Deliverable Title</th>
+            <th style="${Q}; width: 15%; text-align: center;">QA Status</th>
+            <th style="${Q}; width: 40%;">Executive Status & Where We Stand</th>
           </tr>
         </thead>
         <tbody>
-          ${s.map((e,t)=>`
-            <tr style="background-color: ${t%2==0?`#ffffff`:`#f8fafc`};">
-              <td style="${$}; font-weight: 600;">${te(e.name,e.releaseNumber)}</td>
-              <td style="${$}">${e.targetDate||`TBD`}</td>
-              <td style="${$}; font-weight: 600; color: #1e3a8a;">${e.status}</td>
-              <td style="${$}; font-size: 11.5px; color: #64748b;">${e.iterationPath||`Default`}</td>
+          ${v.map((e,t)=>`
+            <tr style="background-color: ${e.isBlocked?`#fef2f2`:t%2==0?`#ffffff`:`#f8fafc`};">
+              <td style="${$}; font-family: monospace; font-weight: 700; font-size: 12px; color: ${e.isBlocked?`#dc2626`:`#1e3a8a`};">
+                US-${e.story.adoId||e.story.id}
+                <div style="font-size: 10.5px; color: #64748b; font-weight: normal;">${e.story.areaPath||`Core`}</div>
+              </td>
+              <td style="${$}; font-weight: 600; font-size: 12.5px;">
+                ${e.story.title}
+                <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
+                  Dev: <strong>${e.devLead}</strong> &bull; QA: <strong>${e.qaLead}</strong>
+                </div>
+              </td>
+              <td style="${$}; text-align: center; vertical-align: middle;">
+                <span style="display: inline-block; font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 4px; border: 1px solid ${e.isBlocked?`#fecaca`:e.statusLabel===`Passed`?`#bbf7d0`:`#bfdbfe`}; background-color: ${e.isBlocked?`#fee2e2`:e.statusLabel===`Passed`?`#f0fdf4`:`#eff6ff`}; color: ${e.isBlocked?`#dc2626`:e.statusLabel===`Passed`?`#16a34a`:`#2563eb`};">
+                  ${e.statusLabel.toUpperCase()}
+                </span>
+              </td>
+              <td style="${$}; font-size: 12px; line-height: 1.45;">
+                <div style="color: ${e.isBlocked?`#991b1b`:`#334155`}; font-weight: ${e.isBlocked?`600`:`normal`};">
+                  ${e.latestComment}
+                </div>
+              </td>
             </tr>
           `).join(``)}
         </tbody>
       </table>
 
+      ${d.length>0?`
+        <!-- Critical & High Defects Exposure -->
+        <div style="${p$}; color: #991b1b;">Open P0/P1 Defect Exposure</div>
+        <table style="${f$}">
+          <thead>
+            <tr>
+              <th style="${Q}; width: 18%; color: #991b1b;">Defect #</th>
+              <th style="${Q}; width: 12%; color: #991b1b;">Severity</th>
+              <th style="${Q}; width: 46%; color: #991b1b;">Summary</th>
+              <th style="${Q}; width: 24%;">Assigned Engineer</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${d.map((t,n)=>`
+              <tr style="background-color: ${n%2==0?`#ffffff`:`#fff5f5`};">
+                <td style="${$}; font-family: monospace; font-weight: 700; color: #dc2626;">DEF-${t.adoId||t.id}</td>
+                <td style="${$}; font-weight: 700; color: #b91c1c;">${t.severity.toUpperCase()}</td>
+                <td style="${$}; font-weight: 600;">${t.title}</td>
+                <td style="${$}; font-size: 12px;">${e.team.find(e=>e.id===t.assigneeId)?.name||`Unassigned`}</td>
+              </tr>
+            `).join(``)}
+          </tbody>
+        </table>
+      `:``}
+
+      <!-- Decisions & Asks from Leadership -->
+      <div style="${p$}">Decisions & Asks for Leadership</div>
+      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 12px 16px; font-size: 12.5px; color: #334155; line-height: 1.55; border-radius: 4px;">
+        ${x>0||d.length>0?`
+          <ul style="margin: 0; padding-left: 20px;">
+            <li><strong style="color: #dc2626;">Triage Escalation:</strong> Authorize developer priority bridge to resolve ${d.length} defect(s) by 12:00 PM tomorrow.</li>
+            <li><strong style="color: #b91c1c;">Fast-Track Re-testing:</strong> QA will run dedicated smoke cycles immediately upon patch deployment.</li>
+            <li><strong>Delivery Gate Check:</strong> Convene Go/No-Go readiness gate at 4:00 PM if blockers persist.</li>
+          </ul>
+        `:`
+          <ul style="margin: 0; padding-left: 20px;">
+            <li><strong>Deployment Schedule:</strong> Release runbook and deployment window confirmed for ${s}.</li>
+            <li><strong>Client Sign-off:</strong> Formal QA signoff document ready for executive submission.</li>
+          </ul>
+        `}
+      </div>
+
+      <!-- Corporate Footer -->
       <div style="${m$}">
-        <strong>Program Management Office</strong> | ${t}<br/>
-        Executive summary generated for internal review.
+        <strong>Executive Quality & Delivery Management</strong> | ${t}<br/>
+        Confidential &bull; Prepared for Senior Leadership & Stakeholders.
       </div>
     </div>
-  `,f=[e.settings.executivesEmail,e.settings.emailRecipient,e.settings.managerEmail].filter(Boolean),p=`mailto:${f.join(`,`)}?subject=${encodeURIComponent(i)}&body=${encodeURIComponent(u)}`;return{subject:i,html:d,markdown:u,mailtoUrl:p,suggestedRecipients:f}}function x$(e,t){let n=e.settings?.appName||`ACM Delivery`,r=x(t||e.dateStr),i=r.getDay(),a=i===0?-6:1-i,o=new Date(r);o.setDate(r.getDate()+a);let s=new Date(o);s.setDate(o.getDate()+4);let c=b(o),l=b(s),u=`${C(c)} – ${C(l)}`,d=e.team.filter(e=>e.active!==!1).map(t=>{let n=t.weeklyCapacityHours||40,r=(e.absences||[]).filter(e=>e.memberId!==t.id||e.status===`cancelled`?!1:e.endDateStr&&e.endDateStr>=e.dateStr?l>=e.dateStr&&c<=e.endDateStr:e.dateStr>=c&&e.dateStr<=l),i=0;r.forEach(e=>{e.type===`full_day`?i+=8:e.type===`half_day_morning`||e.type===`half_day_afternoon`?i+=4:e.type===`hourly_permission`&&(i+=e.permissionHours||2)});let a=Math.max(0,n-i),o=Math.round(a*.85),s=e.tasks.filter(e=>(e.assigneeId===t.id||e.assigneeIds&&e.assigneeIds.includes(t.id))&&e.status!==`complete`),u=e.userStories.filter(e=>e.assigneeId===t.id&&e.status!==`Done`&&e.status!==`QA Passed`),d=e.defects.filter(e=>e.assigneeId===t.id&&e.status!==`Closed`),f=s.length*3.5,p=u.reduce((e,t)=>e+(t.storyPoints||3)*5,0),m=d.reduce((e,t)=>e+(t.severity===`critical`?6:t.severity===`high`?4:2),0),h=Math.round(f+p+m),g=o>0?Math.round(h/o*100):100,_=o-h;return{member:t,gross:n,leaveHours:i,netCapacity:o,totalPlanned:h,taskCount:s.length,storyCount:u.length,defectCount:d.length,utilPct:g,headroom:_,isOverloaded:g>100,isUnderutilized:g<70}}),f=d.reduce((e,t)=>e+t.netCapacity,0),p=d.reduce((e,t)=>e+t.totalPlanned,0),m=d.reduce((e,t)=>e+t.leaveHours,0),h=f>0?Math.round(p/f*100):0,g=d.filter(e=>e.isOverloaded).length,_=`[Resource Allocation] ${n} Capacity Matrix — Week of ${u}`,v=`WEEKLY RESOURCE CAPACITY & ALLOCATION REPORT
+  `,N=[e.settings.executivesEmail,e.settings.emailRecipient,e.settings.managerEmail].filter(Boolean),P=`mailto:${N.join(`,`)}?subject=${encodeURIComponent(A)}&body=${encodeURIComponent(j)}`;return{subject:A,html:M,markdown:j,mailtoUrl:P,suggestedRecipients:N}}function x$(e,t){let n=e.settings?.appName||`ACM Delivery`,r=x(t||e.dateStr),i=r.getDay(),a=i===0?-6:1-i,o=new Date(r);o.setDate(r.getDate()+a);let s=new Date(o);s.setDate(o.getDate()+4);let c=b(o),l=b(s),u=`${C(c)} – ${C(l)}`,d=e.team.filter(e=>e.active!==!1).map(t=>{let n=t.weeklyCapacityHours||40,r=(e.absences||[]).filter(e=>e.memberId!==t.id||e.status===`cancelled`?!1:e.endDateStr&&e.endDateStr>=e.dateStr?l>=e.dateStr&&c<=e.endDateStr:e.dateStr>=c&&e.dateStr<=l),i=0;r.forEach(e=>{e.type===`full_day`?i+=8:e.type===`half_day_morning`||e.type===`half_day_afternoon`?i+=4:e.type===`hourly_permission`&&(i+=e.permissionHours||2)});let a=Math.max(0,n-i),o=Math.round(a*.85),s=e.tasks.filter(e=>(e.assigneeId===t.id||e.assigneeIds&&e.assigneeIds.includes(t.id))&&e.status!==`complete`),u=e.userStories.filter(e=>e.assigneeId===t.id&&e.status!==`Done`&&e.status!==`QA Passed`),d=e.defects.filter(e=>e.assigneeId===t.id&&e.status!==`Closed`),f=s.length*3.5,p=u.reduce((e,t)=>e+(t.storyPoints||3)*5,0),m=d.reduce((e,t)=>e+(t.severity===`critical`?6:t.severity===`high`?4:2),0),h=Math.round(f+p+m),g=o>0?Math.round(h/o*100):100,_=o-h;return{member:t,gross:n,leaveHours:i,netCapacity:o,totalPlanned:h,taskCount:s.length,storyCount:u.length,defectCount:d.length,utilPct:g,headroom:_,isOverloaded:g>100,isUnderutilized:g<70}}),f=d.reduce((e,t)=>e+t.netCapacity,0),p=d.reduce((e,t)=>e+t.totalPlanned,0),m=d.reduce((e,t)=>e+t.leaveHours,0),h=f>0?Math.round(p/f*100):0,g=d.filter(e=>e.isOverloaded).length,_=`[Resource Allocation] ${n} Capacity Matrix — Week of ${u}`,v=`WEEKLY RESOURCE CAPACITY & ALLOCATION REPORT
 `;v+=`==================================================
 `,v+=`Week Window: ${u}\n`,v+=`Total Effective Capacity: ${f} hrs (after ${m}h PTO/leaves)\n`,v+=`Total Planned Workload: ${p} hrs\n`,v+=`Team Overall Utilization: ${h}%\n`,g>0&&(v+=`Overloaded Resources: ${g} members over 100%\n`),v+=`==================================================
 
