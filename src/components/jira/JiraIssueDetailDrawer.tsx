@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   JiraIssue, 
   JiraIssueStatus, 
@@ -81,6 +81,15 @@ export const JiraIssueDetailDrawer: React.FC<JiraIssueDetailDrawerProps> = ({
 
   const assignee = team.find(m => m.id === issue.assigneeId);
 
+  // Auto-fetch live comments when drawer opens if ADO ID is present
+  useEffect(() => {
+    if (isOpen && issue && issue.adoId) {
+      if (!issue.comments || issue.comments.length === 0) {
+        handleSyncAdoComments();
+      }
+    }
+  }, [isOpen, issue?.id, issue?.adoId]);
+
   const handleCopyKey = () => {
     navigator.clipboard.writeText(`${issue.issueKey}: ${issue.summary}`);
     setCopiedKey(true);
@@ -157,7 +166,7 @@ export const JiraIssueDetailDrawer: React.FC<JiraIssueDetailDrawerProps> = ({
     setIsSyncingComments(true);
     try {
       const res = await adoService.getWorkItemComments(issue.adoId);
-      if (res.ok && Array.isArray(res.comments)) {
+      if (res.ok && Array.isArray(res.comments) && res.comments.length > 0) {
         const mapped: JiraIssueComment[] = res.comments.map(c => ({
           id: String(c.id || Date.now()),
           issueId: issue.id,

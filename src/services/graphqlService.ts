@@ -603,8 +603,15 @@ export class GraphqlService {
         iterationPath: d.iterationPath,
         adoId: d.adoId,
         tags: d.tags || [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        comments: ((d as any).comments || []).map((c: any) => ({
+          id: String(c.id),
+          issueId: d.id,
+          authorName: c.author || 'QA Lead',
+          body: c.text,
+          createdAt: c.createdAt || new Date().toISOString()
+        })),
+        createdAt: (d as any).createdAt || new Date().toISOString(),
+        updatedAt: (d as any).updatedAt || new Date().toISOString()
       };
     });
 

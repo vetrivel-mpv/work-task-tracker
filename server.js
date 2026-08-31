@@ -3528,25 +3528,29 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       }
     }
 
-    // Enrich User Stories and Tasks with live comments from Azure DevOps (concurrent batch requests)
+    // Enrich User Stories, Defects, and Tasks with live comments from Azure DevOps (concurrent batch requests)
     try {
-      const itemsToEnrich = [...fetchedStories, ...fetchedTasks];
+      const itemsToEnrich = [...fetchedStories, ...fetchedDefects, ...fetchedTasks];
       const commentBatchSize = 15;
       for (let i = 0; i < itemsToEnrich.length; i += commentBatchSize) {
         const chunk = itemsToEnrich.slice(i, i + commentBatchSize);
         await Promise.allSettled(chunk.map(async (item) => {
           if (!item.adoId) return;
           try {
-            const commentsUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/workItems/${item.adoId}/comments?order=desc&$top=10&api-version=7.0-preview.3`;
-            const cRes = await fetch(commentsUrl, { headers });
+            const commentsUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${item.adoId}/comments?order=desc&$top=15&api-version=7.0-preview.3`;
+            let cRes = await fetch(commentsUrl, { headers });
+            if (!cRes.ok) {
+              const fallbackUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${item.adoId}/comments?order=desc&$top=15&api-version=7.0`;
+              cRes = await fetch(fallbackUrl, { headers });
+            }
             if (cRes.ok) {
               const cData = await cRes.json();
               if (cData && Array.isArray(cData.comments) && cData.comments.length > 0) {
                 const mappedComments = cData.comments.map(c => ({
-                  id: c.id || String(Date.now()),
+                  id: String(c.id || Date.now()),
                   author: c.createdBy?.displayName || c.createdBy?.uniqueName || item.assigneeName || 'Contributor',
                   text: sanitizeAdoRichText(c.text || ''),
-                  createdAt: c.createdDate || new Date().toISOString()
+                  createdAt: c.createdDate || c.modifiedDate || new Date().toISOString()
                 }));
                 item.comments = mappedComments;
                 const latestTxt = mappedComments[0]?.text || '';
