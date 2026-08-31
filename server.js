@@ -4366,6 +4366,32 @@ app.post('/api/email/test-smtp', (req, res) => {
   });
 });
 
+// Hasura GraphQL & PostgreSQL Status & Proxy Route
+app.get('/api/hasura/status', async (req, res) => {
+  const hasuraUrl = process.env.HASURA_GRAPHQL_ENDPOINT || 'http://localhost:8080/v1/graphql';
+  const hasuraSecret = process.env.HASURA_ADMIN_SECRET || 'adminsecretkey';
+
+  try {
+    const response = await fetch(hasuraUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(hasuraSecret ? { 'x-hasura-admin-secret': hasuraSecret } : {})
+      },
+      body: JSON.stringify({
+        query: `query { __schema { queryType { name } } }`
+      })
+    });
+
+    if (response.ok) {
+      return res.json({ ok: true, connected: true, endpoint: hasuraUrl });
+    }
+    return res.json({ ok: false, connected: false, endpoint: hasuraUrl, status: response.status });
+  } catch (err) {
+    return res.json({ ok: false, connected: false, endpoint: hasuraUrl, error: err.message });
+  }
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString(), aiReady: Boolean(process.env.GEMINI_API_KEY) });

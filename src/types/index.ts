@@ -13,6 +13,9 @@ export type AppTheme = 'executive_slate' | 'obsidian_dark' | 'steel_minimal' | '
 export type ThemeId = AppTheme;
 
 export type AppView = 
+  | 'jira_board'
+  | 'jira_backlog'
+  | 'jira_timeline'
   | 'board' 
   | 'stories'
   | 'userStories' 
@@ -680,5 +683,14 @@ export interface AppState {
   adoConfig?: AdoConfig;
   users?: AppUser[];
   currentUserId?: string;
+  // Jira & Hasura Agile Extension
+  jiraProjects?: import('./jira').JiraProject[];
+  jiraSprints?: import('./jira').JiraSprint[];
+  jiraIssues?: import('./jira').JiraIssue[];
+  selectedProjectId?: string | null;
+  selectedSprintId?: string | null;
+  hasuraConfig?: import('./jira').HasuraConnectionConfig;
 }
+
+export * from './jira';
 

@@ -118,6 +118,9 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
 
   // Default canonical tab sequence
   const DEFAULT_TAB_ORDER: AppView[] = [
+    'jira_board',
+    'jira_backlog',
+    'jira_timeline',
     'board',
     'stories',
     // 'testCases', // Commented out per user request
@@ -131,7 +134,7 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
     'settings'
   ];
 
-  const TAB_ORDER_STORAGE_KEY = 'acm_portal_nav_tab_order_v2';
+  const TAB_ORDER_STORAGE_KEY = 'acm_portal_nav_tab_order_v3';
 
   // State for customized tab ordering
   const [tabOrder, setTabOrder] = useState<AppView[]>(() => {
@@ -304,6 +307,30 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
     badgeType: 'critical' | 'accent' | 'neutral';
     group: string;
   }> = {
+    jira_board: {
+      id: 'jira_board' as AppView,
+      label: 'Jira Board',
+      icon: Layers,
+      badge: 'Agile',
+      badgeType: 'accent',
+      group: 'agile'
+    },
+    jira_backlog: {
+      id: 'jira_backlog' as AppView,
+      label: 'Backlog & Sprints',
+      icon: CheckSquare,
+      badge: null,
+      badgeType: 'neutral',
+      group: 'agile'
+    },
+    jira_timeline: {
+      id: 'jira_timeline' as AppView,
+      label: 'Roadmap & Timeline',
+      icon: CalendarIcon,
+      badge: null,
+      badgeType: 'neutral',
+      group: 'agile'
+    },
     board: {
       id: 'board' as AppView,
       label: 'Daily Board',
@@ -560,6 +587,16 @@ export const ModernPortalHeader: React.FC<ModernPortalHeaderProps> = ({
             <span className="sm:hidden text-[11px]">ADO</span>
             <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Azure DevOps Connected" />
           </button>
+
+          {/* Hasura GraphQL & PostgreSQL Indicator */}
+          <div
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-[var(--text-primary)] bg-[var(--bg-subtle)] border border-[var(--border)] rounded-xl shadow-2xs shrink-0"
+            title="Hasura GraphQL & PostgreSQL Data Layer (Dual Persistence Enabled)"
+          >
+            <Layers size={13} className="text-purple-600 dark:text-purple-400 shrink-0" />
+            <span className="hidden xl:inline text-[11px] font-bold">Hasura GraphQL</span>
+            <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Hasura Engine Active" />
+          </div>
 
           {/* Technical Debt & Impact Matrix Popup Trigger */}
           {onOpenTechDebtModal && (

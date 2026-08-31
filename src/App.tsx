@@ -29,6 +29,9 @@ import { PortalSummaryStrip } from './components/layout/PortalSummaryStrip';
 import { CommandPaletteModal } from './components/layout/CommandPaletteModal';
 
 // View Modules
+import { JiraBoardView } from './components/jira/JiraBoardView';
+import { JiraBacklogView } from './components/jira/JiraBacklogView';
+import { JiraTimelineView } from './components/jira/JiraTimelineView';
 import { TaskBoard } from './components/board/TaskBoard';
 import { NewTaskModal } from './components/board/NewTaskModal';
 import { UserStoriesView } from './components/userStories/UserStoriesView';
@@ -41,6 +44,8 @@ import { RetrospectiveView } from './components/retrospective/RetrospectiveView'
 import { PeopleReviewView } from './components/people/PeopleReviewView';
 import { BlueprintView } from './components/blueprint/BlueprintView';
 import { SettingsView } from './components/settings/SettingsView';
+import { graphqlService } from './services/graphqlService';
+import { JiraIssue, JiraSprint, JiraProject } from './types/jira';
 
 // Modals
 import { AdoSyncModal } from './components/ado/AdoSyncModal';
@@ -51,7 +56,7 @@ import { AbsenceRecord, TeamRoastRecord } from './types';
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppState>(loadStoredState);
-  const [activeView, setActiveView] = useState<NavView>('board');
+  const [activeView, setActiveView] = useState<NavView>('jira_board');
   const [currentDateStr, setCurrentDateStr] = useState<string>(toDateStr(new Date()));
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedReleaseId, setSelectedReleaseId] = useState<string | null>(null);
@@ -589,6 +594,82 @@ export const App: React.FC = () => {
     }));
   };
 
+  // Jira Agile State Bridging & Handlers
+  const { projects: jiraProjects, sprints: jiraSprints, issues: jiraIssues } = React.useMemo(() => {
+    return graphqlService.bridgeAppStateToJira(state);
+  }, [state]);
+
+  const handleUpdateJiraIssue = (updated: JiraIssue) => {
+    setState(prev => {
+      const existing = prev.jiraIssues || graphqlService.bridgeAppStateToJira(prev).issues;
+      const updatedList = existing.some(i => i.id === updated.id)
+        ? existing.map(i => (i.id === updated.id ? updated : i))
+        : [...existing, updated];
+
+      return {
+        ...prev,
+        jiraIssues: updatedList
+      };
+    });
+  };
+
+  const handleAddJiraIssue = (newIssue: Partial<JiraIssue>) => {
+    setState(prev => {
+      const existing = prev.jiraIssues || graphqlService.bridgeAppStateToJira(prev).issues;
+      const created: JiraIssue = {
+        id: newIssue.id || `issue-${Date.now()}`,
+        issueKey: newIssue.issueKey || `ACM-${Math.floor(100 + Math.random() * 900)}`,
+        projectId: newIssue.projectId || 'proj-acm',
+        sprintId: newIssue.sprintId || null,
+        issueType: newIssue.issueType || 'Story',
+        summary: newIssue.summary || 'New Issue',
+        description: newIssue.description || '',
+        status: newIssue.status || 'To Do',
+        priority: newIssue.priority || 'medium',
+        storyPoints: newIssue.storyPoints || 3,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      return {
+        ...prev,
+        jiraIssues: [created, ...existing]
+      };
+    });
+  };
+
+  const handleUpdateJiraSprint = (updated: JiraSprint) => {
+    setState(prev => {
+      const existing = prev.jiraSprints || graphqlService.bridgeAppStateToJira(prev).sprints;
+      const updatedList = existing.map(s => (s.id === updated.id ? updated : s));
+      return {
+        ...prev,
+        jiraSprints: updatedList
+      };
+    });
+  };
+
+  const handleAddJiraSprint = (newSprint: Partial<JiraSprint>) => {
+    setState(prev => {
+      const existing = prev.jiraSprints || graphqlService.bridgeAppStateToJira(prev).sprints;
+      const created: JiraSprint = {
+        id: newSprint.id || `sprint-${Date.now()}`,
+        projectId: newSprint.projectId || 'proj-acm',
+        name: newSprint.name || 'New Sprint',
+        goal: newSprint.goal || '',
+        state: newSprint.state || 'future',
+        sequenceNumber: (existing.length || 0) + 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      return {
+        ...prev,
+        jiraSprints: [...existing, created]
+      };
+    });
+  };
+
   // Blueprint Operations
   const handleUpdateBlueprint = (schedule: BlueprintItem[]) => {
     setState(prev => ({
@@ -863,6 +944,43 @@ export const App: React.FC = () => {
 
       {/* Main Full-Width Portal Workspace */}
       <main className="flex-1 w-full max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {activeView === 'jira_board' && (
+          <JiraBoardView
+            issues={jiraIssues}
+            sprints={jiraSprints}
+            projects={jiraProjects}
+            team={state.team}
+            selectedSprintId={state.selectedSprintId}
+            onUpdateIssue={handleUpdateJiraIssue}
+            onAddIssue={handleAddJiraIssue}
+            onSelectSprint={sprintId => setState(prev => ({ ...prev, selectedSprintId: sprintId }))}
+          />
+        )}
+
+        {activeView === 'jira_backlog' && (
+          <JiraBacklogView
+            issues={jiraIssues}
+            sprints={jiraSprints}
+            projects={jiraProjects}
+            team={state.team}
+            onUpdateIssue={handleUpdateJiraIssue}
+            onAddIssue={handleAddJiraIssue}
+            onUpdateSprint={handleUpdateJiraSprint}
+            onAddSprint={handleAddJiraSprint}
+          />
+        )}
+
+        {activeView === 'jira_timeline' && (
+          <JiraTimelineView
+            issues={jiraIssues}
+            sprints={jiraSprints}
+            releases={state.releases}
+            projects={jiraProjects}
+            team={state.team}
+            onUpdateIssue={handleUpdateJiraIssue}
+          />
+        )}
+
         {activeView === 'board' && (
             <TaskBoard
               tasks={state.tasks}
