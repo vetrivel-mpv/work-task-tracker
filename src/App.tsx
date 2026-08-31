@@ -23,7 +23,10 @@ import { matchesReleaseOrIteration } from './utils/adoPaths';
 import { syncAuthSession } from './utils/authClient';
 import { sanitizeAndLinkWorkItems } from './utils/assigneeUtils';
 
-// Layout Components
+// Jira Design System & Layout Components
+import { JiraTopNav } from './components/jira/JiraTopNav';
+import { JiraSidebar } from './components/jira/JiraSidebar';
+import { JiraCreateIssueModal } from './components/jira/JiraCreateIssueModal';
 import { ModernPortalHeader } from './components/layout/ModernPortalHeader';
 import { PortalSummaryStrip } from './components/layout/PortalSummaryStrip';
 import { CommandPaletteModal } from './components/layout/CommandPaletteModal';
@@ -62,6 +65,8 @@ export const App: React.FC = () => {
   const [selectedReleaseId, setSelectedReleaseId] = useState<string | null>(null);
 
   // Modals state
+  const [createIssueModalOpen, setCreateIssueModalOpen] = useState<boolean>(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
   const [newTaskModalOpen, setNewTaskModalOpen] = useState<boolean>(false);
   const [adoModalOpen, setAdoModalOpen] = useState<boolean>(false);
   const [emailModalOpen, setEmailModalOpen] = useState<boolean>(false);
@@ -909,41 +914,64 @@ export const App: React.FC = () => {
 
   return (
     <div className="flex flex-col min-h-screen w-full bg-[var(--bg)] text-[var(--text-primary)] transition-colors">
-      {/* Modern Top Portal Header & Navigation Ribbon */}
-      <ModernPortalHeader
-        activeView={activeView}
-        onNavigate={setActiveView}
-        currentDateStr={currentDateStr}
-        onDateChange={setCurrentDateStr}
+      {/* Jira Global Top Navigation Bar */}
+      <JiraTopNav
+        onOpenCreateModal={() => setCreateIssueModalOpen(true)}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+        onOpenAdoModal={() => setAdoModalOpen(true)}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        releases={state.releases}
-        selectedReleaseId={selectedReleaseId}
-        onSelectRelease={setSelectedReleaseId}
-        onOpenNewTaskModal={() => setNewTaskModalOpen(true)}
-        onOpenAdoModal={() => setAdoModalOpen(true)}
-        onOpenEmailModal={(tab) => handleOpenEmailModal(tab || 'standup')}
-        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
-        onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
+        theme={state.settings.theme}
+        onToggleTheme={() => handleUpdateTheme(state.settings.theme === 'obsidian_dark' ? 'executive_slate' : 'obsidian_dark')}
         dualAdoConfig={state.dualAdoConfig}
-        state={state}
-        onUpdateTheme={handleUpdateTheme}
+        projectName={state.settings.appName || 'ACM Delivery & Core Platform'}
+        projectKey={state.settings.projectCode || 'ACM'}
       />
 
-      {/* Contextual Telemetry & Horizon Summary Strip */}
-      <PortalSummaryStrip
-        activeView={activeView}
-        state={state}
-        currentDateStr={currentDateStr}
-        searchQuery={searchQuery}
-        onClearSearch={() => setSearchQuery('')}
-        selectedReleaseId={selectedReleaseId}
-        onClearReleaseFilter={() => setSelectedReleaseId(null)}
-        onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
-      />
+      {/* Main Jira Workspace: Left Sidebar + Center Canvas */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <JiraSidebar
+          activeView={activeView}
+          onNavigate={setActiveView}
+          projectName={state.settings.appName || 'ACM Delivery'}
+          projectKey={state.settings.projectCode || 'ACM'}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          counts={{
+            issues: jiraIssues.length,
+            defects: state.defects.length,
+            releases: state.releases.length,
+            team: state.team.length
+          }}
+        />
 
-      {/* Main Full-Width Portal Workspace */}
-      <main className="flex-1 w-full max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Center / Right Content Canvas */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto bg-[var(--bg)]">
+          {/* Jira Breadcrumb Header Strip */}
+          <div className="px-6 py-2.5 flex items-center justify-between gap-3 text-xs border-b border-[var(--border)] bg-[var(--surface)] shrink-0">
+            <div className="flex items-center gap-2 font-medium text-[var(--text-muted)]">
+              <span>Projects</span>
+              <span>/</span>
+              <span className="font-semibold text-[var(--text-secondary)]">{state.settings.appName || 'ACM Delivery'}</span>
+              <span>/</span>
+              <span className="font-bold text-[var(--text-primary)] capitalize">
+                {activeView.replace('jira_', '').replace('_', ' ')}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCreateIssueModalOpen(true)}
+                className="px-2.5 py-1 text-xs font-bold text-white bg-[#0052CC] hover:bg-[#0747A6] rounded shadow-2xs cursor-pointer inline-flex items-center gap-1 transition-all"
+              >
+                <span>+ Create</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Main View Container */}
+          <main className="flex-1 w-full max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-5">
         {activeView === 'jira_board' && (
           <JiraBoardView
             issues={jiraIssues}
@@ -1172,13 +1200,25 @@ export const App: React.FC = () => {
             />
           )}
         </main>
+      </div>
+    </div>
+
+      {/* Jira Create Issue Modal */}
+      <JiraCreateIssueModal
+        isOpen={createIssueModalOpen}
+        onClose={() => setCreateIssueModalOpen(false)}
+        projects={jiraProjects}
+        sprints={jiraSprints}
+        team={state.team}
+        onAddIssue={handleAddJiraIssue}
+      />
 
       {/* Global Modals */}
       <CommandPaletteModal
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         onNavigate={setActiveView}
-        onOpenNewTask={() => setNewTaskModalOpen(true)}
+        onOpenNewTask={() => setCreateIssueModalOpen(true)}
         onOpenAdoModal={() => setAdoModalOpen(true)}
         onOpenEmailModal={() => handleOpenEmailModal('standup')}
         onOpenTechDebtModal={() => setTechDebtModalOpen(true)}

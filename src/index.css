@@ -1,91 +1,91 @@
 @import "tailwindcss";
 
-:root, [data-theme="executive_slate"] {
-  --bg: #F8FAFC;
-  --bg-subtle: #F1F5F9;
+:root, [data-theme="executive_slate"], [data-theme="jira_light"] {
+  --bg: #F4F5F7;
+  --bg-subtle: #EBECF0;
   --surface: #FFFFFF;
-  --surface-hover: #F8FAFC;
-  --surface-active: #EEF2F6;
-  --border: #E2E8F0;
-  --border-strong: #CBD5E1;
-  --border-focus: #4F46E5;
-  --text-primary: #0F172A;
-  --text-secondary: #475569;
-  --text-muted: #94A3B8;
+  --surface-hover: #FAFBFC;
+  --surface-active: #EBECF0;
+  --border: #DFE1E6;
+  --border-strong: #C1C7D0;
+  --border-focus: #4C9AFF;
+  --text-primary: #172B4D;
+  --text-secondary: #42526E;
+  --text-muted: #6B778C;
   
-  --primary: #4F46E5;
-  --primary-hover: #4338CA;
-  --primary-light: #EEF2FF;
-  --primary-text: #4F46E5;
+  --primary: #0052CC;
+  --primary-hover: #0747A6;
+  --primary-light: #DEEBFF;
+  --primary-text: #0052CC;
   
-  --secondary-accent: #0284C7;
-  --secondary-light: #E0F2FE;
+  --secondary-accent: #00A3BF;
+  --secondary-light: #E6FCFF;
 
-  --internal-ado: #4F46E5;
-  --internal-ado-bg: #EEF2FF;
+  --internal-ado: #0052CC;
+  --internal-ado-bg: #DEEBFF;
 
-  --critical: #DC2626;
-  --critical-bg: #FEF2F2;
-  --critical-border: #FECACA;
+  --critical: #DE350B;
+  --critical-bg: #FFEBE6;
+  --critical-border: #FFBDAD;
   
-  --high: #EA580C;
-  --high-bg: #FFF7ED;
-  --high-border: #FFEDD5;
+  --high: #FF5630;
+  --high-bg: #FFF0B3;
+  --high-border: #FFE380;
   
-  --medium: #D97706;
-  --medium-bg: #FFFBEB;
-  --medium-border: #FEF3C7;
+  --medium: #FFAB00;
+  --medium-bg: #FFF0B3;
+  --medium-border: #FFE380;
   
-  --low: #16A34A;
-  --low-bg: #F0FDF4;
-  --low-border: #DCFCE7;
+  --low: #36B37E;
+  --low-bg: #E3FCEF;
+  --low-border: #ABF5D1;
   
-  --card-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.05);
-  --header-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.03);
+  --card-shadow: 0 1px 1px rgb(9 30 66 / 25%), 0 0 1px 0 rgb(9 30 66 / 31%);
+  --header-shadow: 0 1px 2px rgb(9 30 66 / 8%);
 }
 
-[data-theme="obsidian_dark"] {
-  --bg: #090D16;
-  --bg-subtle: #0F172A;
-  --surface: #131C2E;
-  --surface-hover: #1E293B;
-  --surface-active: #27354A;
-  --border: #1E293B;
-  --border-strong: #334155;
-  --border-focus: #6366F1;
-  --text-primary: #F8FAFC;
-  --text-secondary: #CBD5E1;
-  --text-muted: #64748B;
+[data-theme="obsidian_dark"], [data-theme="jira_dark"] {
+  --bg: #1D2125;
+  --bg-subtle: #161A1D;
+  --surface: #22272B;
+  --surface-hover: #282E33;
+  --surface-active: #2C333A;
+  --border: #2C333A;
+  --border-strong: #383F45;
+  --border-focus: #579DFF;
+  --text-primary: #F7F8F9;
+  --text-secondary: #B6C2CF;
+  --text-muted: #738496;
   
-  --primary: #6366F1;
-  --primary-hover: #4F46E5;
-  --primary-light: #1E1B4B;
-  --primary-text: #A5B4FC;
+  --primary: #579DFF;
+  --primary-hover: #85B8FF;
+  --primary-light: #1C2B41;
+  --primary-text: #579DFF;
   
-  --secondary-accent: #38BDF8;
-  --secondary-light: #0C4A6E;
+  --secondary-accent: #6CC3E0;
+  --secondary-light: #1D333B;
 
-  --internal-ado: #818CF8;
-  --internal-ado-bg: #1E1B4B;
+  --internal-ado: #579DFF;
+  --internal-ado-bg: #1C2B41;
 
-  --critical: #F87171;
-  --critical-bg: #450A0A;
-  --critical-border: #7F1D1D;
+  --critical: #FF6654;
+  --critical-bg: #441C16;
+  --critical-border: #5D1F1A;
   
-  --high: #FB923C;
-  --high-bg: #431407;
-  --high-border: #7C2D12;
+  --high: #FE8F2B;
+  --high-bg: #43220A;
+  --high-border: #5C2D0E;
   
-  --medium: #FBBF24;
-  --medium-bg: #451A03;
-  --medium-border: #78350F;
+  --medium: #E2B203;
+  --medium-bg: #3B2E05;
+  --medium-border: #533F04;
   
-  --low: #4ADE80;
-  --low-bg: #052E16;
-  --low-border: #14532D;
+  --low: #4BCE97;
+  --low-bg: #143627;
+  --low-border: #164B35;
   
-  --card-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
-  --header-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.2);
+  --card-shadow: 0 1px 1px rgb(0 0 0 / 50%), 0 0 1px 0 rgb(0 0 0 / 60%);
+  --header-shadow: 0 1px 2px rgb(0 0 0 / 40%);
 }
 
 [data-theme="steel_minimal"] {
