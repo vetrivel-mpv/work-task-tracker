@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. PostgreSQL Relational Database
   postgres:
@@ -17,8 +15,8 @@ services:
       - ./server/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d acm_jira"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
     networks:
       - northstar-net
@@ -40,11 +38,6 @@ services:
       HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup, http-log, webhook-log, websocket-log, query-log
       HASURA_GRAPHQL_ADMIN_SECRET: adminsecretkey
       HASURA_GRAPHQL_UNAUTHORIZED_ROLE: public
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - northstar-net
 
@@ -57,6 +50,8 @@ services:
     restart: unless-stopped
     depends_on:
       hasura:
+        condition: service_started
+      postgres:
         condition: service_healthy
     ports:
       - "3000:3000"
@@ -66,11 +61,6 @@ services:
       POSTGRES_DB_URL: postgres://postgres:postgrespassword@postgres:5432/acm_jira
       HASURA_GRAPHQL_ENDPOINT: http://hasura:8080/v1/graphql
       HASURA_ADMIN_SECRET: adminsecretkey
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - northstar-net
 
