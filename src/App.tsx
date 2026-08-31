@@ -916,6 +916,7 @@ export const App: React.FC = () => {
     <div className="flex flex-col min-h-screen w-full bg-[var(--bg)] text-[var(--text-primary)] transition-colors">
       {/* Jira Global Top Navigation Bar */}
       <JiraTopNav
+        onNavigate={setActiveView}
         onOpenCreateModal={() => setCreateIssueModalOpen(true)}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenAdoModal={() => setAdoModalOpen(true)}
