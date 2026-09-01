@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Release, ReleaseStatus, UserStory, Defect, Task, TestCase, DualAdoConfig, AdoConfig } from '../../types';
 import { 
   Plus, 
@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 import { generateReleaseNotes } from '../../services/aiService';
 import { generateId, toDateStr, formatDisplayDate } from '../../utils/date';
-import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber, parseAdoTarget, matchesReleaseOrIteration } from '../../utils/adoPaths';
+import { getAllAreaPaths, getIterationPathsForArea, extractReleaseNumber, parseAdoTarget, matchesReleaseOrIteration, deduplicateAndMergeReleases, normalizeReleaseKey } from '../../utils/adoPaths';
 import { SearchableSelect } from '../common/SearchableSelect';
 import { adoService, AdoSyncResponse, AdoIterationDto, AdoAreaDto } from '../../services/adoService';
 import { isTestCaseItem, isDefectItem, convertStoryToTestCase } from '../../utils/itemClassification';
@@ -336,7 +336,10 @@ export const ReleasesView: React.FC<ReleasesViewProps> = ({
     }
   }, [toastMessage]);
 
-  const filteredReleases = releases;
+  // Strict Release Deduplication & Consolidation
+  const filteredReleases: Release[] = useMemo(() => {
+    return deduplicateAndMergeReleases(releases).mergedReleases;
+  }, [releases]);
 
   // Resolve effective ADO target credentials
   const getEffectiveAdoTarget = () => {
@@ -658,6 +661,17 @@ export const ReleasesView: React.FC<ReleasesViewProps> = ({
   const handleSaveModal = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !targetDate) return;
+
+    const newKey = normalizeReleaseKey(name.trim(), iterationPath.trim(), releaseNumber.trim());
+    const duplicate = filteredReleases.find(r => 
+      r.id !== editingRelease?.id && 
+      normalizeReleaseKey(r.name, r.iterationPath, r.releaseNumber) === newKey
+    );
+
+    if (duplicate && !editingRelease) {
+      alert(`A release for "${duplicate.name}" (${duplicate.releaseNumber || 'v' + extractReleaseNumber(duplicate.name)}) already exists. Duplicate releases are restricted.`);
+      return;
+    }
 
     if (editingRelease) {
       onUpdateRelease({

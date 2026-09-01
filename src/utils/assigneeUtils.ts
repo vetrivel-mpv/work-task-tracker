@@ -103,11 +103,19 @@ export function getWorkItemAssignee(
     }
 
     // 3. Fallback virtual assignee from assigneeName
+    let virtualEmail = '';
+    const emailMatch = (assigneeName || '').match(/<([^>]+)>/);
+    if (emailMatch) {
+      virtualEmail = emailMatch[1].trim();
+    } else if (cleanName.includes('@')) {
+      virtualEmail = cleanName.trim();
+    }
+
     return {
       id: assigneeId || generateMemberIdFromName(cleanName),
       name: cleanName,
       role: 'Team Member',
-      email: `${cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`,
+      email: virtualEmail,
       avatarColor: getAvatarColorForName(cleanName),
       avatarInitials: getInitials(cleanName),
       isVirtual: true
@@ -127,7 +135,7 @@ export function getWorkItemAssignee(
         id: generateMemberIdFromName(id),
         name: id,
         role: 'Team Member',
-        email: `${id.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`,
+        email: id.includes('@') ? id.trim() : '',
         avatarColor: getAvatarColorForName(id),
         avatarInitials: getInitials(id),
         isVirtual: true
@@ -289,7 +297,7 @@ export function sanitizeAndLinkWorkItems(
 
     const finalEmail = extractedEmail && extractedEmail.includes('@')
       ? extractedEmail
-      : `${cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`;
+      : '';
 
     const newMember: TeamMember = {
       id: memberId,

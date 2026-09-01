@@ -58,7 +58,7 @@ export function ensureUsersAndRoles(state: Partial<AppState>): { users: AppUser[
       existingUsers.push({
         id: member.id || generateId('usr'),
         name: member.name || `User ${idx + 1}`,
-        email: member.email || `user${idx + 1}@company.com`,
+        email: member.email || '',
         role: validRole,
         orgScope: primaryOrg !== '*' ? primaryOrg : '*',
         projectScope: primaryProject !== '*' ? primaryProject : '*',
@@ -95,7 +95,7 @@ export function ensureUsersAndRoles(state: Partial<AppState>): { users: AppUser[
         existingUsers.push({
           id: member.id || generateId('usr'),
           name: member.name,
-          email: member.email || `user-${idx}@company.com`,
+          email: member.email || '',
           role: Object.values(UserRole).includes(member.role as UserRole) ? (member.role as UserRole) : UserRole.StakeholderViewer,
           orgScope: primaryOrg,
           projectScope: primaryProject,
@@ -234,7 +234,7 @@ export function syncAdoUsersWithDeduplication(params: {
       const newUser: AppUser = {
         id: newUserId,
         name: origName,
-        email: origEmail || `${origName.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`,
+        email: origEmail || '',
         role: UserRole.StakeholderViewer,
         orgScope: orgScope !== '*' ? orgScope : '*',
         projectScope: projectScope !== '*' ? projectScope : '*',

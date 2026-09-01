@@ -355,4 +355,96 @@ export function matchesReleaseOrIteration(
   return false;
 }
 
+/**
+ * Generates a unified canonical key for a release to detect duplicates regardless of:
+ * - "ACM\D5 R 2026.09" vs "D5 R 2026.09" vs "simetricwdh\ACM\D5 R 2026.09"
+ * - Release numbers "v2026.09" vs "2026.09"
+ */
+export function normalizeReleaseKey(name: string, iterationPath?: string, releaseNumber?: string): string {
+  const stripPrefix = (str: string) => {
+    return (str || '')
+      .replace(/^simetricwdh\\/i, '')
+      .replace(/^acm\\/i, '')
+      .replace(/^[\w-]+\\/i, '')
+      .trim();
+  };
+
+  const cleanName = stripPrefix(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cleanIter = stripPrefix(iterationPath || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cleanNum = (releaseNumber || extractReleaseNumber(name) || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const dMatch = (name + ' ' + (iterationPath || '')).match(/d(\d+)/i);
+  const dTag = dMatch ? `d${dMatch[1]}` : '';
+
+  if (dTag && cleanNum) {
+    return `${dTag}-${cleanNum}`;
+  }
+
+  return cleanIter || cleanName || cleanNum || 'release-default';
+}
+
+/**
+ * Deduplicates and consolidates release records, merging duplicates and returning
+ * the canonical clean list along with an ID redirection map for work items.
+ */
+export function deduplicateAndMergeReleases(releases: Release[]): {
+  mergedReleases: Release[];
+  idRedirectMap: Map<string, string>;
+} {
+  const groups = new Map<string, Release[]>();
+  const idRedirectMap = new Map<string, string>();
+
+  (releases || []).forEach(rel => {
+    const key = normalizeReleaseKey(rel.name, rel.iterationPath, rel.releaseNumber);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key)!.push(rel);
+  });
+
+  const mergedReleases: Release[] = [];
+
+  groups.forEach((groupRels) => {
+    groupRels.sort((a, b) => {
+      const aHasPrefix = a.name.includes('\\');
+      const bHasPrefix = b.name.includes('\\');
+      if (!aHasPrefix && bHasPrefix) return -1;
+      if (aHasPrefix && !bHasPrefix) return 1;
+
+      if (a.status !== 'Planning' && b.status === 'Planning') return -1;
+      if (a.status === 'Planning' && b.status !== 'Planning') return 1;
+
+      return 0;
+    });
+
+    const canonical = groupRels[0];
+    const canonicalId = canonical.id;
+
+    const cleanName = canonical.name.includes('\\') 
+      ? canonical.name.split('\\').pop()!.trim() 
+      : canonical.name;
+
+    const fullIterPath = canonical.iterationPath?.includes('\\') 
+      ? canonical.iterationPath 
+      : `ACM\\${cleanName}`;
+
+    const merged: Release = {
+      ...canonical,
+      name: cleanName,
+      iterationPath: fullIterPath,
+      releaseNumber: canonical.releaseNumber || extractReleaseNumber(cleanName),
+      description: canonical.description || groupRels.find(r => r.description)?.description || '',
+      scopeNotes: canonical.scopeNotes || groupRels.find(r => r.scopeNotes)?.scopeNotes || ''
+    };
+
+    mergedReleases.push(merged);
+
+    groupRels.forEach(r => {
+      idRedirectMap.set(r.id, canonicalId);
+    });
+  });
+
+  return { mergedReleases, idRedirectMap };
+}
+
 

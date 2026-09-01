@@ -16,9 +16,27 @@ export interface EmailRenderOutput {
  * Apple Mail or Word preserves standard corporate tables and formatting.
  */
 export async function copyHtmlAsRichText(html: string, fallbackPlain: string): Promise<boolean> {
+  const completeHtmlDoc = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delivery & QA Status Report</title>
+<!--[if mso]>
+<style type="text/css">
+  table {border-collapse:collapse;border-spacing:0;margin:0;}
+  div, p, a, li, td { -webkit-text-size-adjust:none; font-family: Calibri, 'Segoe UI', Arial, sans-serif; }
+</style>
+<![endif]-->
+</head>
+<body style="margin: 0; padding: 12px; background-color: #ffffff; font-family: Calibri, 'Segoe UI', Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+${html}
+</body>
+</html>`;
+
   try {
     if (navigator.clipboard && window.ClipboardItem) {
-      const blobHtml = new Blob([html], { type: 'text/html' });
+      const blobHtml = new Blob([completeHtmlDoc], { type: 'text/html' });
       const blobText = new Blob([fallbackPlain], { type: 'text/plain' });
       const item = new ClipboardItem({
         'text/html': blobHtml,

@@ -19,7 +19,7 @@ import {
 import { loadStoredState, saveStoredState, resetToDemoState, loadFromIndexedDB } from './utils/storage';
 import { toDateStr, shiftDate, generateId } from './utils/date';
 import { isTestCaseItem, isDefectItem, convertStoryToTestCase, filterPureUserStories } from './utils/itemClassification';
-import { matchesReleaseOrIteration } from './utils/adoPaths';
+import { matchesReleaseOrIteration, deduplicateAndMergeReleases } from './utils/adoPaths';
 import { syncAuthSession } from './utils/authClient';
 import { sanitizeAndLinkWorkItems } from './utils/assigneeUtils';
 
@@ -445,9 +445,11 @@ export const App: React.FC = () => {
         `Total releases available in dropdowns: ${prev.releases.length + 1}`
       );
 
+      const { mergedReleases } = deduplicateAndMergeReleases([sanitizedRelease, ...prev.releases]);
+
       return {
         ...prev,
-        releases: [sanitizedRelease, ...prev.releases]
+        releases: mergedReleases
       };
     });
   };
@@ -468,9 +470,13 @@ export const App: React.FC = () => {
         createdAt: updatedRelease.createdAt || toDateStr(new Date())
       };
 
+      const { mergedReleases } = deduplicateAndMergeReleases(
+        prev.releases.map(r => r.id === sanitizedRelease.id ? sanitizedRelease : r)
+      );
+
       return {
         ...prev,
-        releases: prev.releases.map(r => r.id === sanitizedRelease.id ? sanitizedRelease : r)
+        releases: mergedReleases
       };
     });
   };
@@ -843,14 +849,36 @@ export const App: React.FC = () => {
         updatedTasks = Array.from(taskMap.values());
       }
 
-      // 4. Merge Releases
-      const releaseMap = new Map(prev.releases.map(r => [r.id, r]));
-      if (synced.releases) {
-        synced.releases.forEach(r => {
-          releaseMap.set(r.id, r);
-        });
-      }
-      const updatedReleases = Array.from(releaseMap.values());
+      // 4. Merge Releases with Strict Deduplication
+      const allIncomingReleases = [...prev.releases, ...(synced.releases || [])];
+      const { mergedReleases: updatedReleases, idRedirectMap } = deduplicateAndMergeReleases(allIncomingReleases);
+
+      const remapRelId = (relId?: string | null) => {
+        if (!relId) return relId;
+        return idRedirectMap.get(relId) || relId;
+      };
+
+      updatedStories = updatedStories.map(s => ({
+        ...s,
+        releaseId: remapRelId(s.releaseId) || s.releaseId
+      }));
+
+      updatedDefects = updatedDefects.map(d => ({
+        ...d,
+        releaseId: remapRelId(d.releaseId) || d.releaseId
+      }));
+
+      updatedTasks = updatedTasks.map(t => ({
+        ...t,
+        releaseId: remapRelId(t.releaseId) || t.releaseId
+      }));
+
+      updatedTestCases = updatedTestCases.map(tc => ({
+        ...tc,
+        releaseId: remapRelId(tc.releaseId) || tc.releaseId
+      }));
+
+      const finalTargetReleaseId = targetReleaseId ? (idRedirectMap.get(targetReleaseId) || targetReleaseId) : null;
 
       // 5. Merge Team Members
       const existingMemberNames = new Set(prev.team.map(m => m.name.toLowerCase()));
@@ -859,20 +887,31 @@ export const App: React.FC = () => {
 
       if (synced.teamMembers) {
         synced.teamMembers.forEach((tm: any, idx) => {
-          if (tm.name && !existingMemberNames.has(tm.name.toLowerCase())) {
-            existingMemberNames.add(tm.name.toLowerCase());
-            const emailSlug = tm.name.toLowerCase().replace(/[^a-z0-9]/g, '.');
-            newMembers.push({
-              id: `member-${tm.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
-              name: tm.name,
-              role: tm.role || (tm.source === 'created_by' ? 'Product / ADO Creator' : 'Software Engineer'),
-              email: `${emailSlug}@company.com`,
-              avatarColor: avatarColors[(newMembers.length + idx) % avatarColors.length],
-              groupIds: [],
-              active: true,
-              isMyTeam: false,
-              adoSource: tm.source || 'assigned_to'
-            });
+          const tmName = (tm.name || '').trim();
+          const tmEmail = (tm.email || '').trim();
+          if (tmName) {
+            const existingIdx = newMembers.findIndex(m => m.name.toLowerCase() === tmName.toLowerCase() || (tmEmail && m.email && m.email.toLowerCase() === tmEmail.toLowerCase()));
+            if (existingIdx >= 0) {
+              if (tmEmail && tmEmail.includes('@') && newMembers[existingIdx].email !== tmEmail) {
+                newMembers[existingIdx] = {
+                  ...newMembers[existingIdx],
+                  email: tmEmail
+                };
+              }
+            } else {
+              existingMemberNames.add(tmName.toLowerCase());
+              newMembers.push({
+                id: `member-${tmName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+                name: tmName,
+                role: tm.role || (tm.source === 'created_by' ? 'Product / ADO Creator' : 'Software Engineer'),
+                email: tmEmail || '',
+                avatarColor: avatarColors[(newMembers.length + idx) % avatarColors.length],
+                groupIds: [],
+                active: true,
+                isMyTeam: false,
+                adoSource: tm.source || 'assigned_to'
+              });
+            }
           }
         });
       }

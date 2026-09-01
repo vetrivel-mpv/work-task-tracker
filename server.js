@@ -2823,7 +2823,7 @@ app.all('/api/ado/team-users', async (req, res) => {
             const userEmail = (identity.uniqueName || identity.mailAddress || identity.mail || identity.principalName || (identity.descriptor && identity.descriptor.includes('@') ? identity.descriptor : '') || '').trim();
 
             if (originalName) {
-              const cleanEmail = (userEmail && userEmail.includes('@')) ? userEmail : `${originalName.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`;
+              const cleanEmail = (userEmail && userEmail.includes('@')) ? userEmail : (userEmail || '');
               if (!discoveredUsersMap.has(originalName.toLowerCase())) {
                 discoveredUsersMap.set(originalName.toLowerCase(), {
                   id: `usr-ado-${identity.id || originalName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
@@ -2893,7 +2893,7 @@ app.all('/api/ado/team-users', async (req, res) => {
                   }
                 }
                 if (!name || name.toLowerCase() === 'unassigned') return null;
-                return { name, email: email.includes('@') ? email : `${name.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com` };
+                return { name, email: (email && email.includes('@')) ? email.trim() : (email || '') };
               };
 
               const aIdent = extractIdentity(assignedTo);
@@ -3275,7 +3275,7 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       if (!clean || clean.toLowerCase() === 'unassigned' || clean.toLowerCase() === 'none' || clean.toLowerCase() === 'null') return null;
       
       const memberId = `member-${clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`;
-      const cleanEmail = email && email.includes('@') ? email.trim() : `${clean.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`;
+      const cleanEmail = email && email.includes('@') ? email.trim() : (email || '');
 
       if (!discoveredTeamMembers.has(memberId)) {
         const colorIdx = Math.abs(clean.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % avatarColors.length;
