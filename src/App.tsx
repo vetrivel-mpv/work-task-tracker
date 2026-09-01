@@ -22,6 +22,7 @@ import { isTestCaseItem, isDefectItem, convertStoryToTestCase, filterPureUserSto
 import { matchesReleaseOrIteration, deduplicateAndMergeReleases } from './utils/adoPaths';
 import { syncAuthSession } from './utils/authClient';
 import { sanitizeAndLinkWorkItems } from './utils/assigneeUtils';
+import { ensureUsersAndRoles } from './utils/userManagement';
 
 // Jira Design System & Layout Components
 import { JiraTopNav } from './components/jira/JiraTopNav';
@@ -47,6 +48,7 @@ import { RetrospectiveView } from './components/retrospective/RetrospectiveView'
 import { PeopleReviewView } from './components/people/PeopleReviewView';
 import { BlueprintView } from './components/blueprint/BlueprintView';
 import { SettingsView } from './components/settings/SettingsView';
+import { EnvironmentActivityHubView } from './components/environments/EnvironmentActivityHubView';
 import { graphqlService } from './services/graphqlService';
 import { JiraIssue, JiraSprint, JiraProject } from './types/jira';
 
@@ -924,6 +926,14 @@ export const App: React.FC = () => {
         team: newMembers
       });
 
+      const userSyncResult = ensureUsersAndRoles({
+        users: prev.users,
+        team: sanitized.team,
+        dualAdoConfig: prev.dualAdoConfig,
+        adoConfig: prev.adoConfig,
+        settings: prev.settings
+      });
+
       return {
         ...prev,
         userStories: sanitized.userStories,
@@ -931,6 +941,7 @@ export const App: React.FC = () => {
         defects: sanitized.defects,
         tasks: sanitized.tasks,
         team: sanitized.team,
+        users: userSyncResult.users,
         releases: updatedReleases,
         selectedReleaseId: targetReleaseId
       };
@@ -1231,6 +1242,17 @@ export const App: React.FC = () => {
               blueprintSchedule={state.blueprintSchedule}
               onUpdateBlueprint={handleUpdateBlueprint}
               onApplyToday={handleApplyBlueprint}
+            />
+          )}
+
+          {activeView === 'environments' && (
+            <EnvironmentActivityHubView
+              state={state}
+              onUpdateTask={handleUpdateTask}
+              onAddTask={handleAddTask}
+              onUpdateStory={handleUpdateStory}
+              onUpdateDefect={handleUpdateDefect}
+              onOpenEmailModal={handleOpenEmailModal}
             />
           )}
 

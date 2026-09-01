@@ -27,7 +27,8 @@ import {
   MessageSquareQuote,
   Award,
   Check,
-  Mail
+  Mail,
+  Server
 } from 'lucide-react';
 import { AppTheme, DualAdoConfig, AppView } from '../../types';
 
@@ -310,6 +311,18 @@ export const JiraTopNav: React.FC<JiraTopNavProps> = ({
                 <span className="px-2 py-1 text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">
                   Agile Dashboards
                 </span>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onNavigate('environments');
+                    setActiveDropdown(null);
+                  }}
+                  className="w-full px-2.5 py-2 rounded-xl hover:bg-[var(--surface-hover)] text-left cursor-pointer flex items-center gap-2 text-[var(--text-primary)] font-semibold"
+                >
+                  <Server size={14} className="text-purple-600" />
+                  <span>Environment Activity Hub</span>
+                </button>
 
                 <button
                   type="button"

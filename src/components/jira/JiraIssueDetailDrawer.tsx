@@ -35,7 +35,8 @@ import {
   Zap,
   CheckCircle2,
   AlertCircle,
-  FolderGit2
+  FolderGit2,
+  Server
 } from 'lucide-react';
 import { adoService } from '../../services/adoService';
 import { graphqlService } from '../../services/graphqlService';
@@ -508,6 +509,26 @@ export const JiraIssueDetailDrawer: React.FC<JiraIssueDetailDrawerProps> = ({
                 onChange={e => handleIterationPathChange(e.target.value)}
                 className="p-1.5 rounded-lg font-mono font-medium text-xs bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
               />
+            </div>
+
+            {/* Environment */}
+            <div className="flex flex-col gap-1 sm:col-span-2">
+              <span className="text-[10.5px] font-bold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1">
+                <Server size={11} className="text-purple-500" />
+                <span>Environment</span>
+              </span>
+              <select
+                value={issue.environment || 'QA'}
+                onChange={e => onUpdateIssue({ ...issue, environment: e.target.value, updatedAt: new Date().toISOString() })}
+                className="p-1.5 rounded-lg font-bold text-xs bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)] outline-none cursor-pointer"
+              >
+                <option value="QA">🧪 QA Staging</option>
+                <option value="Dev">💻 Dev Local / Test</option>
+                <option value="UAT">🤝 UAT Client</option>
+                <option value="Staging">🚀 Staging / Pre-Prod</option>
+                <option value="Production">🌐 Production</option>
+                <option value="Hotfix">⚡ Hotfix / Sandbox</option>
+              </select>
             </div>
 
             {/* ADO Area Path */}

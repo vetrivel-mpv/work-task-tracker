@@ -24,6 +24,7 @@ export type AppView =
   | 'qa_dashboard'
   | 'defectsDashboard' 
   | 'releases' 
+  | 'environments'
   | 'standup' 
   | 'retrospective'
   | 'people'
@@ -65,6 +66,8 @@ export interface Task {
   customerName?: string;
   areaPath?: string;
   iterationPath?: string;
+  environment?: string;
+  timeSpentHours?: number;
   userStoryId?: string | null;
   defectId?: string | null;
   parentId?: number | string | null;
@@ -259,6 +262,7 @@ export interface UserStory {
   storyPoints?: number;
   areaPath?: string;
   releaseId?: string | null;
+  environment?: string;
   assigneeId?: string | null;
   assigneeName?: string;
   createdById?: string | null;

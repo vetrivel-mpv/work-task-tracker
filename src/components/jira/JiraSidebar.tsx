@@ -15,7 +15,8 @@ import {
   ChevronRight, 
   Clock,
   Mail,
-  Flame
+  Flame,
+  Server
 } from 'lucide-react';
 import { AppView } from '../../types';
 
@@ -51,7 +52,8 @@ export const JiraSidebar: React.FC<JiraSidebarProps> = ({
     { id: 'jira_board', label: 'Board', icon: Layers },
     { id: 'jira_backlog', label: 'Backlog', icon: CheckSquare },
     { id: 'jira_timeline', label: 'Timeline', icon: Calendar },
-    { id: 'releases', label: 'Releases', icon: Rocket }
+    { id: 'releases', label: 'Releases', icon: Rocket },
+    { id: 'environments', label: 'Environments', icon: Server }
   ];
 
   const qualityItems: { id: AppView; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }[] = [

@@ -3600,6 +3600,7 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       testCases: fetchedTestCases,
       tasks: fetchedTasks,
       teamMembers: Array.from(discoveredTeamMembers.values()),
+      discoveredUsers: Array.from(discoveredTeamMembers.values()),
       source: 'live_ado_wiql',
       durationMs: Date.now() - startTime,
       authSession: {
