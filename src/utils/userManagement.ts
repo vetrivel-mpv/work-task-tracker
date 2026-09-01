@@ -199,7 +199,32 @@ export function syncAdoUsersWithDeduplication(params: {
     if (!origName) return;
 
     if (isUserExisting(origName, origEmail)) {
-      // User already exists -> IGNORE adding
+      // User already exists -> Update email if incoming has genuine real email address
+      if (origEmail && origEmail.includes('@')) {
+        const uIdx = usersResult.findIndex(u => 
+          u.name.toLowerCase() === origName.toLowerCase() ||
+          (u.email && u.email.toLowerCase() === origEmail.toLowerCase())
+        );
+        if (uIdx >= 0 && usersResult[uIdx].email !== origEmail) {
+          usersResult[uIdx] = {
+            ...usersResult[uIdx],
+            email: origEmail,
+            updatedAt: new Date().toISOString()
+          };
+        }
+
+        const mIdx = teamResult.findIndex(m => 
+          m.name.toLowerCase() === origName.toLowerCase() ||
+          (m.email && m.email.toLowerCase() === origEmail.toLowerCase())
+        );
+        if (mIdx >= 0 && teamResult[mIdx].email !== origEmail) {
+          teamResult[mIdx] = {
+            ...teamResult[mIdx],
+            email: origEmail
+          };
+        }
+      }
+
       ignoredUsers.push(`${origName} (${origEmail || 'no-email'})`);
     } else {
       // New user only -> ADD it

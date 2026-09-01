@@ -256,22 +256,46 @@ export function sanitizeAndLinkWorkItems(
 
   const getOrCreateMember = (rawName?: string | null, role: string = 'Software Engineer'): TeamMember | null => {
     if (!rawName || isUnassignedValue(rawName)) return null;
-    const cleanName = rawName.replace(/<[^>]+>/, '').trim();
+
+    let extractedEmail = '';
+    let cleanName = String(rawName).trim();
+    const emailMatch = rawName.match(/<([^>]+)>/);
+    if (emailMatch) {
+      extractedEmail = emailMatch[1].trim();
+      cleanName = rawName.replace(/<[^>]+>/, '').trim();
+    } else if (rawName.includes('@') && !rawName.includes(' ')) {
+      extractedEmail = rawName.trim();
+      cleanName = rawName.split('@')[0].trim();
+    }
+
     if (!cleanName || isUnassignedValue(cleanName)) return null;
 
-    const existing = teamMemberMap.get(cleanName.toLowerCase());
-    if (existing) return existing;
+    const existing = teamMemberMap.get(cleanName.toLowerCase()) || (extractedEmail ? teamMemberMap.get(extractedEmail.toLowerCase()) : null);
+    if (existing) {
+      if (extractedEmail && extractedEmail.includes('@') && existing.email !== extractedEmail) {
+        existing.email = extractedEmail;
+      }
+      return existing;
+    }
 
     const memberId = generateMemberIdFromName(cleanName);
     const existingById = teamMemberMap.get(memberId.toLowerCase());
-    if (existingById) return existingById;
+    if (existingById) {
+      if (extractedEmail && extractedEmail.includes('@') && existingById.email !== extractedEmail) {
+        existingById.email = extractedEmail;
+      }
+      return existingById;
+    }
 
-    const emailSlug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '.');
+    const finalEmail = extractedEmail && extractedEmail.includes('@')
+      ? extractedEmail
+      : `${cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`;
+
     const newMember: TeamMember = {
       id: memberId,
       name: cleanName,
       role,
-      email: `${emailSlug}@company.com`,
+      email: finalEmail,
       avatarColor: getAvatarColorForName(cleanName),
       groupIds: [],
       active: true,
@@ -281,6 +305,9 @@ export function sanitizeAndLinkWorkItems(
 
     teamMemberMap.set(memberId.toLowerCase(), newMember);
     teamMemberMap.set(cleanName.toLowerCase(), newMember);
+    if (finalEmail) {
+      teamMemberMap.set(finalEmail.toLowerCase(), newMember);
+    }
     currentTeam.push(newMember);
     return newMember;
   };
