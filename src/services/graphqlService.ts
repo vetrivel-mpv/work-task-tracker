@@ -525,17 +525,34 @@ export class GraphqlService {
       ? state.jiraSprints
       : [defaultSprint];
 
+    // Helper to resolve fallback iterationPath from parent story or release
+    const resolveItemIteration = (itemIter?: string, relId?: string | null, parentId?: string | null): string | undefined => {
+      if (itemIter && itemIter.trim()) return itemIter.trim();
+      if (parentId) {
+        const parentStory = (state.userStories || []).find(s => s.id === parentId || (s.adoId && `story-${s.adoId}` === parentId));
+        if (parentStory?.iterationPath) return parentStory.iterationPath;
+      }
+      if (relId) {
+        const rel = (state.releases || []).find(r => r.id === relId);
+        if (rel?.iterationPath) return rel.iterationPath;
+        if (rel?.name) return rel.name.includes('\\') ? rel.name : `ACM\\${rel.name}`;
+      }
+      const activeRel = (state.releases || []).find(r => r.id === state.selectedReleaseId) || (state.releases || [])[0];
+      return activeRel?.iterationPath || (activeRel?.name ? (activeRel.name.includes('\\') ? activeRel.name : `ACM\\${activeRel.name}`) : 'ACM\\D5 R 2026.09');
+    };
+
     // Convert UserStories to Jira Stories
     const storyIssues: JiraIssue[] = (state.userStories || []).map((s, idx) => {
       let jiraStatus: JiraIssueStatus = 'To Do';
       if (s.status === 'Done') jiraStatus = 'Done';
       else if (s.status === 'QA Passed') jiraStatus = 'QA Passed';
-      else if (s.status === 'QA In Progress') jiraStatus = 'QA In Progress';
       else if (s.status === 'QA Ready') jiraStatus = 'QA Ready';
+      else if (s.status === 'QA In Progress') jiraStatus = 'QA In Progress';
       else if (s.status === 'Dev In Progress') jiraStatus = 'In Progress';
       else if (s.status === 'Blocked') jiraStatus = 'Blocked';
 
       const assignee = state.team.find(m => m.id === s.assigneeId);
+      const iterPath = resolveItemIteration(s.iterationPath, s.releaseId);
 
       return {
         id: s.id || `story-${s.adoId || idx}`,
@@ -554,7 +571,7 @@ export class GraphqlService {
         assigneeId: s.assigneeId,
         assigneeName: assignee ? assignee.name : s.assigneeName,
         areaPath: s.areaPath || 'ACM',
-        iterationPath: s.iterationPath,
+        iterationPath: iterPath,
         adoId: s.adoId,
         tags: s.tags || [],
         acceptanceCriteria: s.acceptanceCriteria || [],
@@ -579,6 +596,7 @@ export class GraphqlService {
       else if (d.status === 'New') jiraStatus = 'To Do';
 
       const assignee = state.team.find(m => m.id === d.assigneeId);
+      const iterPath = resolveItemIteration(d.iterationPath, d.releaseId, d.userStoryId);
 
       return {
         id: d.id || `bug-${d.adoId || idx}`,
@@ -600,7 +618,7 @@ export class GraphqlService {
         assigneeName: assignee ? assignee.name : d.assigneeName,
         environment: d.environment || 'QA',
         areaPath: d.areaPath || 'ACM',
-        iterationPath: d.iterationPath,
+        iterationPath: iterPath,
         adoId: d.adoId,
         tags: d.tags || [],
         comments: ((d as any).comments || []).map((c: any) => ({
@@ -622,6 +640,8 @@ export class GraphqlService {
       else if (t.status === 'partial') jiraStatus = 'In Progress';
 
       const assignee = state.team.find(m => m.id === t.assigneeId);
+      const parentId = t.userStoryId || t.defectId || null;
+      const iterPath = resolveItemIteration(t.iterationPath, t.releaseId, parentId);
 
       return {
         id: t.id || `task-${(t as any).adoId || idx}`,
@@ -629,8 +649,8 @@ export class GraphqlService {
         projectId: projects[0].id,
         sprintId: sprints[0].id,
         releaseId: t.releaseId || state.selectedReleaseId || undefined,
-        parentIssueId: t.userStoryId || t.defectId || undefined,
-        issueType: t.userStoryId || t.defectId ? 'Subtask' : 'Task',
+        parentIssueId: parentId || undefined,
+        issueType: parentId ? 'Subtask' : 'Task',
         summary: t.title,
         description: (t as any).description || t.title,
         status: jiraStatus,
@@ -641,7 +661,7 @@ export class GraphqlService {
         assigneeId: t.assigneeId,
         assigneeName: assignee ? assignee.name : t.assigneeName,
         areaPath: t.areaPath || 'ACM',
-        iterationPath: t.iterationPath,
+        iterationPath: iterPath,
         adoId: (t as any).adoId,
         tags: (t as any).tags || [],
         comments: (t.comments || []).map(c => ({
@@ -657,7 +677,18 @@ export class GraphqlService {
     });
 
     const issues = state.jiraIssues && state.jiraIssues.length > 0
-      ? state.jiraIssues
+      ? state.jiraIssues.map(issue => {
+          if (issue.iterationPath && issue.iterationPath.trim()) return issue;
+          const resolved = resolveItemIteration(
+            issue.iterationPath, 
+            issue.releaseId, 
+            issue.parentIssueId
+          );
+          return {
+            ...issue,
+            iterationPath: resolved
+          };
+        })
       : [...storyIssues, ...bugIssues, ...taskIssues];
 
     return {

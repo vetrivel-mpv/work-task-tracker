@@ -26,7 +26,8 @@ import {
   MessageSquare,
   AlertTriangle,
   MoveRight,
-  CheckCircle2
+  CheckCircle2,
+  FolderGit2
 } from 'lucide-react';
 import { JiraIssueDetailDrawer } from './JiraIssueDetailDrawer';
 import { graphqlService } from '../../services/graphqlService';
@@ -84,6 +85,7 @@ export const JiraBoardView: React.FC<JiraBoardViewProps> = ({
   
   // Swimlane / Grouping Mode: default to 'type' (Stories / Tasks / Bugs)
   const [swimlaneMode, setSwimlaneMode] = useState<'type' | 'none' | 'assignee' | 'priority'>('type');
+  const [filterIteration, setFilterIteration] = useState<string>('all');
   const [collapsedSwimlanes, setCollapsedSwimlanes] = useState<Set<string>>(new Set());
 
   // Selected issue for detail drawer
@@ -142,9 +144,23 @@ export const JiraBoardView: React.FC<JiraBoardViewProps> = ({
         return false;
       }
 
+      // Iteration Path filter
+      if (filterIteration !== 'all' && issue.iterationPath !== filterIteration) {
+        return false;
+      }
+
       return true;
     });
-  }, [issues, activeSprint, searchQuery, filterType, filterPriority, filterAssignee]);
+  }, [issues, activeSprint, searchQuery, filterType, filterPriority, filterAssignee, filterIteration]);
+
+  // Discover all distinct Iteration Paths
+  const availableIterations = useMemo(() => {
+    const set = new Set<string>();
+    issues.forEach(i => {
+      if (i.iterationPath && i.iterationPath.trim()) set.add(i.iterationPath.trim());
+    });
+    return Array.from(set).sort();
+  }, [issues]);
 
   // Grouping / Swimlane Definitions
   const swimlanes: BoardSwimlane[] = useMemo(() => {
@@ -396,6 +412,23 @@ export const JiraBoardView: React.FC<JiraBoardViewProps> = ({
               </select>
             </div>
 
+            {/* Iteration Filter */}
+            {availableIterations.length > 0 && (
+              <select
+                value={filterIteration}
+                onChange={e => setFilterIteration(e.target.value)}
+                className="px-2.5 py-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-secondary)] font-semibold outline-none cursor-pointer max-w-[160px] truncate"
+                title="Filter by Azure DevOps Iteration Path"
+              >
+                <option value="all">All Iterations ({availableIterations.length})</option>
+                {availableIterations.map(iter => (
+                  <option key={iter} value={iter}>
+                    {iter}
+                  </option>
+                ))}
+              </select>
+            )}
+
             {/* Type Filter */}
             <select
               value={filterType}
@@ -613,6 +646,17 @@ export const JiraBoardView: React.FC<JiraBoardViewProps> = ({
                                         >
                                           <Bookmark size={9} />
                                           <span className="truncate">Story: {parentIssue.issueKey}</span>
+                                        </div>
+                                      )}
+
+                                      {/* ADO Iteration Path Badge */}
+                                      {issue.iterationPath && (
+                                        <div 
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-700 dark:text-blue-300 font-mono text-[9px] font-semibold border border-blue-500/20 truncate max-w-full"
+                                          title={`ADO Iteration Path: ${issue.iterationPath}`}
+                                        >
+                                          <FolderGit2 size={9} className="shrink-0 text-blue-500" />
+                                          <span className="truncate">{issue.iterationPath}</span>
                                         </div>
                                       )}
 

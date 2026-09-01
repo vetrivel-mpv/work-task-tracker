@@ -18,7 +18,8 @@ import {
   Sparkles, 
   Plus,
   HelpCircle,
-  Maximize2
+  Maximize2,
+  FolderGit2
 } from 'lucide-react';
 import { graphqlService } from '../../services/graphqlService';
 
@@ -54,6 +55,7 @@ export const JiraCreateIssueModal: React.FC<JiraCreateIssueModalProps> = ({
     sprints.find(s => s.state === 'active')?.id || ''
   );
   const [assigneeId, setAssigneeId] = useState<string>('');
+  const [iterationPath, setIterationPath] = useState<string>('ACM\\D5 R 2026.09');
   const [environment, setEnvironment] = useState('QA');
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -81,6 +83,8 @@ export const JiraCreateIssueModal: React.FC<JiraCreateIssueModalProps> = ({
       timeSpentHours: 0,
       assigneeId: assigneeId || null,
       assigneeName: assignee ? assignee.name : undefined,
+      iterationPath: iterationPath.trim() || undefined,
+      areaPath: 'ACM',
       environment: issueType === 'Bug' ? environment : undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -237,7 +241,7 @@ export const JiraCreateIssueModal: React.FC<JiraCreateIssueModalProps> = ({
             </div>
           </div>
 
-          {/* Assignee Selection */}
+          {/* Assignee, Iteration Path, and Environment */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex flex-col gap-1">
               <label className="text-[11px] font-bold text-[var(--text-secondary)]">Assignee</label>
@@ -255,8 +259,22 @@ export const JiraCreateIssueModal: React.FC<JiraCreateIssueModalProps> = ({
               </select>
             </div>
 
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center gap-1">
+                <FolderGit2 size={12} className="text-blue-500" />
+                <span>ADO Iteration Path</span>
+              </label>
+              <input
+                type="text"
+                value={iterationPath}
+                onChange={e => setIterationPath(e.target.value)}
+                placeholder="e.g. ACM\D5 R 2026.09"
+                className="p-2 bg-[var(--surface)] border border-[var(--border)] rounded-lg font-mono font-semibold text-xs text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+              />
+            </div>
+
             {issueType === 'Bug' && (
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 sm:col-span-2">
                 <label className="text-[11px] font-bold text-[var(--text-secondary)]">Environment</label>
                 <select
                   value={environment}

@@ -23,7 +23,8 @@ import {
   Sparkles,
   ArrowRight,
   AlertCircle,
-  SlidersHorizontal
+  SlidersHorizontal,
+  FolderGit2
 } from 'lucide-react';
 import { JiraIssueDetailDrawer } from './JiraIssueDetailDrawer';
 import { graphqlService } from '../../services/graphqlService';
@@ -227,6 +228,15 @@ export const JiraBacklogView: React.FC<JiraBacklogViewProps> = ({
           {issue.adoId && (
             <span className="text-[10px] text-[var(--text-muted)] font-mono shrink-0 hidden md:inline">
               (ADO #{issue.adoId})
+            </span>
+          )}
+          {issue.iterationPath && (
+            <span 
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20 max-w-[150px] truncate shrink-0 hidden sm:inline-flex"
+              title={`ADO Iteration: ${issue.iterationPath}`}
+            >
+              <FolderGit2 size={10} className="shrink-0 text-blue-500" />
+              <span className="truncate">{issue.iterationPath}</span>
             </span>
           )}
         </div>

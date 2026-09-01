@@ -34,7 +34,8 @@ import {
   Copy,
   Zap,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  FolderGit2
 } from 'lucide-react';
 import { adoService } from '../../services/adoService';
 import { graphqlService } from '../../services/graphqlService';
@@ -134,6 +135,14 @@ export const JiraIssueDetailDrawer: React.FC<JiraIssueDetailDrawerProps> = ({
       ...issue,
       assigneeId: newAssigneeId || null,
       assigneeName: member ? member.name : undefined,
+      updatedAt: new Date().toISOString()
+    });
+  };
+
+  const handleIterationPathChange = (newIter: string) => {
+    onUpdateIssue({
+      ...issue,
+      iterationPath: newIter.trim() || undefined,
       updatedAt: new Date().toISOString()
     });
   };
@@ -384,6 +393,15 @@ export const JiraIssueDetailDrawer: React.FC<JiraIssueDetailDrawerProps> = ({
                 (ADO #{issue.adoId})
               </span>
             )}
+            {issue.iterationPath && (
+              <span 
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20 shrink-0 max-w-[200px] truncate"
+                title={`ADO Iteration Path: ${issue.iterationPath}`}
+              >
+                <FolderGit2 size={10} className="shrink-0 text-blue-500" />
+                <span className="truncate">{issue.iterationPath}</span>
+              </span>
+            )}
             <button
               type="button"
               onClick={handleCopyKey}
@@ -474,6 +492,36 @@ export const JiraIssueDetailDrawer: React.FC<JiraIssueDetailDrawerProps> = ({
                 value={issue.storyPoints || 0}
                 onChange={e => handleStoryPointsChange(parseFloat(e.target.value) || 0)}
                 className="p-1.5 rounded-lg font-bold font-mono text-center text-xs bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)] outline-none"
+              />
+            </div>
+
+            {/* ADO Iteration Path */}
+            <div className="flex flex-col gap-1 sm:col-span-2">
+              <span className="text-[10.5px] font-bold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1">
+                <FolderGit2 size={11} className="text-blue-500" />
+                <span>ADO Iteration Path</span>
+              </span>
+              <input
+                type="text"
+                value={issue.iterationPath || ''}
+                placeholder="e.g. ACM\D5 R 2026.09"
+                onChange={e => handleIterationPathChange(e.target.value)}
+                className="p-1.5 rounded-lg font-mono font-medium text-xs bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
+              />
+            </div>
+
+            {/* ADO Area Path */}
+            <div className="flex flex-col gap-1 sm:col-span-2">
+              <span className="text-[10.5px] font-bold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1">
+                <Layers size={11} className="text-purple-500" />
+                <span>ADO Area Path</span>
+              </span>
+              <input
+                type="text"
+                value={issue.areaPath || 'ACM'}
+                placeholder="e.g. ACM"
+                onChange={e => onUpdateIssue({ ...issue, areaPath: e.target.value.trim() || undefined, updatedAt: new Date().toISOString() })}
+                className="p-1.5 rounded-lg font-mono font-medium text-xs bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)] outline-none focus:border-[var(--primary)]"
               />
             </div>
           </div>
