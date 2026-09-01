@@ -567,63 +567,105 @@ export const JiraBoardView: React.FC<JiraBoardViewProps> = ({
                               colIssues.map(issue => {
                                 const assignee = team.find(m => m.id === issue.assigneeId);
 
-                                return (
-                                  <div
-                                    key={issue.id}
-                                    onClick={() => setSelectedIssue(issue)}
-                                    className="p-2.5 bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border)] hover:border-[var(--primary)]/40 rounded-xl shadow-2xs hover:shadow-sm transition-all cursor-pointer flex flex-col gap-1.5 group"
-                                  >
-                                    {/* Key & Priority */}
-                                    <div className="flex items-center justify-between gap-1.5">
-                                      <div className="flex items-center gap-1.5 min-w-0">
-                                        {getTypeIcon(issue.issueType)}
-                                        <span className="font-mono text-[10.5px] font-bold text-[var(--primary)] group-hover:underline truncate">
-                                          {issue.issueKey}
+                                  const parentIssue = issue.parentIssueId 
+                                    ? issues.find(p => p.id === issue.parentIssueId)
+                                    : (issue.adoId && (issue as any).parentId) 
+                                    ? issues.find(p => p.adoId === (issue as any).parentId) 
+                                    : null;
+
+                                  const linkedSubtasks = issues.filter(sub => 
+                                    sub.parentIssueId === issue.id || 
+                                    (issue.adoId && (sub as any).parentId === issue.adoId)
+                                  );
+                                  const totalChildTasks = linkedSubtasks.length + (issue.subtasks || []).length;
+                                  const doneChildTasks = linkedSubtasks.filter(s => s.status === 'Done' || s.status === 'QA Passed').length +
+                                    (issue.subtasks || []).filter(s => s.status === 'Done' || s.status === 'QA Passed').length;
+
+                                  return (
+                                    <div
+                                      key={issue.id}
+                                      onClick={() => setSelectedIssue(issue)}
+                                      className="p-2.5 bg-[var(--surface)] hover:bg-[var(--surface-hover)] border border-[var(--border)] hover:border-[var(--primary)]/40 rounded-xl shadow-2xs hover:shadow-sm transition-all cursor-pointer flex flex-col gap-1.5 group"
+                                    >
+                                      {/* Key, Priority & Parent Link */}
+                                      <div className="flex items-center justify-between gap-1.5">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          {getTypeIcon(issue.issueType)}
+                                          <span className="font-mono text-[10.5px] font-bold text-[var(--primary)] group-hover:underline truncate">
+                                            {issue.issueKey}
+                                          </span>
+                                        </div>
+
+                                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border ${getPriorityBadge(issue.priority)}`}>
+                                          {issue.priority}
                                         </span>
                                       </div>
 
-                                      <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border ${getPriorityBadge(issue.priority)}`}>
-                                        {issue.priority}
-                                      </span>
-                                    </div>
+                                      {/* Linked Parent Story Badge for Tasks */}
+                                      {parentIssue && (
+                                        <div 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setSelectedIssue(parentIssue);
+                                          }}
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-mono text-[9px] font-bold border border-emerald-500/20 cursor-pointer truncate max-w-full"
+                                          title={`Parent: ${parentIssue.issueKey} - ${parentIssue.summary}`}
+                                        >
+                                          <Bookmark size={9} />
+                                          <span className="truncate">Story: {parentIssue.issueKey}</span>
+                                        </div>
+                                      )}
 
-                                    {/* Summary */}
-                                    <p className="text-xs font-semibold text-[var(--text-primary)] line-clamp-2 leading-relaxed">
-                                      {issue.summary}
-                                    </p>
+                                      {/* Summary */}
+                                      <p className="text-xs font-semibold text-[var(--text-primary)] line-clamp-2 leading-relaxed">
+                                        {issue.summary}
+                                      </p>
 
-                                    {/* Footer: Story Points, Comments count, Assignee */}
-                                    <div className="flex items-center justify-between gap-1 pt-1 border-t border-[var(--border)]/60 text-[10px]">
-                                      <div className="flex items-center gap-1.5">
-                                        {issue.storyPoints !== undefined && (
-                                          <span className="px-1.5 py-0.2 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-mono font-bold">
-                                            {issue.storyPoints} pts
+                                      {/* Child Tasks & Activities Progress for Stories/Defects */}
+                                      {(issue.issueType === 'Story' || issue.issueType === 'Bug') && totalChildTasks > 0 && (
+                                        <div className="flex items-center justify-between text-[9.5px] px-2 py-0.5 rounded-md bg-[var(--surface-hover)] border border-[var(--border)] font-semibold text-[var(--text-secondary)]">
+                                          <span className="flex items-center gap-1">
+                                            <CheckSquare size={10} className="text-sky-500" />
+                                            <span>{totalChildTasks} {totalChildTasks === 1 ? 'task' : 'tasks'}</span>
                                           </span>
-                                        )}
-
-                                        {(issue.comments || []).length > 0 && (
-                                          <span className="flex items-center gap-0.5 text-[var(--text-muted)] font-mono">
-                                            <MessageSquare size={10} />
-                                            {(issue.comments || []).length}
+                                          <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                                            {doneChildTasks}/{totalChildTasks} done
                                           </span>
+                                        </div>
+                                      )}
+
+                                      {/* Footer: Story Points, Comments count, Assignee */}
+                                      <div className="flex items-center justify-between gap-1 pt-1 border-t border-[var(--border)]/60 text-[10px]">
+                                        <div className="flex items-center gap-1.5">
+                                          {issue.storyPoints !== undefined && (
+                                            <span className="px-1.5 py-0.2 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-mono font-bold">
+                                              {issue.storyPoints} pts
+                                            </span>
+                                          )}
+
+                                          {(issue.comments || []).length > 0 && (
+                                            <span className="flex items-center gap-0.5 text-[var(--text-muted)] font-mono">
+                                              <MessageSquare size={10} />
+                                              {(issue.comments || []).length}
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        {/* Assignee Avatar */}
+                                        {assignee ? (
+                                          <div 
+                                            className="w-5 h-5 rounded-full text-white font-bold text-[9px] flex items-center justify-center shadow-2xs"
+                                            style={{ backgroundColor: assignee.avatarColor || '#0052CC' }}
+                                            title={`Assigned to ${assignee.name}`}
+                                          >
+                                            {assignee.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                                          </div>
+                                        ) : (
+                                          <span className="text-[10px] text-[var(--text-muted)] font-medium">Unassigned</span>
                                         )}
                                       </div>
-
-                                      {/* Assignee Avatar */}
-                                      {assignee ? (
-                                        <div 
-                                          className="w-5 h-5 rounded-full text-white font-bold text-[9px] flex items-center justify-center shadow-2xs"
-                                          style={{ backgroundColor: assignee.avatarColor || '#0052CC' }}
-                                          title={`Assigned to ${assignee.name}`}
-                                        >
-                                          {assignee.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
-                                        </div>
-                                      ) : (
-                                        <span className="text-[10px] text-[var(--text-muted)] font-medium">Unassigned</span>
-                                      )}
                                     </div>
-                                  </div>
-                                );
+                                  );
                               })
                             ) : (
                               !isAddingHere && (
