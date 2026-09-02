@@ -795,11 +795,15 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                 <div className="flex items-center gap-2 flex-wrap">
                   <button
                     onClick={handleCopyRichHtml}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-[var(--surface)] hover:bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl shadow-xs transition-all cursor-pointer"
-                    title="Copy formatted with styled tables for pasting directly into Outlook, Gmail, or Apple Mail"
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer ${
+                      copiedRich 
+                        ? 'bg-emerald-600 text-white' 
+                        : 'bg-[#0052CC] hover:bg-[#0747A6] text-white'
+                    }`}
+                    title="Copy formatted with styled tables for pasting directly into Outlook (Ctrl+V / Cmd+V)"
                   >
-                    {copiedRich ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
-                    <span>{copiedRich ? 'Copied Rich HTML!' : 'Copy for Outlook / Gmail'}</span>
+                    {copiedRich ? <Check size={14} className="text-white" /> : <Copy size={14} />}
+                    <span>{copiedRich ? '✓ Copied in Outlook Format!' : '📋 Copy for Outlook'}</span>
                   </button>
 
                   <button
@@ -808,7 +812,7 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                     title="Copy raw Markdown for Slack or Teams"
                   >
                     {copiedMd ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
-                    <span>{copiedMd ? 'Copied' : 'Slack/Teams'}</span>
+                    <span>{copiedMd ? 'Copied' : 'Slack / Teams'}</span>
                   </button>
 
                   <a
@@ -823,13 +827,22 @@ export const EmailBroadcastModal: React.FC<EmailBroadcastModalProps> = ({
                   <button
                     onClick={handleSendAutomatedEmail}
                     disabled={isSending}
-                    className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50"
                   >
                     <Send size={14} />
-                    <span>{isSending ? 'Sending…' : 'Send Automated Email'}</span>
+                    <span>{isSending ? 'Sending…' : 'Send Email'}</span>
                   </button>
                 </div>
               </div>
+
+              {copiedRich && (
+                <div className="p-2.5 bg-blue-500/10 border border-blue-500/30 text-blue-700 dark:text-blue-300 rounded-xl text-xs font-bold flex items-center justify-between animate-in fade-in">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={15} className="text-blue-600" />
+                    <span>Formatted Outlook HTML copied to clipboard! Open Outlook (Desktop / Web) and press <strong>Ctrl+V / Cmd+V</strong> to paste with all colors, tables & badges.</span>
+                  </div>
+                </div>
+              )}
 
               {sendSuccess && (
                 <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in">

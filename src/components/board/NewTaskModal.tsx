@@ -52,6 +52,7 @@ export const NewTaskModal: React.FC<NewTaskModalProps> = ({
   const [linkedItemId, setLinkedItemId] = useState<string>('');
   const [dependsOnTaskIds, setDependsOnTaskIds] = useState<string[]>([]);
   const [dependencySearch, setDependencySearch] = useState('');
+  const [environment, setEnvironment] = useState<string>('QA');
   const [initialNote, setInitialNote] = useState('');
 
   if (!isOpen) return null;
@@ -97,6 +98,7 @@ export const NewTaskModal: React.FC<NewTaskModalProps> = ({
       dateStr: targetDateStr,
       assigneeIds,
       groupIds,
+      environment,
       releaseId: releaseId || undefined,
       userStoryId: linkedItemType === 'story' ? linkedItemId : undefined,
       defectId: linkedItemType === 'defect' ? linkedItemId : undefined,
@@ -178,8 +180,8 @@ export const NewTaskModal: React.FC<NewTaskModalProps> = ({
             />
           </div>
 
-          {/* Priority, Scheduled Time & Due Date */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Priority, Scheduled Time & Environment */}
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Priority</label>
               <select
@@ -187,14 +189,29 @@ export const NewTaskModal: React.FC<NewTaskModalProps> = ({
                 onChange={(e) => setPriority(e.target.value as Priority)}
                 className="w-full text-xs font-semibold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
               >
-                <option value="critical">Critical (P0 / Urgent Blocker)</option>
-                <option value="high">High (P1 / Daily Focus)</option>
-                <option value="medium">Medium (P2 / Sprint Progress)</option>
-                <option value="low">Low (P3 / Maintenance)</option>
+                <option value="critical">Critical (P0)</option>
+                <option value="high">High (P1)</option>
+                <option value="medium">Medium (P2)</option>
+                <option value="low">Low (P3)</option>
               </select>
             </div>
             <div>
-              <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Time Block (Optional)</label>
+              <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Environment</label>
+              <select
+                value={environment}
+                onChange={(e) => setEnvironment(e.target.value)}
+                className="w-full text-xs font-bold px-3 py-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl outline-none focus:border-[var(--primary)] text-[var(--text-primary)]"
+              >
+                <option value="QA">🧪 QA Staging</option>
+                <option value="Dev">💻 Dev Local</option>
+                <option value="UAT">🤝 UAT Client</option>
+                <option value="Staging">🚀 Staging</option>
+                <option value="Production">🌐 Production</option>
+                <option value="Hotfix">⚡ Hotfix</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-[var(--text-primary)] mb-1">Time Block</label>
               <input
                 type="time"
                 value={time}

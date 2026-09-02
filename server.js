@@ -2820,17 +2820,21 @@ app.all('/api/ado/team-users', async (req, res) => {
           for (const member of (membersData.value || [])) {
             const identity = member.identity || member;
             const originalName = (identity.displayName || identity.name || '').trim();
-            const userEmail = (identity.uniqueName || identity.mailAddress || identity.descriptor || '').trim();
+            const userEmail = (identity.uniqueName || identity.mailAddress || identity.mail || identity.principalName || (identity.descriptor && identity.descriptor.includes('@') ? identity.descriptor : '') || '').trim();
 
-            if (originalName && !discoveredUsersMap.has(originalName.toLowerCase())) {
-              const cleanEmail = userEmail.includes('@') ? userEmail : `${originalName.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`;
-              discoveredUsersMap.set(originalName.toLowerCase(), {
-                id: `usr-ado-${identity.id || originalName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-                name: originalName,
-                email: cleanEmail,
-                teamName: team.name,
-                source: 'ado_team'
-              });
+            if (originalName) {
+              const cleanEmail = (userEmail && userEmail.includes('@')) ? userEmail : (userEmail || '');
+              if (!discoveredUsersMap.has(originalName.toLowerCase())) {
+                discoveredUsersMap.set(originalName.toLowerCase(), {
+                  id: `usr-ado-${identity.id || originalName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+                  name: originalName,
+                  email: cleanEmail,
+                  teamName: team.name,
+                  source: 'ado_team'
+                });
+              } else if (userEmail && userEmail.includes('@')) {
+                discoveredUsersMap.get(originalName.toLowerCase()).email = cleanEmail;
+              }
             }
           }
         }
@@ -2874,39 +2878,50 @@ app.all('/api/ado/team-users', async (req, res) => {
                 let name = '';
                 let email = '';
                 if (typeof obj === 'object') {
-                  name = obj.displayName || obj.uniqueName || '';
-                  email = obj.uniqueName || obj.mailAddress || '';
+                  name = obj.displayName || obj.uniqueName || obj.name || '';
+                  email = obj.uniqueName || obj.mailAddress || obj.mail || obj.principalName || '';
                 } else if (typeof obj === 'string') {
                   const emailMatch = obj.match(/<([^>]+)>/);
                   if (emailMatch) {
-                    email = emailMatch[1];
+                    email = emailMatch[1].trim();
                     name = obj.replace(/<[^>]+>/, '').trim();
+                  } else if (obj.includes('@') && !obj.includes(' ')) {
+                    email = obj.trim();
+                    name = obj.split('@')[0].trim();
                   } else {
                     name = obj.trim();
                   }
                 }
                 if (!name || name.toLowerCase() === 'unassigned') return null;
-                return { name, email: email.includes('@') ? email : `${name.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com` };
+                return { name, email: (email && email.includes('@')) ? email.trim() : (email || '') };
               };
 
               const aIdent = extractIdentity(assignedTo);
-              if (aIdent && !discoveredUsersMap.has(aIdent.name.toLowerCase())) {
-                discoveredUsersMap.set(aIdent.name.toLowerCase(), {
-                  id: `usr-ado-${aIdent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-                  name: aIdent.name,
-                  email: aIdent.email,
-                  source: 'ado_workitem_assignee'
-                });
+              if (aIdent) {
+                if (!discoveredUsersMap.has(aIdent.name.toLowerCase())) {
+                  discoveredUsersMap.set(aIdent.name.toLowerCase(), {
+                    id: `usr-ado-${aIdent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+                    name: aIdent.name,
+                    email: aIdent.email,
+                    source: 'ado_workitem_assignee'
+                  });
+                } else if (aIdent.email && aIdent.email.includes('@')) {
+                  discoveredUsersMap.get(aIdent.name.toLowerCase()).email = aIdent.email;
+                }
               }
 
               const cIdent = extractIdentity(createdBy);
-              if (cIdent && !discoveredUsersMap.has(cIdent.name.toLowerCase())) {
-                discoveredUsersMap.set(cIdent.name.toLowerCase(), {
-                  id: `usr-ado-${cIdent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-                  name: cIdent.name,
-                  email: cIdent.email,
-                  source: 'ado_workitem_creator'
-                });
+              if (cIdent) {
+                if (!discoveredUsersMap.has(cIdent.name.toLowerCase())) {
+                  discoveredUsersMap.set(cIdent.name.toLowerCase(), {
+                    id: `usr-ado-${cIdent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+                    name: cIdent.name,
+                    email: cIdent.email,
+                    source: 'ado_workitem_creator'
+                  });
+                } else if (cIdent.email && cIdent.email.includes('@')) {
+                  discoveredUsersMap.get(cIdent.name.toLowerCase()).email = cIdent.email;
+                }
               }
             }
           }
@@ -3260,8 +3275,9 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       if (!clean || clean.toLowerCase() === 'unassigned' || clean.toLowerCase() === 'none' || clean.toLowerCase() === 'null') return null;
       
       const memberId = `member-${clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`;
+      const cleanEmail = email && email.includes('@') ? email.trim() : (email || '');
+
       if (!discoveredTeamMembers.has(memberId)) {
-        const cleanEmail = email || `${clean.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`;
         const colorIdx = Math.abs(clean.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % avatarColors.length;
         discoveredTeamMembers.set(memberId, {
           id: memberId,
@@ -3271,6 +3287,8 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
           avatarColor: avatarColors[colorIdx],
           source: source || 'assigned_to'
         });
+      } else if (email && email.includes('@')) {
+        discoveredTeamMembers.get(memberId).email = cleanEmail;
       }
       return memberId;
     };
@@ -3393,12 +3411,15 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       let assigneeEmail = '';
       if (typeof assigneeObj === 'object' && assigneeObj !== null) {
         rawAssigneeName = assigneeObj.displayName || assigneeObj.uniqueName || '';
-        assigneeEmail = assigneeObj.uniqueName || assigneeObj.mail || '';
+        assigneeEmail = assigneeObj.uniqueName || assigneeObj.mailAddress || assigneeObj.mail || assigneeObj.principalName || '';
       } else if (typeof assigneeObj === 'string') {
         const emailMatch = assigneeObj.match(/<([^>]+)>/);
         if (emailMatch) {
-          assigneeEmail = emailMatch[1];
+          assigneeEmail = emailMatch[1].trim();
           rawAssigneeName = assigneeObj.replace(/<[^>]+>/, '').trim();
+        } else if (assigneeObj.includes('@') && !assigneeObj.includes(' ')) {
+          assigneeEmail = assigneeObj.trim();
+          rawAssigneeName = assigneeObj.split('@')[0].trim();
         } else {
           rawAssigneeName = assigneeObj.trim();
         }
@@ -3413,12 +3434,15 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       let createdByEmail = '';
       if (typeof createdByObj === 'object' && createdByObj !== null) {
         rawCreatedByName = createdByObj.displayName || createdByObj.uniqueName || '';
-        createdByEmail = createdByObj.uniqueName || createdByObj.mail || '';
+        createdByEmail = createdByObj.uniqueName || createdByObj.mailAddress || createdByObj.mail || createdByObj.principalName || '';
       } else if (typeof createdByObj === 'string') {
         const emailMatch = createdByObj.match(/<([^>]+)>/);
         if (emailMatch) {
-          createdByEmail = emailMatch[1];
+          createdByEmail = emailMatch[1].trim();
           rawCreatedByName = createdByObj.replace(/<[^>]+>/, '').trim();
+        } else if (createdByObj.includes('@') && !createdByObj.includes(' ')) {
+          createdByEmail = createdByObj.trim();
+          rawCreatedByName = createdByObj.split('@')[0].trim();
         } else {
           rawCreatedByName = createdByObj.trim();
         }
@@ -3528,25 +3552,29 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       }
     }
 
-    // Enrich User Stories and Tasks with live comments from Azure DevOps (concurrent batch requests)
+    // Enrich User Stories, Defects, and Tasks with live comments from Azure DevOps (concurrent batch requests)
     try {
-      const itemsToEnrich = [...fetchedStories, ...fetchedTasks];
+      const itemsToEnrich = [...fetchedStories, ...fetchedDefects, ...fetchedTasks];
       const commentBatchSize = 15;
       for (let i = 0; i < itemsToEnrich.length; i += commentBatchSize) {
         const chunk = itemsToEnrich.slice(i, i + commentBatchSize);
         await Promise.allSettled(chunk.map(async (item) => {
           if (!item.adoId) return;
           try {
-            const commentsUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject}/_apis/wit/workItems/${item.adoId}/comments?order=desc&$top=10&api-version=7.0-preview.3`;
-            const cRes = await fetch(commentsUrl, { headers });
+            const commentsUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${item.adoId}/comments?order=desc&$top=15&api-version=7.0-preview.3`;
+            let cRes = await fetch(commentsUrl, { headers });
+            if (!cRes.ok) {
+              const fallbackUrl = `https://dev.azure.com/${cleanOrg}/${cleanProject ? cleanProject + '/' : ''}_apis/wit/workItems/${item.adoId}/comments?order=desc&$top=15&api-version=7.0`;
+              cRes = await fetch(fallbackUrl, { headers });
+            }
             if (cRes.ok) {
               const cData = await cRes.json();
               if (cData && Array.isArray(cData.comments) && cData.comments.length > 0) {
                 const mappedComments = cData.comments.map(c => ({
-                  id: c.id || String(Date.now()),
+                  id: String(c.id || Date.now()),
                   author: c.createdBy?.displayName || c.createdBy?.uniqueName || item.assigneeName || 'Contributor',
                   text: sanitizeAdoRichText(c.text || ''),
-                  createdAt: c.createdDate || new Date().toISOString()
+                  createdAt: c.createdDate || c.modifiedDate || new Date().toISOString()
                 }));
                 item.comments = mappedComments;
                 const latestTxt = mappedComments[0]?.text || '';
@@ -3572,6 +3600,7 @@ app.post('/api/ado/sync-workitems', requirePermission('canTriggerAdoSync'), asyn
       testCases: fetchedTestCases,
       tasks: fetchedTasks,
       teamMembers: Array.from(discoveredTeamMembers.values()),
+      discoveredUsers: Array.from(discoveredTeamMembers.values()),
       source: 'live_ado_wiql',
       durationMs: Date.now() - startTime,
       authSession: {
@@ -4364,6 +4393,32 @@ app.post('/api/email/test-smtp', (req, res) => {
     message: `SMTP handshake test simulated successfully for host "${host}:${port || 587}" as user "${user || 'service-account'}"`,
     serverTime: new Date().toISOString()
   });
+});
+
+// Hasura GraphQL & PostgreSQL Status & Proxy Route
+app.get('/api/hasura/status', async (req, res) => {
+  const hasuraUrl = process.env.HASURA_GRAPHQL_ENDPOINT || 'http://localhost:8080/v1/graphql';
+  const hasuraSecret = process.env.HASURA_ADMIN_SECRET || 'adminsecretkey';
+
+  try {
+    const response = await fetch(hasuraUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(hasuraSecret ? { 'x-hasura-admin-secret': hasuraSecret } : {})
+      },
+      body: JSON.stringify({
+        query: `query { __schema { queryType { name } } }`
+      })
+    });
+
+    if (response.ok) {
+      return res.json({ ok: true, connected: true, endpoint: hasuraUrl });
+    }
+    return res.json({ ok: false, connected: false, endpoint: hasuraUrl, status: response.status });
+  } catch (err) {
+    return res.json({ ok: false, connected: false, endpoint: hasuraUrl, error: err.message });
+  }
 });
 
 // Health check

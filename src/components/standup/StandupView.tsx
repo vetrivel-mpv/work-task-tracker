@@ -70,7 +70,7 @@ interface StandupViewProps {
   onUpdateState?: (updater: (prev: AppState) => AppState) => void;
 }
 
-type StandupTab = 'notes' | 'dashboard_items' | 'parking_lot' | 'ai_digest';
+type StandupTab = 'notes' | 'dashboard_items' | 'parking_lot' | 'ai_digest' | 'release_scope';
 type RosterFilter = 'all' | 'ready' | 'pending' | 'blockers';
 
 export const StandupView: React.FC<StandupViewProps> = ({
@@ -715,6 +715,18 @@ export const StandupView: React.FC<StandupViewProps> = ({
                 <Sparkles size={14} />
                 <span>AI Standup Digest</span>
               </button>
+
+              <button
+                onClick={() => setActiveTab('release_scope')}
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === 'release_scope'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'bg-[var(--surface)] hover:bg-[var(--surface-hover)] text-[var(--text-secondary)] border border-[var(--border)]'
+                }`}
+              >
+                <Target size={14} />
+                <span>🎯 Release Plans & Milestones</span>
+              </button>
             </div>
 
             {/* Advance Speaker Action */}
@@ -768,44 +780,72 @@ export const StandupView: React.FC<StandupViewProps> = ({
                 </div>
               </div>
 
-              {/* Quick Template Chips Toolbar */}
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px] font-medium custom-scrollbar">
-                <span className="text-xs font-bold text-[var(--text-muted)] shrink-0 mr-1">Quick Tag:</span>
-                <button
-                  type="button"
-                  onClick={() => handleInsertTag('yesterday', 'Merged PR')}
-                  className="px-2 py-1 rounded-lg bg-[var(--surface-hover)] hover:bg-[var(--border)] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer shrink-0"
-                >
-                  🚀 Merged PR
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleInsertTag('yesterday', 'QA Verification Passed')}
-                  className="px-2 py-1 rounded-lg bg-[var(--surface-hover)] hover:bg-[var(--border)] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer shrink-0"
-                >
-                  🧪 QA Passed
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleInsertTag('today', 'Sprint Task Backlog')}
-                  className="px-2 py-1 rounded-lg bg-[var(--surface-hover)] hover:bg-[var(--border)] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer shrink-0"
-                >
-                  ⚙️ Backlog Feature
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleInsertTag('today', 'Code Review & PRs')}
-                  className="px-2 py-1 rounded-lg bg-[var(--surface-hover)] hover:bg-[var(--border)] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer shrink-0"
-                >
-                  📝 Code Review
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleInsertTag('blockers', 'Waiting on API Backend / Dependency')}
-                  className="px-2 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-600 dark:text-red-400 transition-all cursor-pointer shrink-0"
-                >
-                  🚨 Blocked by API
-                </button>
+              {/* Quick Template Chips Toolbar with Test Team & Dev Tags */}
+              <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-[var(--surface-hover)]/60 border border-[var(--border)]">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10.5px] font-bold text-[var(--text-muted)] uppercase tracking-wider">
+                    🧪 Test Team & QA Tags:
+                  </span>
+                  <span className="text-[10px] text-[var(--text-muted)] italic">Click to append to current field</span>
+                </div>
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px] font-semibold custom-scrollbar">
+                  <button
+                    type="button"
+                    onClick={() => handleInsertTag('blockers', 'QA Blocked on Test Env')}
+                    className="px-2 py-0.8 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-700 dark:text-rose-300 transition-all cursor-pointer shrink-0"
+                  >
+                    🧪 QA Blocked
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleInsertTag('blockers', 'Critical P0/P1 Defect Blocker')}
+                    className="px-2 py-0.8 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-600 dark:text-red-400 transition-all cursor-pointer shrink-0"
+                  >
+                    🚨 Critical Defect
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleInsertTag('today', 'Sanity & Regression Test Run')}
+                    className="px-2 py-0.8 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-700 dark:text-purple-300 transition-all cursor-pointer shrink-0"
+                  >
+                    🔄 Sanity Regression
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleInsertTag('today', 'Test Case Execution Coverage')}
+                    className="px-2 py-0.8 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-700 dark:text-blue-300 transition-all cursor-pointer shrink-0"
+                  >
+                    📋 Test Coverage
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleInsertTag('today', 'Retest Defect Fix Verification')}
+                    className="px-2 py-0.8 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-700 dark:text-amber-300 transition-all cursor-pointer shrink-0"
+                  >
+                    💡 Retest Verification
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleInsertTag('yesterday', 'QA Verification Passed & Signed Off')}
+                    className="px-2 py-0.8 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 transition-all cursor-pointer shrink-0"
+                  >
+                    ✓ QA Passed
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleInsertTag('today', 'Environment Deployment & Handover')}
+                    className="px-2 py-0.8 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-700 dark:text-sky-300 transition-all cursor-pointer shrink-0"
+                  >
+                    📦 Env Deployment
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleInsertTag('today', 'Release Readiness Assessment')}
+                    className="px-2 py-0.8 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-700 dark:text-indigo-300 transition-all cursor-pointer shrink-0"
+                  >
+                    🎯 Release Readiness
+                  </button>
+                </div>
               </div>
 
               {/* Yesterday Field */}
@@ -967,6 +1007,149 @@ export const StandupView: React.FC<StandupViewProps> = ({
                   </p>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB 5: RELEASE & SPRINT SCOPE DISCUSSION */}
+          {activeTab === 'release_scope' && (
+            <div className="flex flex-col gap-5 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 sm:p-6 shadow-xs animate-fadeIn">
+              <div className="flex items-center justify-between border-b border-[var(--border)] pb-3 flex-wrap gap-2">
+                <div>
+                  <h3 className="font-bold text-sm text-[var(--text-primary)] flex items-center gap-2">
+                    <Target size={16} className="text-blue-600" />
+                    <span>Current & Future Release Plans Alignment</span>
+                  </h3>
+                  <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Discuss milestone deliverables, QA pass gates, critical defect blockers, and future capacity in today's standup
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-600 font-bold text-xs border border-blue-500/20">
+                    {state.releases.length} Release Milestones
+                  </span>
+                </div>
+              </div>
+
+              {/* List of Releases with interactive Standup alignment notes */}
+              <div className="flex flex-col gap-4">
+                {state.releases.map((rel) => {
+                  const relStories = state.userStories.filter(s => s.releaseId === rel.id || s.iterationPath === rel.iterationPath);
+                  const relDefects = state.defects.filter(d => d.releaseId === rel.id || d.iterationPath === rel.iterationPath);
+                  const relTasks = state.tasks.filter(t => t.releaseId === rel.id || t.iterationPath === rel.iterationPath);
+                  
+                  const passedStories = relStories.filter(s => s.status === 'QA Passed' || s.status === 'Done');
+                  const criticalDefects = relDefects.filter(d => d.severity === 'critical' && d.status !== 'Closed');
+                  const openDefects = relDefects.filter(d => d.status !== 'Closed');
+                  const passRate = relStories.length > 0 ? Math.round((passedStories.length / relStories.length) * 100) : 0;
+                  const totalPoints = relStories.reduce((acc, s) => acc + (s.storyPoints || 0), 0);
+
+                  const isCurrentActive = rel.id === state.selectedReleaseId || rel.status === 'Active QA';
+
+                  return (
+                    <div
+                      key={rel.id}
+                      className={`p-4 rounded-2xl border transition-all flex flex-col gap-3.5 ${
+                        isCurrentActive
+                          ? 'bg-blue-500/5 border-blue-500/30 shadow-xs'
+                          : 'bg-[var(--surface-hover)]/40 border-[var(--border)]'
+                      }`}
+                    >
+                      {/* Header: Title, Target Date, Status Badge */}
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-base">{isCurrentActive ? '🚀' : '📅'}</span>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-extrabold text-sm text-[var(--text-primary)]">{rel.name}</h4>
+                              {rel.releaseNumber && (
+                                <span className="font-mono text-xs font-bold text-blue-600 bg-blue-500/10 px-2 py-0.2 rounded border border-blue-500/20">
+                                  {rel.releaseNumber}
+                                </span>
+                              )}
+                              {isCurrentActive && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                  Active Standup Focus
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] mt-0.5">
+                              <span>Target: <strong>{rel.targetDate}</strong></span>
+                              {rel.iterationPath && (
+                                <span className="font-mono text-[11px] text-[var(--text-muted)]">
+                                  &bull; ADO: {rel.iterationPath}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Status Chip */}
+                        <span className={`px-2.5 py-1 rounded-xl text-xs font-bold border ${
+                          rel.status === 'Active QA'
+                            ? 'bg-purple-500/10 text-purple-600 border-purple-500/30'
+                            : rel.status === 'Deployed'
+                            ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/30'
+                            : 'bg-slate-500/10 text-slate-600 border-slate-500/30'
+                        }`}>
+                          {rel.status}
+                        </span>
+                      </div>
+
+                      {/* Quick Metrics Bar */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                        <div className="p-2 rounded-xl bg-[var(--surface)] border border-[var(--border)]">
+                          <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Story Pass Rate</div>
+                          <div className="text-sm font-mono font-extrabold text-emerald-600">
+                            {passRate}% ({passedStories.length}/{relStories.length})
+                          </div>
+                        </div>
+                        <div className="p-2 rounded-xl bg-[var(--surface)] border border-[var(--border)]">
+                          <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Open Defects</div>
+                          <div className={`text-sm font-mono font-extrabold ${openDefects.length > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                            {openDefects.length} {criticalDefects.length > 0 ? `(${criticalDefects.length} Blocker)` : ''}
+                          </div>
+                        </div>
+                        <div className="p-2 rounded-xl bg-[var(--surface)] border border-[var(--border)]">
+                          <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Total Scope Points</div>
+                          <div className="text-sm font-mono font-extrabold text-indigo-600">
+                            {totalPoints} pts
+                          </div>
+                        </div>
+                        <div className="p-2 rounded-xl bg-[var(--surface)] border border-[var(--border)]">
+                          <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Total Work Items</div>
+                          <div className="text-sm font-mono font-extrabold text-[var(--text-primary)]">
+                            {relStories.length + relDefects.length + relTasks.length} items
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Release Standup Discussion Notes */}
+                      <div className="flex flex-col gap-1 pt-1">
+                        <label className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center justify-between">
+                          <span>Standup Discussion & Alignment Notes for {rel.name}:</span>
+                          <span className="text-[10px] font-normal text-[var(--text-muted)] italic">Discussed live in standup room</span>
+                        </label>
+                        <textarea
+                          rows={2}
+                          placeholder={`What are the blockers, delivery risks, or QA sign-off requirements for ${rel.name}?`}
+                          value={rel.scopeNotes || ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (onUpdateState) {
+                              onUpdateState(prev => ({
+                                ...prev,
+                                releases: prev.releases.map(r => r.id === rel.id ? { ...r, scopeNotes: val } : r)
+                              }));
+                            }
+                          }}
+                          className="w-full text-xs p-2.5 bg-[var(--surface)] border border-[var(--border)] rounded-xl text-[var(--text-primary)] outline-none focus:border-[var(--primary)] leading-relaxed"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>

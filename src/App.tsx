@@ -19,16 +19,23 @@ import {
 import { loadStoredState, saveStoredState, resetToDemoState, loadFromIndexedDB } from './utils/storage';
 import { toDateStr, shiftDate, generateId } from './utils/date';
 import { isTestCaseItem, isDefectItem, convertStoryToTestCase, filterPureUserStories } from './utils/itemClassification';
-import { matchesReleaseOrIteration } from './utils/adoPaths';
+import { matchesReleaseOrIteration, deduplicateAndMergeReleases } from './utils/adoPaths';
 import { syncAuthSession } from './utils/authClient';
 import { sanitizeAndLinkWorkItems } from './utils/assigneeUtils';
+import { ensureUsersAndRoles } from './utils/userManagement';
 
-// Layout Components
+// Jira Design System & Layout Components
+import { JiraTopNav } from './components/jira/JiraTopNav';
+import { JiraSidebar } from './components/jira/JiraSidebar';
+import { JiraCreateIssueModal } from './components/jira/JiraCreateIssueModal';
 import { ModernPortalHeader } from './components/layout/ModernPortalHeader';
 import { PortalSummaryStrip } from './components/layout/PortalSummaryStrip';
 import { CommandPaletteModal } from './components/layout/CommandPaletteModal';
 
 // View Modules
+import { JiraBoardView } from './components/jira/JiraBoardView';
+import { JiraBacklogView } from './components/jira/JiraBacklogView';
+import { JiraTimelineView } from './components/jira/JiraTimelineView';
 import { TaskBoard } from './components/board/TaskBoard';
 import { NewTaskModal } from './components/board/NewTaskModal';
 import { UserStoriesView } from './components/userStories/UserStoriesView';
@@ -41,6 +48,9 @@ import { RetrospectiveView } from './components/retrospective/RetrospectiveView'
 import { PeopleReviewView } from './components/people/PeopleReviewView';
 import { BlueprintView } from './components/blueprint/BlueprintView';
 import { SettingsView } from './components/settings/SettingsView';
+import { EnvironmentActivityHubView } from './components/environments/EnvironmentActivityHubView';
+import { graphqlService } from './services/graphqlService';
+import { JiraIssue, JiraSprint, JiraProject } from './types/jira';
 
 // Modals
 import { AdoSyncModal } from './components/ado/AdoSyncModal';
@@ -51,12 +61,14 @@ import { AbsenceRecord, TeamRoastRecord } from './types';
 
 export const App: React.FC = () => {
   const [state, setState] = useState<AppState>(loadStoredState);
-  const [activeView, setActiveView] = useState<NavView>('board');
+  const [activeView, setActiveView] = useState<NavView>('jira_board');
   const [currentDateStr, setCurrentDateStr] = useState<string>(toDateStr(new Date()));
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedReleaseId, setSelectedReleaseId] = useState<string | null>(null);
 
   // Modals state
+  const [createIssueModalOpen, setCreateIssueModalOpen] = useState<boolean>(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
   const [newTaskModalOpen, setNewTaskModalOpen] = useState<boolean>(false);
   const [adoModalOpen, setAdoModalOpen] = useState<boolean>(false);
   const [emailModalOpen, setEmailModalOpen] = useState<boolean>(false);
@@ -435,9 +447,11 @@ export const App: React.FC = () => {
         `Total releases available in dropdowns: ${prev.releases.length + 1}`
       );
 
+      const { mergedReleases } = deduplicateAndMergeReleases([sanitizedRelease, ...prev.releases]);
+
       return {
         ...prev,
-        releases: [sanitizedRelease, ...prev.releases]
+        releases: mergedReleases
       };
     });
   };
@@ -458,9 +472,13 @@ export const App: React.FC = () => {
         createdAt: updatedRelease.createdAt || toDateStr(new Date())
       };
 
+      const { mergedReleases } = deduplicateAndMergeReleases(
+        prev.releases.map(r => r.id === sanitizedRelease.id ? sanitizedRelease : r)
+      );
+
       return {
         ...prev,
-        releases: prev.releases.map(r => r.id === sanitizedRelease.id ? sanitizedRelease : r)
+        releases: mergedReleases
       };
     });
   };
@@ -587,6 +605,82 @@ export const App: React.FC = () => {
       ...prev,
       roasts: [roast, ...(prev.roasts || [])]
     }));
+  };
+
+  // Jira Agile State Bridging & Handlers
+  const { projects: jiraProjects, sprints: jiraSprints, issues: jiraIssues } = React.useMemo(() => {
+    return graphqlService.bridgeAppStateToJira(state);
+  }, [state]);
+
+  const handleUpdateJiraIssue = (updated: JiraIssue) => {
+    setState(prev => {
+      const existing = prev.jiraIssues || graphqlService.bridgeAppStateToJira(prev).issues;
+      const updatedList = existing.some(i => i.id === updated.id)
+        ? existing.map(i => (i.id === updated.id ? updated : i))
+        : [...existing, updated];
+
+      return {
+        ...prev,
+        jiraIssues: updatedList
+      };
+    });
+  };
+
+  const handleAddJiraIssue = (newIssue: Partial<JiraIssue>) => {
+    setState(prev => {
+      const existing = prev.jiraIssues || graphqlService.bridgeAppStateToJira(prev).issues;
+      const created: JiraIssue = {
+        id: newIssue.id || `issue-${Date.now()}`,
+        issueKey: newIssue.issueKey || `ACM-${Math.floor(100 + Math.random() * 900)}`,
+        projectId: newIssue.projectId || 'proj-acm',
+        sprintId: newIssue.sprintId || null,
+        issueType: newIssue.issueType || 'Story',
+        summary: newIssue.summary || 'New Issue',
+        description: newIssue.description || '',
+        status: newIssue.status || 'To Do',
+        priority: newIssue.priority || 'medium',
+        storyPoints: newIssue.storyPoints || 3,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      return {
+        ...prev,
+        jiraIssues: [created, ...existing]
+      };
+    });
+  };
+
+  const handleUpdateJiraSprint = (updated: JiraSprint) => {
+    setState(prev => {
+      const existing = prev.jiraSprints || graphqlService.bridgeAppStateToJira(prev).sprints;
+      const updatedList = existing.map(s => (s.id === updated.id ? updated : s));
+      return {
+        ...prev,
+        jiraSprints: updatedList
+      };
+    });
+  };
+
+  const handleAddJiraSprint = (newSprint: Partial<JiraSprint>) => {
+    setState(prev => {
+      const existing = prev.jiraSprints || graphqlService.bridgeAppStateToJira(prev).sprints;
+      const created: JiraSprint = {
+        id: newSprint.id || `sprint-${Date.now()}`,
+        projectId: newSprint.projectId || 'proj-acm',
+        name: newSprint.name || 'New Sprint',
+        goal: newSprint.goal || '',
+        state: newSprint.state || 'future',
+        sequenceNumber: (existing.length || 0) + 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      return {
+        ...prev,
+        jiraSprints: [...existing, created]
+      };
+    });
   };
 
   // Blueprint Operations
@@ -757,14 +851,36 @@ export const App: React.FC = () => {
         updatedTasks = Array.from(taskMap.values());
       }
 
-      // 4. Merge Releases
-      const releaseMap = new Map(prev.releases.map(r => [r.id, r]));
-      if (synced.releases) {
-        synced.releases.forEach(r => {
-          releaseMap.set(r.id, r);
-        });
-      }
-      const updatedReleases = Array.from(releaseMap.values());
+      // 4. Merge Releases with Strict Deduplication
+      const allIncomingReleases = [...prev.releases, ...(synced.releases || [])];
+      const { mergedReleases: updatedReleases, idRedirectMap } = deduplicateAndMergeReleases(allIncomingReleases);
+
+      const remapRelId = (relId?: string | null) => {
+        if (!relId) return relId;
+        return idRedirectMap.get(relId) || relId;
+      };
+
+      updatedStories = updatedStories.map(s => ({
+        ...s,
+        releaseId: remapRelId(s.releaseId) || s.releaseId
+      }));
+
+      updatedDefects = updatedDefects.map(d => ({
+        ...d,
+        releaseId: remapRelId(d.releaseId) || d.releaseId
+      }));
+
+      updatedTasks = updatedTasks.map(t => ({
+        ...t,
+        releaseId: remapRelId(t.releaseId) || t.releaseId
+      }));
+
+      updatedTestCases = updatedTestCases.map(tc => ({
+        ...tc,
+        releaseId: remapRelId(tc.releaseId) || tc.releaseId
+      }));
+
+      const finalTargetReleaseId = targetReleaseId ? (idRedirectMap.get(targetReleaseId) || targetReleaseId) : null;
 
       // 5. Merge Team Members
       const existingMemberNames = new Set(prev.team.map(m => m.name.toLowerCase()));
@@ -773,20 +889,31 @@ export const App: React.FC = () => {
 
       if (synced.teamMembers) {
         synced.teamMembers.forEach((tm: any, idx) => {
-          if (tm.name && !existingMemberNames.has(tm.name.toLowerCase())) {
-            existingMemberNames.add(tm.name.toLowerCase());
-            const emailSlug = tm.name.toLowerCase().replace(/[^a-z0-9]/g, '.');
-            newMembers.push({
-              id: `member-${tm.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
-              name: tm.name,
-              role: tm.role || (tm.source === 'created_by' ? 'Product / ADO Creator' : 'Software Engineer'),
-              email: `${emailSlug}@company.com`,
-              avatarColor: avatarColors[(newMembers.length + idx) % avatarColors.length],
-              groupIds: [],
-              active: true,
-              isMyTeam: false,
-              adoSource: tm.source || 'assigned_to'
-            });
+          const tmName = (tm.name || '').trim();
+          const tmEmail = (tm.email || '').trim();
+          if (tmName) {
+            const existingIdx = newMembers.findIndex(m => m.name.toLowerCase() === tmName.toLowerCase() || (tmEmail && m.email && m.email.toLowerCase() === tmEmail.toLowerCase()));
+            if (existingIdx >= 0) {
+              if (tmEmail && tmEmail.includes('@') && newMembers[existingIdx].email !== tmEmail) {
+                newMembers[existingIdx] = {
+                  ...newMembers[existingIdx],
+                  email: tmEmail
+                };
+              }
+            } else {
+              existingMemberNames.add(tmName.toLowerCase());
+              newMembers.push({
+                id: `member-${tmName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+                name: tmName,
+                role: tm.role || (tm.source === 'created_by' ? 'Product / ADO Creator' : 'Software Engineer'),
+                email: tmEmail || '',
+                avatarColor: avatarColors[(newMembers.length + idx) % avatarColors.length],
+                groupIds: [],
+                active: true,
+                isMyTeam: false,
+                adoSource: tm.source || 'assigned_to'
+              });
+            }
           }
         });
       }
@@ -799,6 +926,14 @@ export const App: React.FC = () => {
         team: newMembers
       });
 
+      const userSyncResult = ensureUsersAndRoles({
+        users: prev.users,
+        team: sanitized.team,
+        dualAdoConfig: prev.dualAdoConfig,
+        adoConfig: prev.adoConfig,
+        settings: prev.settings
+      });
+
       return {
         ...prev,
         userStories: sanitized.userStories,
@@ -806,6 +941,7 @@ export const App: React.FC = () => {
         defects: sanitized.defects,
         tasks: sanitized.tasks,
         team: sanitized.team,
+        users: userSyncResult.users,
         releases: updatedReleases,
         selectedReleaseId: targetReleaseId
       };
@@ -828,41 +964,105 @@ export const App: React.FC = () => {
 
   return (
     <div className="flex flex-col min-h-screen w-full bg-[var(--bg)] text-[var(--text-primary)] transition-colors">
-      {/* Modern Top Portal Header & Navigation Ribbon */}
-      <ModernPortalHeader
-        activeView={activeView}
+      {/* Jira Global Top Navigation Bar */}
+      <JiraTopNav
         onNavigate={setActiveView}
-        currentDateStr={currentDateStr}
-        onDateChange={setCurrentDateStr}
+        onOpenCreateModal={() => setCreateIssueModalOpen(true)}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+        onOpenAdoModal={() => setAdoModalOpen(true)}
+        onOpenEmailModal={(tab) => handleOpenEmailModal(tab || 'client_qa_status')}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        releases={state.releases}
-        selectedReleaseId={selectedReleaseId}
-        onSelectRelease={setSelectedReleaseId}
-        onOpenNewTaskModal={() => setNewTaskModalOpen(true)}
-        onOpenAdoModal={() => setAdoModalOpen(true)}
-        onOpenEmailModal={(tab) => handleOpenEmailModal(tab || 'standup')}
-        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
-        onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
+        theme={state.settings.theme}
+        onToggleTheme={() => handleUpdateTheme(state.settings.theme === 'obsidian_dark' ? 'executive_slate' : 'obsidian_dark')}
         dualAdoConfig={state.dualAdoConfig}
-        state={state}
-        onUpdateTheme={handleUpdateTheme}
+        projectName={state.settings.appName || 'ACM Delivery & Core Platform'}
+        projectKey={state.settings.projectCode || 'ACM'}
       />
 
-      {/* Contextual Telemetry & Horizon Summary Strip */}
-      <PortalSummaryStrip
-        activeView={activeView}
-        state={state}
-        currentDateStr={currentDateStr}
-        searchQuery={searchQuery}
-        onClearSearch={() => setSearchQuery('')}
-        selectedReleaseId={selectedReleaseId}
-        onClearReleaseFilter={() => setSelectedReleaseId(null)}
-        onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
-      />
+      {/* Main Jira Workspace: Left Sidebar + Center Canvas */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <JiraSidebar
+          activeView={activeView}
+          onNavigate={setActiveView}
+          onOpenEmailModal={(tab) => handleOpenEmailModal(tab || 'client_qa_status')}
+          onOpenTechDebtModal={() => setTechDebtModalOpen(true)}
+          projectName={state.settings.appName || 'ACM Delivery'}
+          projectKey={state.settings.projectCode || 'ACM'}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+          counts={{
+            issues: jiraIssues.length,
+            defects: state.defects.length,
+            releases: state.releases.length,
+            team: state.team.length
+          }}
+        />
 
-      {/* Main Full-Width Portal Workspace */}
-      <main className="flex-1 w-full max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Center / Right Content Canvas */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto bg-[var(--bg)]">
+          {/* Jira Breadcrumb Header Strip */}
+          <div className="px-6 py-2.5 flex items-center justify-between gap-3 text-xs border-b border-[var(--border)] bg-[var(--surface)] shrink-0">
+            <div className="flex items-center gap-2 font-medium text-[var(--text-muted)]">
+              <span>Projects</span>
+              <span>/</span>
+              <span className="font-semibold text-[var(--text-secondary)]">{state.settings.appName || 'ACM Delivery'}</span>
+              <span>/</span>
+              <span className="font-bold text-[var(--text-primary)] capitalize">
+                {activeView.replace('jira_', '').replace('_', ' ')}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCreateIssueModalOpen(true)}
+                className="px-2.5 py-1 text-xs font-bold text-white bg-[#0052CC] hover:bg-[#0747A6] rounded shadow-2xs cursor-pointer inline-flex items-center gap-1 transition-all"
+              >
+                <span>+ Create</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Main View Container */}
+          <main className="flex-1 w-full max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-5">
+        {activeView === 'jira_board' && (
+          <JiraBoardView
+            issues={jiraIssues}
+            sprints={jiraSprints}
+            projects={jiraProjects}
+            team={state.team}
+            selectedSprintId={state.selectedSprintId}
+            onUpdateIssue={handleUpdateJiraIssue}
+            onAddIssue={handleAddJiraIssue}
+            onSelectSprint={sprintId => setState(prev => ({ ...prev, selectedSprintId: sprintId }))}
+          />
+        )}
+
+        {activeView === 'jira_backlog' && (
+          <JiraBacklogView
+            issues={jiraIssues}
+            sprints={jiraSprints}
+            projects={jiraProjects}
+            team={state.team}
+            onUpdateIssue={handleUpdateJiraIssue}
+            onAddIssue={handleAddJiraIssue}
+            onUpdateSprint={handleUpdateJiraSprint}
+            onAddSprint={handleAddJiraSprint}
+          />
+        )}
+
+        {activeView === 'jira_timeline' && (
+          <JiraTimelineView
+            issues={jiraIssues}
+            sprints={jiraSprints}
+            releases={state.releases}
+            projects={jiraProjects}
+            team={state.team}
+            onUpdateIssue={handleUpdateJiraIssue}
+          />
+        )}
+
         {activeView === 'board' && (
             <TaskBoard
               tasks={state.tasks}
@@ -1045,6 +1245,17 @@ export const App: React.FC = () => {
             />
           )}
 
+          {activeView === 'environments' && (
+            <EnvironmentActivityHubView
+              state={state}
+              onUpdateTask={handleUpdateTask}
+              onAddTask={handleAddTask}
+              onUpdateStory={handleUpdateStory}
+              onUpdateDefect={handleUpdateDefect}
+              onOpenEmailModal={handleOpenEmailModal}
+            />
+          )}
+
           {activeView === 'settings' && (
             <SettingsView
               state={state}
@@ -1054,13 +1265,25 @@ export const App: React.FC = () => {
             />
           )}
         </main>
+      </div>
+    </div>
+
+      {/* Jira Create Issue Modal */}
+      <JiraCreateIssueModal
+        isOpen={createIssueModalOpen}
+        onClose={() => setCreateIssueModalOpen(false)}
+        projects={jiraProjects}
+        sprints={jiraSprints}
+        team={state.team}
+        onAddIssue={handleAddJiraIssue}
+      />
 
       {/* Global Modals */}
       <CommandPaletteModal
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         onNavigate={setActiveView}
-        onOpenNewTask={() => setNewTaskModalOpen(true)}
+        onOpenNewTask={() => setCreateIssueModalOpen(true)}
         onOpenAdoModal={() => setAdoModalOpen(true)}
         onOpenEmailModal={() => handleOpenEmailModal('standup')}
         onOpenTechDebtModal={() => setTechDebtModalOpen(true)}

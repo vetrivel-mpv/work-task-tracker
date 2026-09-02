@@ -13,6 +13,9 @@ export type AppTheme = 'executive_slate' | 'obsidian_dark' | 'steel_minimal' | '
 export type ThemeId = AppTheme;
 
 export type AppView = 
+  | 'jira_board'
+  | 'jira_backlog'
+  | 'jira_timeline'
   | 'board' 
   | 'stories'
   | 'userStories' 
@@ -21,6 +24,7 @@ export type AppView =
   | 'qa_dashboard'
   | 'defectsDashboard' 
   | 'releases' 
+  | 'environments'
   | 'standup' 
   | 'retrospective'
   | 'people'
@@ -62,6 +66,8 @@ export interface Task {
   customerName?: string;
   areaPath?: string;
   iterationPath?: string;
+  environment?: string;
+  timeSpentHours?: number;
   userStoryId?: string | null;
   defectId?: string | null;
   parentId?: number | string | null;
@@ -256,6 +262,7 @@ export interface UserStory {
   storyPoints?: number;
   areaPath?: string;
   releaseId?: string | null;
+  environment?: string;
   assigneeId?: string | null;
   assigneeName?: string;
   createdById?: string | null;
@@ -680,5 +687,14 @@ export interface AppState {
   adoConfig?: AdoConfig;
   users?: AppUser[];
   currentUserId?: string;
+  // Jira & Hasura Agile Extension
+  jiraProjects?: import('./jira').JiraProject[];
+  jiraSprints?: import('./jira').JiraSprint[];
+  jiraIssues?: import('./jira').JiraIssue[];
+  selectedProjectId?: string | null;
+  selectedSprintId?: string | null;
+  hasuraConfig?: import('./jira').HasuraConnectionConfig;
 }
+
+export * from './jira';
 

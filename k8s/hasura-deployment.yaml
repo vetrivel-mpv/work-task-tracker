@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hasura
+  labels:
+    app.kubernetes.io/name: northstar-hasura
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: northstar-hasura
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: northstar-hasura
+    spec:
+      containers:
+        - name: hasura
+          image: hasura/graphql-engine:v2.40.0
+          ports:
+            - containerPort: 8080
+          env:
+            - name: HASURA_GRAPHQL_DATABASE_URL
+              value: "postgres://postgres:postgrespassword@postgres:5432/acm_jira"
+            - name: HASURA_GRAPHQL_ENABLE_CONSOLE
+              value: "true"
+            - name: HASURA_GRAPHQL_DEV_MODE
+              value: "false"
+            - name: HASURA_GRAPHQL_ADMIN_SECRET
+              value: "adminsecretkey"
+            - name: HASURA_GRAPHQL_UNAUTHORIZED_ROLE
+              value: "public"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hasura
+  labels:
+    app.kubernetes.io/name: northstar-hasura
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app.kubernetes.io/name: northstar-hasura

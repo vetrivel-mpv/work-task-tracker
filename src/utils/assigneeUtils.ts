@@ -103,11 +103,19 @@ export function getWorkItemAssignee(
     }
 
     // 3. Fallback virtual assignee from assigneeName
+    let virtualEmail = '';
+    const emailMatch = (assigneeName || '').match(/<([^>]+)>/);
+    if (emailMatch) {
+      virtualEmail = emailMatch[1].trim();
+    } else if (cleanName.includes('@')) {
+      virtualEmail = cleanName.trim();
+    }
+
     return {
       id: assigneeId || generateMemberIdFromName(cleanName),
       name: cleanName,
       role: 'Team Member',
-      email: `${cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`,
+      email: virtualEmail,
       avatarColor: getAvatarColorForName(cleanName),
       avatarInitials: getInitials(cleanName),
       isVirtual: true
@@ -127,7 +135,7 @@ export function getWorkItemAssignee(
         id: generateMemberIdFromName(id),
         name: id,
         role: 'Team Member',
-        email: `${id.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@company.com`,
+        email: id.includes('@') ? id.trim() : '',
         avatarColor: getAvatarColorForName(id),
         avatarInitials: getInitials(id),
         isVirtual: true
@@ -256,22 +264,46 @@ export function sanitizeAndLinkWorkItems(
 
   const getOrCreateMember = (rawName?: string | null, role: string = 'Software Engineer'): TeamMember | null => {
     if (!rawName || isUnassignedValue(rawName)) return null;
-    const cleanName = rawName.replace(/<[^>]+>/, '').trim();
+
+    let extractedEmail = '';
+    let cleanName = String(rawName).trim();
+    const emailMatch = rawName.match(/<([^>]+)>/);
+    if (emailMatch) {
+      extractedEmail = emailMatch[1].trim();
+      cleanName = rawName.replace(/<[^>]+>/, '').trim();
+    } else if (rawName.includes('@') && !rawName.includes(' ')) {
+      extractedEmail = rawName.trim();
+      cleanName = rawName.split('@')[0].trim();
+    }
+
     if (!cleanName || isUnassignedValue(cleanName)) return null;
 
-    const existing = teamMemberMap.get(cleanName.toLowerCase());
-    if (existing) return existing;
+    const existing = teamMemberMap.get(cleanName.toLowerCase()) || (extractedEmail ? teamMemberMap.get(extractedEmail.toLowerCase()) : null);
+    if (existing) {
+      if (extractedEmail && extractedEmail.includes('@') && existing.email !== extractedEmail) {
+        existing.email = extractedEmail;
+      }
+      return existing;
+    }
 
     const memberId = generateMemberIdFromName(cleanName);
     const existingById = teamMemberMap.get(memberId.toLowerCase());
-    if (existingById) return existingById;
+    if (existingById) {
+      if (extractedEmail && extractedEmail.includes('@') && existingById.email !== extractedEmail) {
+        existingById.email = extractedEmail;
+      }
+      return existingById;
+    }
 
-    const emailSlug = cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '.');
+    const finalEmail = extractedEmail && extractedEmail.includes('@')
+      ? extractedEmail
+      : '';
+
     const newMember: TeamMember = {
       id: memberId,
       name: cleanName,
       role,
-      email: `${emailSlug}@company.com`,
+      email: finalEmail,
       avatarColor: getAvatarColorForName(cleanName),
       groupIds: [],
       active: true,
@@ -281,6 +313,9 @@ export function sanitizeAndLinkWorkItems(
 
     teamMemberMap.set(memberId.toLowerCase(), newMember);
     teamMemberMap.set(cleanName.toLowerCase(), newMember);
+    if (finalEmail) {
+      teamMemberMap.set(finalEmail.toLowerCase(), newMember);
+    }
     currentTeam.push(newMember);
     return newMember;
   };

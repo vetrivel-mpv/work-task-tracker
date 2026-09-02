@@ -1,0 +1,73 @@
+services:
+  # 1. PostgreSQL Relational Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: northstar-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: acm_jira
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./server/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d acm_jira"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - northstar-net
+
+  # 2. Hasura GraphQL Engine
+  hasura:
+    image: hasura/graphql-engine:v2.40.0
+    container_name: northstar-hasura
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      HASURA_GRAPHQL_DATABASE_URL: postgres://postgres:postgrespassword@postgres:5432/acm_jira
+      HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
+      HASURA_GRAPHQL_DEV_MODE: "true"
+      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup, http-log, webhook-log, websocket-log, query-log
+      HASURA_GRAPHQL_ADMIN_SECRET: adminsecretkey
+      HASURA_GRAPHQL_UNAUTHORIZED_ROLE: public
+    networks:
+      - northstar-net
+
+  # 3. Jira-Like Agile Workspace App Server
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: northstar-app
+    restart: unless-stopped
+    depends_on:
+      hasura:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      POSTGRES_DB_URL: postgres://postgres:postgrespassword@postgres:5432/acm_jira
+      HASURA_GRAPHQL_ENDPOINT: http://hasura:8080/v1/graphql
+      HASURA_ADMIN_SECRET: adminsecretkey
+    networks:
+      - northstar-net
+
+volumes:
+  db_data:
+    driver: local
+
+networks:
+  northstar-net:
+    driver: bridge
